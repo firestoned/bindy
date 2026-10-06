@@ -94,3 +94,163 @@ mod tests {
         assert!(zones_selecting_instance(&zones, &inst).is_empty());
     }
 }
+
+/// The `DNSZone` controller's action for each outcome (ADR-0016), and the
+/// duplicate-zone mapper that replaced the timer a `DuplicateZone` loser
+/// waited on.
+#[cfg(test)]
+mod event_driven_tests {
+    use super::super::{action_for_zone_outcome, zones_contending_for_name};
+    use crate::crd::DNSZone;
+    use crate::dnszone::types::{ZoneOutcome, REASON_DEGRADED, REASON_DUPLICATE_ZONE};
+    use bindy_controller_sdk::reconcile::MAX_SCHEDULED_WAKE;
+    use bindy_controller_sdk::retry::{reset_reconcile_backoff, RECONCILE_BACKOFF_INITIAL};
+    use kube::runtime::controller::Action;
+    use kube::runtime::reflector::ObjectRef;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn zone(namespace: &str, name: &str, zone_name: &str, duplicate: bool) -> DNSZone {
+        let mut value = serde_json::json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "DNSZone",
+            "metadata": {"name": name, "namespace": namespace},
+            "spec": {
+                "zoneName": zone_name,
+                "soaRecord": {
+                    "primaryNs": "ns1.example.com.",
+                    "adminEmail": "admin.example.com.",
+                    "serial": 1,
+                    "refresh": 3600,
+                    "retry": 600,
+                    "expire": 604_800,
+                    "negativeTtl": 86400
+                }
+            }
+        });
+        if duplicate {
+            value["status"] = serde_json::json!({"conditions": [{
+                "type": "Ready",
+                "status": "False",
+                "reason": REASON_DUPLICATE_ZONE,
+                "message": "already declared"
+            }]});
+        }
+        serde_json::from_value(value).expect("valid DNSZone fixture")
+    }
+
+    #[test]
+    fn a_converged_zone_awaits_the_next_change() {
+        let z = zone("dns", "converged", "example.com", false);
+        assert_eq!(
+            action_for_zone_outcome(&z, &ZoneOutcome::Converged { next_wake: None }),
+            Action::await_change()
+        );
+    }
+
+    #[test]
+    fn a_waiting_zone_awaits_the_next_change() {
+        let z = zone("dns", "waiting", "example.com", false);
+        assert_eq!(
+            action_for_zone_outcome(
+                &z,
+                &ZoneOutcome::Waiting {
+                    reason: REASON_DUPLICATE_ZONE
+                }
+            ),
+            Action::await_change()
+        );
+    }
+
+    #[test]
+    fn a_degraded_zone_retries_on_the_backoff() {
+        let z = zone("dns", "degraded", "example.com", false);
+        reset_reconcile_backoff(&bindy_controller_sdk::error::backoff_key(&z));
+
+        assert_eq!(
+            action_for_zone_outcome(
+                &z,
+                &ZoneOutcome::Retry {
+                    reason: REASON_DEGRADED
+                }
+            ),
+            Action::requeue(RECONCILE_BACKOFF_INITIAL)
+        );
+    }
+
+    #[test]
+    fn a_scheduled_wake_is_honoured_and_capped() {
+        let z = zone("dns", "signed", "example.com", false);
+        let soon = Duration::from_secs(60);
+
+        assert_eq!(
+            action_for_zone_outcome(
+                &z,
+                &ZoneOutcome::Converged {
+                    next_wake: Some(soon)
+                }
+            ),
+            Action::requeue(soon)
+        );
+        assert_eq!(
+            action_for_zone_outcome(
+                &z,
+                &ZoneOutcome::Converged {
+                    next_wake: Some(MAX_SCHEDULED_WAKE * 2)
+                }
+            ),
+            Action::requeue(MAX_SCHEDULED_WAKE)
+        );
+    }
+
+    fn names(refs: Vec<ObjectRef<DNSZone>>) -> Vec<String> {
+        let mut names: Vec<String> = refs
+            .into_iter()
+            .map(|r| format!("{}/{}", r.namespace.unwrap_or_default(), r.name))
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_zone_change_wakes_the_other_claimants_of_its_name() {
+        let zones = vec![
+            Arc::new(zone("team-a", "winner", "example.com", false)),
+            Arc::new(zone("team-b", "loser", "example.com", true)),
+            Arc::new(zone("team-c", "unrelated", "other.com", false)),
+        ];
+        let deleted_winner = zone("team-a", "winner", "example.com", false);
+
+        assert_eq!(
+            names(zones_contending_for_name(&zones, &deleted_winner)),
+            vec!["team-b/loser".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_zone_renamed_away_still_wakes_the_zones_it_blocked() {
+        // The winner's spec.zoneName changed: the mapper only sees the new
+        // name, so a zone still reporting DuplicateZone is woken regardless.
+        let zones = vec![
+            Arc::new(zone("team-a", "winner", "renamed.com", false)),
+            Arc::new(zone("team-b", "loser", "example.com", true)),
+        ];
+        let renamed = zone("team-a", "winner", "renamed.com", false);
+
+        assert_eq!(
+            names(zones_contending_for_name(&zones, &renamed)),
+            vec!["team-b/loser".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_zone_without_contenders_wakes_nothing() {
+        let zones = vec![
+            Arc::new(zone("team-a", "only", "example.com", false)),
+            Arc::new(zone("team-c", "unrelated", "other.com", false)),
+        ];
+        let only = zone("team-a", "only", "example.com", false);
+
+        assert!(zones_contending_for_name(&zones, &only).is_empty());
+    }
+}

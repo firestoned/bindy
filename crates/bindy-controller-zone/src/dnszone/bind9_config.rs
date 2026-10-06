@@ -75,40 +75,45 @@ pub async fn configure_zone_on_instances(
 
     // Get current primary IPs for secondary zone configuration
     // Find all primary instances from our instance refs and get their pod IPs
-    let primary_ips =
-        match super::primary::find_primary_ips_from_instances(&client, instance_refs).await {
-            Ok(ips) if !ips.is_empty() => {
-                debug!(
-                    "Found {} primary server IP(s) for zone {}/{}: {:?}",
-                    ips.len(),
-                    namespace,
-                    spec.zone_name,
-                    ips
-                );
+    let primary_ips = match super::primary::find_primary_ips_from_instances(
+        &client,
+        &ctx.stores.bind9_instances,
+        instance_refs,
+    )
+    .await
+    {
+        Ok(ips) if !ips.is_empty() => {
+            debug!(
+                "Found {} primary server IP(s) for zone {}/{}: {:?}",
+                ips.len(),
+                namespace,
+                spec.zone_name,
                 ips
-            }
-            Ok(_) => {
-                let message = "No primary servers found - cannot configure secondary zones";
-                set_failure_conditions(status_updater, "PrimaryFailed", message);
-                // Apply status before returning error
-                status_updater.apply(&client).await?;
-                return Err(anyhow!(
-                    "No primary servers found for zone {}/{} - cannot configure secondary zones",
-                    namespace,
-                    spec.zone_name
-                ));
-            }
-            Err(e) => {
-                set_failure_conditions(
-                    status_updater,
-                    "PrimaryFailed",
-                    &format!("Failed to find primary servers: {e}"),
-                );
-                // Apply status before returning error
-                status_updater.apply(&client).await?;
-                return Err(e);
-            }
-        };
+            );
+            ips
+        }
+        Ok(_) => {
+            let message = "No primary servers found - cannot configure secondary zones";
+            set_failure_conditions(status_updater, "PrimaryFailed", message);
+            // Apply status before returning error
+            status_updater.apply(&client).await?;
+            return Err(anyhow!(
+                "No primary servers found for zone {}/{} - cannot configure secondary zones",
+                namespace,
+                spec.zone_name
+            ));
+        }
+        Err(e) => {
+            set_failure_conditions(
+                status_updater,
+                "PrimaryFailed",
+                &format!("Failed to find primary servers: {e}"),
+            );
+            // Apply status before returning error
+            status_updater.apply(&client).await?;
+            return Err(e);
+        }
+    };
 
     // Add/update zone on all primary instances
     // Primary instances are marked as reconciled inside add_dnszone() immediately after success

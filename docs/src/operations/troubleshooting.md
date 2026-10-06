@@ -71,8 +71,54 @@ the operator log for:
 N deleted record(s) of zone <namespace>/<zone> may still be served; their DNS cleanup is retried
 ```
 
-That warning repeats every zone reconcile until every primary endpoint is
+That warning repeats on every zone retry (the zone schedules the retry
+itself with capped backoff, ADR-0016) until every primary endpoint is
 reachable again; the record is then removed from DNS and from the status.
+
+### A Record or Zone Changed Inside BIND9 Is Not Put Back
+
+From the release that implements
+[ADR-0016](https://github.com/firestoned/bindy/blob/main/docs/adr/0016-event-driven-reconciliation.md)
+the operator has no periodic resync. It used to re-push every record every
+5 minutes, which also reverted changes made directly in BIND9. Now a change
+made inside a running BIND9 pod (`nsupdate`, `rndc delzone`, a direct
+bindcar call) raises no Kubernetes event, so it stands until the next event
+for the resource that owns the data:
+
+- a change to the resource's spec, labels, annotations or finalizers;
+- the BIND9 pod being restarted or replaced (the zone's `Endpoints` change,
+  the zone is re-created and its records replayed);
+- the operator restarting (every object is reconciled from the initial list).
+
+To force the repair now, change any annotation on the resource. The
+documented annotation is `bindy.firestoned.io/reconcile-trigger`; its value
+only has to differ from the previous one:
+
+```bash
+# One record: re-push it to every primary
+kubectl annotate arecord www -n dns \
+  bindy.firestoned.io/reconcile-trigger="$(date +%s)" --overwrite
+
+# A zone: re-check it on every instance; a missing zone is re-created and all
+# of its records are replayed
+kubectl annotate dnszone example-com -n dns \
+  bindy.firestoned.io/reconcile-trigger="$(date +%s)" --overwrite
+
+# Every record of one kind in a namespace
+kubectl annotate arecords --all -n dns \
+  bindy.firestoned.io/reconcile-trigger="$(date +%s)" --overwrite
+```
+
+A zone that still exists inside BIND9 is not replayed by the zone annotation
+alone (its records are only replayed when the zone had to be re-created), so
+annotate the records themselves to re-push records deleted from a live zone.
+
+Anything else that waits is woken by the object it waits on, not by a
+timer: a `NotSelected` record by a zone tagging it, a `ZoneNotFound` or
+`NoPrimaryInstances` record by its zone's next status change, a zone with no
+instances by a matching `Bind9Instance`, a `DuplicateZone` zone by the other
+claimant's change or deletion. A record whose write BIND9 rejected is retried
+with backoff, never sooner than 30 s.
 
 ## Debugging Steps
 

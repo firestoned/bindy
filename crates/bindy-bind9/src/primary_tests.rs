@@ -180,8 +180,10 @@ mod tests {
 /// the record write path no longer GETs every instance to learn its role.
 #[cfg(test)]
 mod store_role_tests {
-    use crate::crd::{Bind9Instance, InstanceReference};
-    use crate::primary::primary_role_in_store;
+    use crate::crd::{Bind9Instance, InstanceReference, ServerRole};
+    use crate::primary::{
+        filter_instances_by_role_cached, instance_role_in_store, primary_role_in_store,
+    };
     use kube::runtime::{reflector, watcher};
     use serde_json::json;
 
@@ -244,5 +246,70 @@ mod store_role_tests {
             primary_role_in_store(&store, &reference("p0", "other")),
             None
         );
+    }
+
+    #[test]
+    fn the_role_of_a_cached_instance_comes_from_the_store() {
+        let store = store(vec![instance("p0", "primary"), instance("s0", "secondary")]);
+
+        assert_eq!(
+            instance_role_in_store(&store, &reference("s0", "dns")),
+            Some(ServerRole::Secondary)
+        );
+        assert_eq!(
+            instance_role_in_store(&store, &reference("x0", "dns")),
+            None
+        );
+    }
+
+    /// A client that cannot reach any API server: if the filter tried a GET
+    /// for a cached instance, that instance would be skipped and the
+    /// assertions below would fail (ADR-0016 decision 6).
+    fn unreachable_client() -> kube::Client {
+        let config =
+            kube::Config::new("http://127.0.0.1:9".parse().expect("valid unreachable URL"));
+        kube::Client::try_from(config).expect("client builds without connecting")
+    }
+
+    #[tokio::test]
+    async fn cached_instances_are_filtered_by_role_without_an_api_call() {
+        let store = store(vec![
+            instance("p0", "primary"),
+            instance("s0", "secondary"),
+            instance("s1", "secondary"),
+        ]);
+        let refs = vec![
+            reference("p0", "dns"),
+            reference("s0", "dns"),
+            reference("s1", "dns"),
+        ];
+        let client = unreachable_client();
+
+        let secondaries =
+            filter_instances_by_role_cached(&client, &store, &refs, &ServerRole::Secondary).await;
+        let primaries =
+            filter_instances_by_role_cached(&client, &store, &refs, &ServerRole::Primary).await;
+
+        assert_eq!(
+            secondaries,
+            vec![reference("s0", "dns"), reference("s1", "dns")]
+        );
+        assert_eq!(primaries, vec![reference("p0", "dns")]);
+    }
+
+    #[tokio::test]
+    async fn an_instance_neither_cached_nor_readable_is_skipped() {
+        let store = store(vec![instance("p0", "primary")]);
+        let refs = vec![reference("p0", "dns"), reference("gone", "dns")];
+
+        let primaries = filter_instances_by_role_cached(
+            &unreachable_client(),
+            &store,
+            &refs,
+            &ServerRole::Primary,
+        )
+        .await;
+
+        assert_eq!(primaries, vec![reference("p0", "dns")]);
     }
 }

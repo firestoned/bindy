@@ -7,18 +7,25 @@
 //! and determining the final Ready/Degraded status of a DNSZone.
 
 use anyhow::Result;
+use k8s_openapi::jiff::{civil, tz::TimeZone, Timestamp};
 use kube::Client;
 
-use crate::crd::InstanceReference;
+use super::types::{
+    ZoneOutcome, REASON_CLEANUP_PENDING, REASON_DEGRADED, REASON_DNSSEC_KEYS_PENDING,
+};
+use crate::crd::{DNSSECStatus, InstanceReference};
 
 /// Calculate expected instance counts (primary and secondary).
 ///
 /// This function filters the instance references to determine how many
-/// primary and secondary instances should be configured.
+/// primary and secondary instances should be configured. Roles come from the
+/// `Bind9Instance` store, with a GET only for an instance it does not hold
+/// (ADR-0016).
 ///
 /// # Arguments
 ///
-/// * `client` - Kubernetes API client
+/// * `client` - Kubernetes API client, for the fallback GET
+/// * `store` - The shared `Bind9Instance` reflector store
 /// * `instance_refs` - List of instance references assigned to the zone
 ///
 /// # Returns
@@ -27,18 +34,20 @@ use crate::crd::InstanceReference;
 ///
 /// # Errors
 ///
-/// Returns an error if Kubernetes API calls fail
+/// Does not currently fail; the `Result` keeps the established signature.
 pub async fn calculate_expected_instance_counts(
     client: &Client,
+    store: &crate::context::MultiStore<crate::crd::Bind9Instance>,
     instance_refs: &[InstanceReference],
 ) -> Result<(usize, usize)> {
-    let expected_primary_count = super::primary::filter_primary_instances(client, instance_refs)
-        .await
-        .map(|refs| refs.len())
-        .unwrap_or(0);
+    let expected_primary_count =
+        super::primary::filter_primary_instances_cached(client, store, instance_refs)
+            .await
+            .map(|refs| refs.len())
+            .unwrap_or(0);
 
     let expected_secondary_count =
-        super::secondary::filter_secondary_instances(client, instance_refs)
+        super::secondary::filter_secondary_instances(client, store, instance_refs)
             .await
             .map(|refs| refs.len())
             .unwrap_or(0);
@@ -217,6 +226,93 @@ pub async fn finalize_zone_status(
     status_updater.apply(client).await?;
 
     Ok(())
+}
+
+/// Parse the next-rollover instant a bindcar sidecar reports.
+///
+/// bindcar reports a civil time without an offset (`2027-09-27T00:00:00`),
+/// which BIND9 means as UTC; an RFC 3339 instant is accepted too.
+///
+/// # Arguments
+///
+/// * `value` - The `nextKeyRollover` string
+///
+/// # Returns
+///
+/// The instant, or `None` when it does not parse.
+#[must_use]
+pub fn parse_rollover_instant(value: &str) -> Option<Timestamp> {
+    if let Ok(instant) = value.parse::<Timestamp>() {
+        return Some(instant);
+    }
+    let civil: civil::DateTime = value.parse().ok()?;
+    civil
+        .to_zoned(TimeZone::UTC)
+        .ok()
+        .map(|zoned| zoned.timestamp())
+}
+
+/// Decide how a finished zone reconcile asks to be continued (ADR-0016).
+///
+/// - Any `Degraded` condition left set: [`ZoneOutcome::Retry`]. An instance or
+///   endpoint rejected the zone, or a record replay is incomplete; the backoff
+///   retries it, the Endpoints watch wakes it sooner when a pod comes back.
+/// - A cleanup pass left work behind (a deleted record whose DNS data is not
+///   confirmed gone, or a failed instance or record cleanup):
+///   [`ZoneOutcome::Retry`], because the pass only runs inside a reconcile.
+/// - DNSSEC requested but the keys are not there yet: [`ZoneOutcome::Retry`],
+///   because key generation inside BIND9 raises no Kubernetes event.
+/// - Otherwise [`ZoneOutcome::Converged`], with a wake at the next KSK
+///   rollover when the sidecar reported one in the future, so
+///   `status.dnssec` follows the new DS record.
+///
+/// # Arguments
+///
+/// * `degraded` - Whether the reconcile left a `Degraded` condition set
+/// * `cleanup_incomplete` - Whether a cleanup pass left work to retry
+/// * `dnssec` - The DNSSEC status the reconcile computed, if any
+/// * `now` - The current instant
+///
+/// # Returns
+///
+/// The zone's [`ZoneOutcome`].
+#[must_use]
+pub fn zone_outcome(
+    degraded: bool,
+    cleanup_incomplete: bool,
+    dnssec: Option<&DNSSECStatus>,
+    now: Timestamp,
+) -> ZoneOutcome {
+    if degraded {
+        return ZoneOutcome::Retry {
+            reason: REASON_DEGRADED,
+        };
+    }
+
+    if cleanup_incomplete {
+        return ZoneOutcome::Retry {
+            reason: REASON_CLEANUP_PENDING,
+        };
+    }
+
+    let Some(dnssec) = dnssec else {
+        return ZoneOutcome::Converged { next_wake: None };
+    };
+
+    if !dnssec.signed {
+        return ZoneOutcome::Retry {
+            reason: REASON_DNSSEC_KEYS_PENDING,
+        };
+    }
+
+    let next_wake = dnssec
+        .next_key_rollover
+        .as_deref()
+        .and_then(parse_rollover_instant)
+        .and_then(|rollover| std::time::Duration::try_from(rollover.duration_since(now)).ok())
+        .filter(|delay| !delay.is_zero());
+
+    ZoneOutcome::Converged { next_wake }
 }
 
 #[cfg(test)]

@@ -461,20 +461,24 @@ pub fn reconcile_error_backoff(key: &str) -> Duration {
     delay
 }
 
+/// Seconds in [`REJECTED_WRITE_COOLDOWN`].
+const REJECTED_WRITE_COOLDOWN_SECS: u64 = 30;
+
 /// Shortest interval between re-attempts of a record write BIND9 rejected.
 ///
 /// A rejected write must not be re-issued on every watch event. BIND9 rejects
-/// some updates for reasons no amount of retrying changes — an MX whose exchange
-/// has no address record comes back `Refused` every time — and the record
-/// reconciler is woken by far more than its own timer: a status patch on the
-/// owning zone or on any primary instance re-runs it. Left alone that produced a
-/// sustained several-updates-per-second delete/add storm against named for a
-/// single bad record.
+/// some updates for reasons no amount of retrying changes (an MX whose
+/// exchange has no address record comes back `Refused` every time) and the
+/// record reconciler is woken by more than its own retry: a status patch on
+/// the owning zone re-runs it. Left alone that produced a sustained
+/// several-updates-per-second delete/add storm against named for a single bad
+/// record.
 ///
-/// Matching [`crate::requeue::REQUEUE_WHEN_NOT_READY_SECS`] means a
-/// failing record is re-attempted by its own timed requeue and by nothing else.
-pub const REJECTED_WRITE_COOLDOWN: Duration =
-    Duration::from_secs(crate::requeue::REQUEUE_WHEN_NOT_READY_SECS);
+/// With no periodic resync (ADR-0016) the record schedules its own retry, no
+/// sooner than this ([`crate::error::retry_action_at_least`]), and a reconcile
+/// woken inside the cooldown requeues for what remains of it
+/// ([`write_cooldown_remaining`]).
+pub const REJECTED_WRITE_COOLDOWN: Duration = Duration::from_secs(REJECTED_WRITE_COOLDOWN_SECS);
 
 /// Rejected writes, keyed by object, holding the spec hash and when it failed.
 static REJECTED_WRITES: std::sync::LazyLock<
@@ -551,6 +555,45 @@ pub fn write_in_cooldown_at(key: &str, spec_hash: &str, now: Instant) -> bool {
     }
 
     now.duration_since(*rejected_at) < REJECTED_WRITE_COOLDOWN
+}
+
+/// How much of the cooldown is left for writing `spec_hash` for `key`.
+///
+/// # Arguments
+///
+/// * `key` - Stable identity for the object
+/// * `spec_hash` - Hash of the spec about to be written
+///
+/// # Returns
+///
+/// `Some(remaining)` while [`write_in_cooldown`] holds, otherwise `None`.
+#[must_use]
+pub fn write_cooldown_remaining(key: &str, spec_hash: &str) -> Option<Duration> {
+    write_cooldown_remaining_at(key, spec_hash, Instant::now())
+}
+
+/// [`write_cooldown_remaining`] with the current time supplied, so expiry is
+/// testable.
+///
+/// # Arguments
+///
+/// * `key` - Stable identity for the object
+/// * `spec_hash` - Hash of the spec about to be written
+/// * `now` - The instant to judge the cooldown against
+///
+/// # Returns
+///
+/// `Some(remaining)` while the identical spec is inside its cooldown at `now`.
+#[must_use]
+pub fn write_cooldown_remaining_at(key: &str, spec_hash: &str, now: Instant) -> Option<Duration> {
+    let rejected = REJECTED_WRITES.lock().ok()?;
+    let (rejected_hash, rejected_at) = rejected.get(key)?;
+    if rejected_hash != spec_hash {
+        return None;
+    }
+    REJECTED_WRITE_COOLDOWN
+        .checked_sub(now.saturating_duration_since(*rejected_at))
+        .filter(|remaining| !remaining.is_zero())
 }
 
 /// Clears the failure counter for `key`, so its next failure requeues promptly.

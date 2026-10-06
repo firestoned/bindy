@@ -47,3 +47,46 @@ pub struct ZoneConfigOutcome {
     /// the zone can be reported Ready.
     pub zones_created: usize,
 }
+
+/// Outcome reason: the zone has no `bind9InstancesFrom` selector, or no
+/// instance matches it.
+pub const REASON_NO_INSTANCES: &str = "NoInstances";
+
+/// Outcome reason: another, older zone already claims this zone name.
+pub const REASON_DUPLICATE_ZONE: &str = "DuplicateZone";
+
+/// Outcome reason: the zone is `Degraded` (an instance or endpoint rejected
+/// it, or a record replay is incomplete).
+pub const REASON_DEGRADED: &str = "Degraded";
+
+/// Outcome reason: a deleted instance or record could not be cleaned up yet
+/// (its DNS data is not confirmed gone), so the pass must run again.
+pub const REASON_CLEANUP_PENDING: &str = "CleanupPending";
+
+/// Outcome reason: the zone requests a DNSSEC policy but its keys are still
+/// being generated, which no Kubernetes event announces.
+pub const REASON_DNSSEC_KEYS_PENDING: &str = "DnssecKeysPending";
+
+/// How one `DNSZone` reconcile ended, decided from the in-memory status the
+/// reconcile built (no re-GET), so the controller can pick its `Action`
+/// (ADR-0016).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZoneOutcome {
+    /// The zone is served as declared. `next_wake` is set only for an instant
+    /// the sidecar announced and no Kubernetes event will (a KSK rollover).
+    Converged {
+        /// Delay until the next scheduled wake, if any
+        next_wake: Option<std::time::Duration>,
+    },
+    /// Waiting on another object; its watch event resumes the zone.
+    Waiting {
+        /// Why, e.g. [`REASON_DUPLICATE_ZONE`]
+        reason: &'static str,
+    },
+    /// Failed against BIND9 or bindcar, or waiting on something no event
+    /// announces: retried with the per-object backoff.
+    Retry {
+        /// Why, e.g. [`REASON_DEGRADED`]
+        reason: &'static str,
+    },
+}

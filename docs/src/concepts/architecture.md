@@ -554,7 +554,7 @@ sequenceDiagram
 
 **Performance Benefits:**
 - ⚡ **Immediate reaction**: Sub-second response to changes
-- 🔄 **No polling**: Event-driven eliminates periodic reconciliation delays
+- 🔄 **No polling**: Event-driven, with no periodic resync at all (ADR-0016)
 - 📉 **Lower API load**: Only reconcile when actual changes occur
 - 🎯 **Precise targeting**: Only affected zones reconcile
 
@@ -703,6 +703,46 @@ flight, and the process exits zero. On loss of the lease they drain the same
 way and the process exits non-zero, so Kubernetes restarts it as a follower.
 There is no separate startup pass: a watcher's initial list enqueues every
 existing object, which repairs anything that drifted while no operator ran.
+
+### No periodic resync (ADR-0016)
+
+Every controller is event-driven. A successful reconcile, and a reconcile
+that waits on another object (a record no zone has tagged yet, a zone with
+no matching instance, a `DuplicateZone` loser), returns `await_change`: the
+object is reconciled again only when a watch event arrives for it or for
+what it waits on. There is no 5-minute or 30-second timer. A failure is a
+retry, not a resync: an API error, a BIND9 write that was rejected or could
+not reach a pod, or a `Degraded` zone is retried with per-object capped
+backoff (2 s doubling to 60 s; a rejected record write never sooner than
+its 30 s cooldown). Two objects schedule one wake for an instant no event
+announces: a `Bind9Instance` when its RNDC key falls due for rotation, and a
+signed `DNSZone` at its next KSK rollover.
+
+What the operator repairs, and what triggers it:
+
+| Drift | Repaired by |
+|---|---|
+| A BIND9 pod killed, evicted or restarted (zone data lost) | The zone's `Endpoints` watch: the zone is re-created and its records replayed |
+| An owned Deployment, Service, Secret, ServiceAccount or instance ConfigMap edited or deleted | The instance controller's owned-object watches |
+| A cluster's shared ConfigMap edited or deleted | The instance controller's ConfigMap watch, mapped to the cluster's instances |
+| Any custom resource's spec, labels, annotations or finalizers changed | That resource's own watch |
+| Anything changed while no operator was running | The initial list when the operator starts |
+| A record or zone changed inside BIND9 by hand while the pod keeps running (`nsupdate`, `rndc`, a direct bindcar call) | **Nothing automatic.** Force a repair with the annotation below |
+
+To force a repair of out-of-band drift, change any annotation on the
+resource that owns the data. The documented one is
+`bindy.firestoned.io/reconcile-trigger`:
+
+```bash
+# Re-push one record to every primary
+kubectl annotate arecord www -n dns \
+  bindy.firestoned.io/reconcile-trigger="$(date +%s)" --overwrite
+
+# Re-check a zone on every instance: a missing zone is re-created and all of
+# its records are replayed
+kubectl annotate dnszone example-com -n dns \
+  bindy.firestoned.io/reconcile-trigger="$(date +%s)" --overwrite
+```
 
 **Failover characteristics:**
 - **Lease duration:** 15 seconds (configurable)

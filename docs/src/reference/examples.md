@@ -434,7 +434,6 @@ metadata:
   name: bindy-config
 data:
   RUST_LOG: "debug"
-  RECONCILE_INTERVAL: "60"
 ```
 
 ### Dry Run Testing

@@ -161,8 +161,10 @@ that flag is set the zone reports `Ready=False` / `Degraded=True` with reason
 been pushed back must never be advertised as healthy.
 
 The `DNSZone` controller watches `Endpoints`, which change exactly when the set of ready
-BIND9 pods changes, so a replaced pod is picked up within seconds rather than at the next
-periodic reconciliation.
+BIND9 pods changes, so a replaced pod is picked up within seconds. There is no periodic
+reconciliation to fall back on (ADR-0016): a zone deleted inside BIND9 by hand while its pod
+keeps running is only re-created on the zone's next event. Annotate the zone with
+`bindy.firestoned.io/reconcile-trigger="$(date +%s)"` to force that check.
 
 ## Verifying Zone Creation
 

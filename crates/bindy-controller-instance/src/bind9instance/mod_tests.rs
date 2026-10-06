@@ -5,7 +5,9 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::bind9instance::{calculate_requeue_duration, resources};
+    use crate::bind9instance::{
+        calculate_requeue_duration, resources, ROTATION_DUE_MARGIN, ROTATION_OVERDUE_RECHECK,
+    };
     use crate::crd::{RndcAlgorithm, RndcKeyConfig, RndcKeyRotationStatus};
     use chrono::Utc;
     use k8s_openapi::api::core::v1::Secret;
@@ -13,40 +15,36 @@ mod tests {
     use std::collections::BTreeMap;
 
     // ========================================================================
-    // Requeue Duration Calculation Tests
+    // Scheduled rotation wake (ADR-0016): with no periodic resync the
+    // instance is woken exactly when its RNDC key falls due.
     // ========================================================================
 
-    #[test]
-    fn test_calculate_requeue_duration_rotation_disabled() {
-        // Given: Config with auto_rotate = false
-        let config = RndcKeyConfig {
-            auto_rotate: false,
-            rotate_after: "720h".to_string(),
-            secret_ref: None,
-            secret: None,
-            algorithm: RndcAlgorithm::HmacSha256,
-        };
+    const HOUR_SECS: u64 = 3600;
 
-        let secret = create_test_secret_with_annotations(Utc::now(), None, 0);
-
-        // When: Calculate requeue duration
-        let result = calculate_requeue_duration(&config, &secret);
-
-        // Then: Should return None (no rotation scheduled)
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_calculate_requeue_duration_no_annotations() {
-        // Given: Config with auto_rotate = true but Secret has no annotations
-        let config = RndcKeyConfig {
+    fn rotating_config() -> RndcKeyConfig {
+        RndcKeyConfig {
             auto_rotate: true,
             rotate_after: "720h".to_string(),
             secret_ref: None,
             secret: None,
             algorithm: RndcAlgorithm::HmacSha256,
-        };
+        }
+    }
 
+    #[test]
+    fn test_calculate_requeue_duration_rotation_disabled() {
+        let config = RndcKeyConfig {
+            auto_rotate: false,
+            ..rotating_config()
+        };
+        let now = Utc::now();
+        let secret = create_test_secret_with_annotations(now, None, 0);
+
+        assert!(calculate_requeue_duration(&config, &secret, now).is_none());
+    }
+
+    #[test]
+    fn test_calculate_requeue_duration_no_annotations() {
         let secret = Secret {
             metadata: ObjectMeta {
                 name: Some("test-secret".to_string()),
@@ -55,85 +53,65 @@ mod tests {
             ..Default::default()
         };
 
-        // When: Calculate requeue duration
-        let result = calculate_requeue_duration(&config, &secret);
+        assert!(calculate_requeue_duration(&rotating_config(), &secret, Utc::now()).is_none());
+    }
 
-        // Then: Should return None (can't determine rotation schedule)
-        assert!(result.is_none());
+    #[test]
+    fn test_calculate_requeue_duration_no_rotation_scheduled() {
+        let now = Utc::now();
+        let secret = create_test_secret_with_annotations(now, None, 0);
+
+        assert!(calculate_requeue_duration(&rotating_config(), &secret, now).is_none());
     }
 
     #[test]
     fn test_calculate_requeue_duration_rotation_overdue() {
-        // Given: Config with auto_rotate = true and rotation in the past
-        let config = RndcKeyConfig {
-            auto_rotate: true,
-            rotate_after: "720h".to_string(),
-            secret_ref: None,
-            secret: None,
-            algorithm: RndcAlgorithm::HmacSha256,
-        };
-
-        let past_time = Utc::now() - chrono::Duration::hours(2);
+        let now = Utc::now();
+        let created_at = now - chrono::Duration::hours(2);
         let secret = create_test_secret_with_annotations(
-            past_time,
-            Some(past_time + chrono::Duration::hours(1)), // rotate_at is 1 hour ago
+            created_at,
+            Some(created_at + chrono::Duration::hours(1)), // due an hour ago
             0,
         );
 
-        // When: Calculate requeue duration
-        let result = calculate_requeue_duration(&config, &secret);
+        let wake = calculate_requeue_duration(&rotating_config(), &secret, now)
+            .expect("an overdue rotation is re-checked");
 
-        // Then: Should return 30 seconds (immediate reconciliation)
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().as_secs(), 30);
+        assert_eq!(wake, ROTATION_OVERDUE_RECHECK);
     }
 
     #[test]
-    fn test_calculate_requeue_duration_rotation_in_future() {
-        // Given: Config with auto_rotate = true and rotation in 1 hour
-        let config = RndcKeyConfig {
-            auto_rotate: true,
-            rotate_after: "720h".to_string(),
-            secret_ref: None,
-            secret: None,
-            algorithm: RndcAlgorithm::HmacSha256,
-        };
-
-        let created_at = Utc::now();
-        let rotate_at = created_at + chrono::Duration::hours(1);
+    fn test_calculate_requeue_duration_wakes_when_the_key_falls_due() {
+        let now = Utc::now();
+        let created_at = now - chrono::Duration::hours(2);
+        let rotate_at = now + chrono::Duration::hours(1);
         let secret = create_test_secret_with_annotations(created_at, Some(rotate_at), 0);
 
-        // When: Calculate requeue duration
-        let result = calculate_requeue_duration(&config, &secret);
+        let wake = calculate_requeue_duration(&rotating_config(), &secret, now)
+            .expect("a pending rotation is scheduled");
 
-        // Then: Should return duration slightly less than 1 hour (5 minutes early)
-        assert!(result.is_some());
-        let duration_secs = result.unwrap().as_secs();
-        // Should be around 55 minutes (3600 - 300 seconds)
-        assert!((3200..=3400).contains(&duration_secs));
+        assert_eq!(
+            wake,
+            std::time::Duration::from_secs(HOUR_SECS) + ROTATION_DUE_MARGIN,
+            "wake at rotate_at, not minutes early: an early wake finds nothing due"
+        );
     }
 
     #[test]
-    fn test_calculate_requeue_duration_rotation_very_soon() {
-        // Given: Config with auto_rotate = true and rotation in 2 minutes
-        let config = RndcKeyConfig {
-            auto_rotate: true,
-            rotate_after: "720h".to_string(),
-            secret_ref: None,
-            secret: None,
-            algorithm: RndcAlgorithm::HmacSha256,
-        };
+    fn test_calculate_requeue_duration_honours_the_minimum_rotation_interval() {
+        // Due in 2 minutes, but the key was created just now: rotation is held
+        // back until MIN_TIME_BETWEEN_ROTATIONS_HOURS has passed.
+        let now = Utc::now();
+        let rotate_at = now + chrono::Duration::minutes(2);
+        let secret = create_test_secret_with_annotations(now, Some(rotate_at), 0);
 
-        let created_at = Utc::now();
-        let rotate_at = created_at + chrono::Duration::minutes(2);
-        let secret = create_test_secret_with_annotations(created_at, Some(rotate_at), 0);
+        let wake = calculate_requeue_duration(&rotating_config(), &secret, now)
+            .expect("a pending rotation is scheduled");
 
-        // When: Calculate requeue duration
-        let result = calculate_requeue_duration(&config, &secret);
-
-        // Then: Should return at least 30 seconds (minimum requeue)
-        assert!(result.is_some());
-        assert_eq!(result.unwrap().as_secs(), 30);
+        assert_eq!(
+            wake,
+            std::time::Duration::from_secs(HOUR_SECS) + ROTATION_DUE_MARGIN
+        );
     }
 
     // ========================================================================

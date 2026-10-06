@@ -16,9 +16,13 @@ use tracing::{debug, warn};
 
 /// Filters a list of instance references to only SECONDARY instances.
 ///
+/// Roles come from the `Bind9Instance` reflector store, with a GET only for
+/// an instance the store does not hold yet (ADR-0015, ADR-0016).
+///
 /// # Arguments
 ///
-/// * `client` - Kubernetes API client
+/// * `client` - Kubernetes API client, for the fallback GET
+/// * `store` - The shared `Bind9Instance` reflector store
 /// * `instance_refs` - Instance references to filter
 ///
 /// # Returns
@@ -27,46 +31,31 @@ use tracing::{debug, warn};
 ///
 /// # Errors
 ///
-/// Returns an error if Kubernetes API calls fail.
+/// Does not currently fail; an instance that is neither cached nor readable
+/// is skipped with a warning.
 pub async fn filter_secondary_instances(
     client: &Client,
+    store: &crate::context::MultiStore<crate::crd::Bind9Instance>,
     instance_refs: &[crate::crd::InstanceReference],
 ) -> Result<Vec<crate::crd::InstanceReference>> {
-    use crate::crd::{Bind9Instance, ServerRole};
-
-    let mut secondary_refs = Vec::new();
-
-    for instance_ref in instance_refs {
-        let instance_api: Api<Bind9Instance> =
-            Api::namespaced(client.clone(), &instance_ref.namespace);
-
-        match instance_api.get(&instance_ref.name).await {
-            Ok(instance) => {
-                if instance.spec.role == ServerRole::Secondary {
-                    secondary_refs.push(instance_ref.clone());
-                }
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to get instance {}/{}: {}. Skipping.",
-                    instance_ref.namespace, instance_ref.name, e
-                );
-            }
-        }
-    }
-
-    Ok(secondary_refs)
+    Ok(bindy_bind9::primary::filter_instances_by_role_cached(
+        client,
+        store,
+        instance_refs,
+        &crate::crd::ServerRole::Secondary,
+    )
+    .await)
 }
 
 /// Finds all pod IPs from a list of instance references, filtering by role.
 ///
-/// Queries each `Bind9Instance` resource to determine its role, then collects
-/// pod IPs only from secondary instances. This is event-driven as it reacts
-/// to the current state of `Bind9Instance` resources rather than caching.
+/// Reads each instance's role from the `Bind9Instance` store (GET fallback),
+/// then lists pod IPs only for secondary instances.
 ///
 /// # Arguments
 ///
 /// * `client` - Kubernetes API client
+/// * `store` - The shared `Bind9Instance` reflector store
 /// * `instance_refs` - Instance references to query
 ///
 /// # Returns
@@ -78,34 +67,21 @@ pub async fn filter_secondary_instances(
 /// Returns an error if Kubernetes API calls fail.
 pub async fn find_secondary_pod_ips_from_instances(
     client: &Client,
+    store: &crate::context::MultiStore<crate::crd::Bind9Instance>,
     instance_refs: &[crate::crd::InstanceReference],
 ) -> Result<Vec<String>> {
-    use crate::crd::{Bind9Instance, ServerRole};
+    use crate::crd::ServerRole;
     use k8s_openapi::api::core::v1::Pod;
 
     let mut secondary_ips = Vec::new();
 
     for instance_ref in instance_refs {
-        // Query the Bind9Instance resource to check its role
-        let instance_api: Api<Bind9Instance> =
-            Api::namespaced(client.clone(), &instance_ref.namespace);
-
-        let instance = match instance_api.get(&instance_ref.name).await {
-            Ok(inst) => inst,
-            Err(e) => {
-                warn!(
-                    "Failed to get Bind9Instance {}/{}: {}. Skipping.",
-                    instance_ref.namespace, instance_ref.name, e
-                );
-                continue;
-            }
-        };
-
-        // Only collect IPs from secondary instances
-        if instance.spec.role != ServerRole::Secondary {
+        // The role comes from the Bind9Instance store (ADR-0016)
+        let role = bindy_bind9::primary::instance_role_cached(client, store, instance_ref).await;
+        if role != Some(ServerRole::Secondary) {
             debug!(
                 "Skipping instance {}/{} - role is {:?}, not Secondary",
-                instance_ref.namespace, instance_ref.name, instance.spec.role
+                instance_ref.namespace, instance_ref.name, role
             );
             continue;
         }

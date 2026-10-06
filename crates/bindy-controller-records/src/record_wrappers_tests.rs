@@ -7,6 +7,9 @@
 mod tests {
     use super::super::record_wrappers::*;
     use crate::crd::{Condition, RecordStatus};
+    use bindy_controller_sdk::retry::{RECONCILE_BACKOFF_INITIAL, REJECTED_WRITE_COOLDOWN};
+    use kube::runtime::controller::Action;
+    use std::time::Duration;
 
     // Helper to create a condition
     fn create_condition(condition_type: &str, status: &str) -> Condition {
@@ -34,52 +37,121 @@ mod tests {
         }
     }
 
-    // ========== Tests for requeue_based_on_readiness() ==========
+    // ========== Tests for action_for_outcome() (ADR-0016) ==========
 
-    #[test]
-    fn test_requeue_based_on_readiness_when_ready() {
-        // Arrange
-        let is_ready = true;
+    fn arecord(name: &str) -> crate::crd::ARecord {
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "ARecord",
+            "metadata": {"name": name, "namespace": "outcome-tests"},
+            "spec": {"name": "www", "ipv4Addresses": ["192.0.2.1"]}
+        }))
+        .expect("valid ARecord fixture")
+    }
 
-        // Act
-        let action = requeue_based_on_readiness(is_ready);
-
-        // Assert
-        // Action doesn't provide accessors, so we verify via Debug format
-        let debug_str = format!("{action:?}");
-        assert!(
-            debug_str.contains("300s"),
-            "Expected 300s requeue duration, got: {debug_str}"
+    fn reset(record: &crate::crd::ARecord) {
+        bindy_controller_sdk::retry::reset_reconcile_backoff(
+            &bindy_controller_sdk::error::backoff_key(record),
         );
     }
 
     #[test]
-    fn test_requeue_based_on_readiness_when_not_ready() {
-        // Arrange
-        let is_ready = false;
-
-        // Act
-        let action = requeue_based_on_readiness(is_ready);
-
-        // Assert
-        let debug_str = format!("{action:?}");
-        assert!(
-            debug_str.contains("30s"),
-            "Expected 30s requeue duration, got: {debug_str}"
+    fn a_published_record_awaits_the_next_change() {
+        let record = arecord("published");
+        assert_eq!(
+            action_for_outcome(&record, &RecordOutcome::Published),
+            Action::await_change(),
+            "no periodic resync: a Ready record is not reconciled again until something changes"
         );
     }
 
     #[test]
-    fn test_requeue_intervals_match_constants() {
-        // Verify the constants match expected durations
-        assert_eq!(
-            REQUEUE_WHEN_READY_SECS, 300,
-            "Ready requeue should be 5 minutes (300 seconds)"
+    fn every_wait_on_another_object_awaits_the_next_change() {
+        let record = arecord("waiting");
+        for reason in [
+            REASON_NOT_SELECTED,
+            REASON_ZONE_NOT_FOUND,
+            REASON_ZONE_NOT_CONFIGURED,
+            REASON_NO_PRIMARY_INSTANCES,
+        ] {
+            assert_eq!(
+                action_for_outcome(&record, &RecordOutcome::Waiting { reason }),
+                Action::await_change(),
+                "{reason} is woken by the awaited object's event, not by a timer"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failure_retries_on_the_per_object_backoff() {
+        let record = arecord("failed");
+        reset(&record);
+
+        let first = action_for_outcome(
+            &record,
+            &RecordOutcome::Failed {
+                reason: REASON_INSTANCE_FILTER_ERROR,
+            },
         );
-        assert_eq!(
-            REQUEUE_WHEN_NOT_READY_SECS, 30,
-            "Not ready requeue should be 30 seconds"
+        let second = action_for_outcome(
+            &record,
+            &RecordOutcome::Failed {
+                reason: REASON_INSTANCE_FILTER_ERROR,
+            },
         );
+
+        assert_eq!(first, Action::requeue(RECONCILE_BACKOFF_INITIAL));
+        assert_eq!(second, Action::requeue(RECONCILE_BACKOFF_INITIAL * 2));
+    }
+
+    #[test]
+    fn a_rejected_write_retries_no_sooner_than_the_cooldown() {
+        let record = arecord("rejected");
+        reset(&record);
+
+        assert_eq!(
+            action_for_outcome(&record, &RecordOutcome::WriteRejected),
+            Action::requeue(REJECTED_WRITE_COOLDOWN)
+        );
+    }
+
+    #[test]
+    fn a_reconcile_inside_the_cooldown_requeues_for_what_remains() {
+        let record = arecord("cooling");
+        let remaining = Duration::from_secs(7);
+
+        assert_eq!(
+            action_for_outcome(&record, &RecordOutcome::CoolingDown { remaining }),
+            Action::requeue(remaining)
+        );
+    }
+
+    #[test]
+    fn convergence_after_failures_resets_the_backoff() {
+        let record = arecord("recovered");
+        reset(&record);
+        let failed = RecordOutcome::Failed {
+            reason: REASON_INSTANCE_FILTER_ERROR,
+        };
+        let _ = action_for_outcome(&record, &failed);
+        let _ = action_for_outcome(&record, &failed);
+
+        let _ = action_for_outcome(&record, &RecordOutcome::Published);
+
+        assert_eq!(
+            action_for_outcome(&record, &failed),
+            Action::requeue(RECONCILE_BACKOFF_INITIAL)
+        );
+    }
+
+    #[test]
+    fn only_a_published_record_is_ready() {
+        assert!(RecordOutcome::Published.is_ready());
+        assert!(!RecordOutcome::WriteRejected.is_ready());
+        assert!(!RecordOutcome::Waiting {
+            reason: REASON_NOT_SELECTED
+        }
+        .is_ready());
     }
 
     // ========== Tests for constants ==========
