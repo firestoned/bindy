@@ -1,3 +1,23 @@
+## [2026-10-06 15:00] - Watch layer: a subscriber joining during the initial list no longer misses objects
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/bindy-controller-sdk/src/watch.rs`: `WatchShard::subscribe` created its live receiver, then snapshotted the reflector store. kube's store buffers `InitApply` objects and shows them only at `InitDone`, so an object listed (and broadcast) before a controller subscribed, during a list that had not finished, was in neither the receiver nor the snapshot. The controller never saw it until the object changed again, and since ADR-0016 nothing re-lists on a timer. The watcher now records each object of the list in progress before broadcasting it and clears that record only after `InitDone` reached the store; `subscribe` reads the receiver, then the list in progress, then the store, so every object reaches it at least once.
+- `docs/adr/0009-workspace-crate-split-and-shared-watch-layer.md`: §3 states how a subscriber joining mid-list is served.
+
+### Added
+- `crates/bindy-controller-sdk/src/watch_tests.rs`: a subscriber joining mid initial list, and mid re-list, receives every object (both failed before the fix).
+
+### Why
+The Scout e2e suite (PR #537) failed: after a `--cluster-name` change the restarted Scout never reconciled the existing Ingress, so it neither created the new ARecord nor removed the old one. Scout subscribes right after starting its watches, inside the window. The operator's controllers subscribe the same way at startup and after winning the leader lease.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (operator and Scout binary)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-06 12:00] - Event-driven reconciliation, no periodic resync (ADR-0016)
 
 **Author:** Erick Bourgeois

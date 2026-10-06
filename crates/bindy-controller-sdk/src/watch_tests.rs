@@ -151,6 +151,64 @@ mod tests {
         assert_eq!(next_names(&mut late, 1).await, ["c"]);
     }
 
+    /// Long enough for the shard task to process the events already sent.
+    const SETTLE: Duration = Duration::from_millis(100);
+
+    #[tokio::test]
+    async fn subscriber_joining_mid_initial_list_gets_the_objects_listed_before_it() {
+        let (tx, factory) = channel_source();
+        let shard = WatchShard::spawn("ConfigMap", None, |_: &ConfigMap| true, factory, FAST);
+
+        // The initial list has started: `a` is broadcast to nobody, and the
+        // reflector store keeps it buffered (invisible) until InitDone.
+        tx.send(Ok(watcher::Event::Init)).unwrap();
+        tx.send(Ok(watcher::Event::InitApply(cm("a")))).unwrap();
+        tokio::time::sleep(SETTLE).await;
+
+        // A controller subscribes now (Scout at startup, a controller after
+        // leader election): `a` is neither live nor in the store yet.
+        let mut sub = Box::pin(shard.subscribe());
+
+        tx.send(Ok(watcher::Event::InitDone)).unwrap();
+        tx.send(Ok(watcher::Event::Apply(cm("b")))).unwrap();
+
+        let mut seen = next_names(&mut sub, 2).await;
+        seen.sort();
+        assert_eq!(
+            seen,
+            ["a", "b"],
+            "an object listed before subscribing was lost"
+        );
+    }
+
+    #[tokio::test]
+    async fn subscriber_joining_mid_relist_keeps_the_old_and_new_objects() {
+        let (tx, factory) = channel_source();
+        let shard = WatchShard::spawn("ConfigMap", None, |_: &ConfigMap| true, factory, FAST);
+
+        tx.send(Ok(watcher::Event::Init)).unwrap();
+        tx.send(Ok(watcher::Event::InitApply(cm("a")))).unwrap();
+        tx.send(Ok(watcher::Event::InitDone)).unwrap();
+        let store = shard.store();
+        wait_until(|| names(&store) == ["a"]).await;
+
+        // A re-list (the watcher's desync recovery) is half way through.
+        tx.send(Ok(watcher::Event::Init)).unwrap();
+        tx.send(Ok(watcher::Event::InitApply(cm("b")))).unwrap();
+        tokio::time::sleep(SETTLE).await;
+
+        let mut sub = Box::pin(shard.subscribe());
+        tx.send(Ok(watcher::Event::InitApply(cm("a")))).unwrap();
+        tx.send(Ok(watcher::Event::InitDone)).unwrap();
+
+        // `a` comes from the store snapshot (and again live); `b` only from
+        // the re-list in progress. Neither may be missing.
+        let mut seen = next_names(&mut sub, 3).await;
+        seen.sort();
+        seen.dedup();
+        assert_eq!(seen, ["a", "b"]);
+    }
+
     #[tokio::test]
     async fn predicate_filters_the_store_and_the_broadcast() {
         let (tx, factory) = channel_source();

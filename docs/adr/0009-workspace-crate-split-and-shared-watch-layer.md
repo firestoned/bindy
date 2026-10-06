@@ -213,6 +213,11 @@ On the shared-store API both would wait for the 5-minute requeue. So the
   when this replica wins the leader lease) first receives the store's
   current contents, then the live events, so no object is missed at
   startup; an object may be delivered twice, which a reconcile tolerates.
+  The store only shows a list once it is complete (`InitDone`), so the
+  objects of a list still in progress are also kept aside until then and
+  handed to a subscriber that joins half way through it (fixed 2026-10-06:
+  before, such a subscriber missed them until they next changed, which the
+  Scout e2e suite caught after a Scout restart).
 
 This needs kube's `unstable-runtime-stream-control` feature, and we enable
 it instead of `unstable-runtime-subscribe`. Constraints:
