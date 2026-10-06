@@ -195,6 +195,14 @@ Creates: ServiceAccount, Secret, ConfigMap, Deployment, Service for `my-cluster-
 5. Calls `zone_manager.add_secondary_zone()` via HTTP API on **all secondary endpoints**
 6. Notifies secondaries via `zone_manager.notify_zone()` to trigger zone transfer
 
+"All endpoints" means every pod that can take a write: Ready pods, and pods
+whose containers are ready while the zones-loaded readiness gate still holds
+them out of their Service (ADR-0017). The gate itself is set by a Pod
+controller in the same crate (`zones_gate.rs`), which loads every live zone
+onto a new pod through the same write paths, restricted to that one pod,
+before it patches the pod's `bindy.firestoned.io/zones-loaded` condition to
+`True`.
+
 **Example**:
 ```yaml
 apiVersion: bindy.firestoned.io/v1beta1

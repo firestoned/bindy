@@ -86,8 +86,8 @@ bindcar call) raises no Kubernetes event, so it stands until the next event
 for the resource that owns the data:
 
 - a change to the resource's spec, labels, annotations or finalizers;
-- the BIND9 pod being restarted or replaced (the zone's `Endpoints` change,
-  the zone is re-created and its records replayed);
+- the BIND9 pod being replaced (the zones-loaded gate loads every live zone
+  and its records onto the new pod before it is Ready, ADR-0017);
 - the operator restarting (every object is reconciled from the initial list).
 
 To force the repair now, change any annotation on the resource. The
@@ -119,6 +119,39 @@ timer: a `NotSelected` record by a zone tagging it, a `ZoneNotFound` or
 instances by a matching `Bind9Instance`, a `DuplicateZone` zone by the other
 claimant's change or deletion. A record whose write BIND9 rejected is retried
 with backoff, never sooner than 30 s.
+
+### A BIND9 Pod Stays Not Ready (Zones-Loaded Readiness Gate)
+
+Every BIND9 pod carries the readiness gate `bindy.firestoned.io/zones-loaded`
+([ADR-0017](https://github.com/firestoned/bindy/blob/main/docs/adr/0017-zones-loaded-readiness-gate.md)).
+Kubernetes reports the pod `Ready`, and routes its Service to it, only once
+the operator has loaded every live zone of the pod's instance onto it. A pod
+whose containers are all running but which shows `READY 2/2` with the pod
+still out of its Service, or `kubectl rollout status` waiting, is held by the
+gate. Read the condition:
+
+```bash
+kubectl get pod <pod> -n <namespace> -o jsonpath='{range .status.conditions[*]}{.type}={.status} {.reason}: {.message}{"\n"}{end}'
+# or
+kubectl get pod <pod> -n <namespace> -o wide   # READINESS GATES column: 0/1 or 1/1
+```
+
+| `reason` | Meaning | What to do |
+|---|---|---|
+| *(no condition)* | The operator has not evaluated the pod yet. Normal for the seconds before the containers are ready. | If it lasts: is the operator running and leader? Can it patch `pods/status` (`kubectl auth can-i patch pods/status -n <namespace> --as=system:serviceaccount:bindy-system:bindy`)? An operator older than the pod template does not know the gate. |
+| `ZonesLoading` | The operator is writing the zones and records to the pod. | Wait; large zones take as long as their record replay. |
+| `ZonesLoadFailed` | A zone could not be loaded on this pod while another pod of the instance still serves it. The old pod keeps serving; the rollout waits. Retried with backoff (2 s to 60 s). | The message names each zone and the error. Check the zone's `DNSZone` status and the operator log (`Zones-loaded gate:`). |
+| `InstanceUnknown` | The pod's `Bind9Instance` is not in the operator's cache. | Check that the instance exists; retried with backoff. |
+| `ZonesLoaded` / `NoZones` | Gate open: every live zone loaded, or no live zone selects the instance. | Nothing. |
+| `ZonesPartiallyLoaded` | Gate open, but the zones in the message could not be loaded and no other pod of the instance served them either. | Fix those zones; the `DNSZone` controller keeps retrying them. |
+
+The gate is evaluated once per pod: once `True` it stays `True` for the pod's
+life, including across container restarts. A zone created later is
+configured on the running pod by the `DNSZone` controller as usual.
+
+If the operator is down, new BIND9 pods stay not Ready on purpose: with the
+default rolling update (`maxUnavailable` 0) the old pod keeps serving until
+the operator is back.
 
 ## Debugging Steps
 

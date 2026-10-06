@@ -212,6 +212,18 @@ rules:
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
 
+  # Kubernetes Pod status - the zones-loaded readiness gate (ADR-0017)
+  # Every BIND9 pod lists the condition bindy.firestoned.io/zones-loaded in
+  # spec.readinessGates; the operator sets it True once the pod's zones are
+  # loaded, which is what lets Kubernetes route the Service to the pod.
+  # - "get": read the pod status before patching it
+  # - "patch": strategic merge of that one condition into status.conditions
+  # No update/delete, and no write on the pod itself: the operator cannot
+  # change a pod's spec, labels or lifecycle through this rule.
+  - apiGroups: [""]
+    resources: ["pods/status"]
+    verbs: ["get", "patch"]
+
   # Kubernetes Endpoints - READ-ONLY (for service discovery)
   - apiGroups: [""]
     resources: ["endpoints"]

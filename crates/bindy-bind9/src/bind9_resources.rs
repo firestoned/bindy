@@ -2274,6 +2274,11 @@ fn build_pod_spec(
         // Scheduling. Topology spreading only — see `crate::placement` for why
         // this is not a general pod-spec passthrough.
         topology_spread_constraints: placement.topology_spread_constraints.clone(),
+        // The pod is Ready only once the operator has loaded every live zone
+        // of its instance onto it (ADR-0017). Without the gate a replacement
+        // pod, which starts with an empty zone directory, joins the Service as
+        // soon as `named` listens and answers REFUSED until the zones arrive.
+        readiness_gates: Some(zones_loaded_readiness_gates()),
         security_context: Some(PodSecurityContext {
             run_as_user: Some(BIND9_NONROOT_UID),
             run_as_group: Some(BIND9_NONROOT_UID),
@@ -2290,6 +2295,18 @@ fn build_pod_spec(
         }),
         ..Default::default()
     }
+}
+
+/// The readiness gates every BIND9 pod template carries: the zones-loaded
+/// condition the operator sets once the pod's zones are loaded (ADR-0017).
+///
+/// # Returns
+/// A one-element list with [`crate::constants::ZONES_LOADED_CONDITION_TYPE`].
+#[must_use]
+pub fn zones_loaded_readiness_gates() -> Vec<k8s_openapi::api::core::v1::PodReadinessGate> {
+    vec![k8s_openapi::api::core::v1::PodReadinessGate {
+        condition_type: crate::constants::ZONES_LOADED_CONDITION_TYPE.to_string(),
+    }]
 }
 
 /// Volume carrying the sidecar's TLS key pair.
@@ -2546,11 +2563,12 @@ pub(crate) fn build_api_sidecar_container(
         // that the zone directory is usable and that rndc answers, which means
         // `named` is alive — strictly more than the bind9 container's TCP probe.
         //
-        // This deliberately does NOT require any zone to be loaded. The operator
-        // reaches sidecars through the Service's *ready* endpoints
-        // (reconcilers/dnszone/helpers.rs), so a Pod that stays unready until it
-        // has zones could never be given any: not ready -> not an endpoint ->
-        // nothing to push -> never ready.
+        // This deliberately does NOT require any zone to be loaded: a probe
+        // that did would deadlock, since a pod whose containers are not ready
+        // is never given zones. Holding the pod out of its Service until its
+        // zones are loaded is the zones-loaded readiness gate's job (ADR-0017),
+        // which the operator opens after writing the zones to the pod's
+        // container-ready (but not yet Ready) endpoint.
         //
         // The scheme must follow the sidecar: with TLS on it serves HTTPS only,
         // and an HTTP probe would be refused, leaving the Pod permanently

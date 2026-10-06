@@ -1,13 +1,40 @@
 # Threat Model - Bindy DNS Operator
 
-**Version:** 1.16
+**Version:** 1.17
 **Last Updated:** 2026-10-06
 **Owner:** Security Team
 **Compliance:** SOX 404, PCI-DSS 6.4.1, Basel III Cyber Risk
 
-> Last full pass 2026-10-06, against ADR-0001 ... ADR-0016 (ADR-0006 as amended;
+> Last full pass 2026-10-06, against ADR-0001 ... ADR-0017 (ADR-0006 as amended;
 > ADR-0009 as amended 2026-10-05, fully implemented; ADR-0013 stages 1 to 3,
-> ADR-0014, ADR-0015 and ADR-0016 implemented).
+> ADR-0014, ADR-0015, ADR-0016 and ADR-0017 implemented).
+>
+> **Revision note (v1.17):** Full pass for ADR-0017 (BIND9 pods are Ready
+> only once their zones are loaded), found while preparing to roll
+> v0.8.0-rc.4: a replacement BIND9 pod, which starts with empty `emptyDir`
+> zone storage, went Ready as soon as `named` listened, entered its Service
+> and answered `REFUSED` for every zone until the zone controller replayed
+> them; a rollout that changes the rendered configuration replaces every
+> primary at once. New threat **D6** (an empty BIND9 pod admitted to its
+> Service), mapped to new mitigation **M-49**: every BIND9 pod carries the
+> `bindy.firestoned.io/zones-loaded` readiness gate, and a Pod controller in
+> the operator loads every live zone (and, on a primary, every record) onto
+> the new pod before setting it `True`; writes reach pods whose containers
+> are ready while the gate holds them out of the Service. **New RBAC grant:**
+> `get`/`patch` on `pods/status` (cluster-wide role and the per-namespace
+> Role); the operator stays read-only on `pods`. **Components**, **Boundaries
+> 2 and 3**, **S1**, **E2**, **Attack Surface 1** and **Scenario 1** record
+> the new write path: a holder of the operator's token can now mark a BIND9
+> pod Ready before its zones load, or hold one out of its Service (new
+> accepted risk **14**). New accepted risk **15**: the gate fails safe when
+> the operator is down or older than the pod template (rollouts stall), and
+> a zone that fails on every pod of an instance does not hold the pod back
+> (`ZonesPartiallyLoaded`). **Accepted risk 13** revised: a replaced pod is
+> now re-populated by the gate, not by the `Endpoints` replay. The operator
+> also watches bindy's BIND9 pods (label-selected): no new namespace reach,
+> `list`/`watch` on `pods` was already granted. No new actor, asset, trust
+> boundary, network path or dependency. All other sections re-walked
+> unchanged.
 >
 > **Revision note (v1.16):** Full pass for ADR-0016 (event-driven
 > reconciliation, no periodic resync), prompted by the v0.8.0-rc.3 load test
@@ -362,12 +389,17 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
    - Reconciles desired state with actual state
    - Manages BIND9 deployments, ConfigMaps, Secrets, Services
    - Uses RNDC to update zones on running BIND9 instances
+   - Sets the `bindy.firestoned.io/zones-loaded` condition on its BIND9 pods
+     (`pods/status` patch) once their zones are loaded (ADR-0017); it reads
+     bindy's BIND9 pods through a label-selected watch
 
 2. **BIND9 Pods**
    - Authoritative DNS servers running BIND9
    - Primary server handles zone updates
    - Secondary servers replicate zones via AXFR/IXFR
    - Exposed via LoadBalancer or NodePort services
+   - Each pod carries the zones-loaded readiness gate: it is Ready, and in its
+     Service, only after the operator has loaded its zones (ADR-0017)
 
 3. **Custom Resources (CRDs)**
    - `Bind9Cluster`: Cluster-scoped, defines BIND9 cluster topology
@@ -459,6 +491,8 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
 - Attacker can read RNDC keys
 - Attacker can modify DNS zones
 - Attacker can disrupt DNS service
+- With the operator's identity, attacker can open or hold a BIND9 pod's
+  zones-loaded readiness gate (accepted risk 14)
 
 ---
 
@@ -477,6 +511,9 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
 - Attacker can abuse Kubernetes API access
 - Attacker can read secrets operator has access to
 - Attacker can disrupt reconciliation loops
+- Attacker can patch the status of bindy's BIND9 pods: admit a pod before
+  its zones load, or keep new pods out of their Service (ADR-0017, accepted
+  risk 14). It cannot change a pod's spec, labels or lifecycle
 
 ---
 
@@ -507,8 +544,13 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
 - Attacker can exfiltrate zone data, and the zone's DNSSEC private keys
   when the pod signs (see I5)
 - Zone data the attacker changes inside the running pod stays changed until
-  the owning resource's next event, a pod restart or an operator restart:
-  there is no periodic resync to revert it (ADR-0016, accepted risk 13)
+  the owning resource's next event, the pod's replacement or an operator
+  restart: there is no periodic resync to revert it (ADR-0016, accepted risk
+  13). A container restart inside the same pod keeps the `emptyDir` zone
+  data, and the change with it
+- A compromised operand cannot open its own readiness gate: the condition is
+  on `pods/status`, which the operand's `bind9` ServiceAccount has no access
+  to (ADR-0017)
 - Attacker can pivot to other cluster resources (if network policies weak) —
   a reference `NetworkPolicy` now exists (`deploy/pod-hardening.yaml`,
   ingress/egress scoped to 5353 for peer transfers and 53 for CoreDNS) but is
@@ -589,7 +631,8 @@ act against a remote cluster.
 **Attack Scenario:**
 1. Attacker compromises a pod in the cluster
 2. Steals ServiceAccount token from `/var/run/secrets/kubernetes.io/serviceaccount/token`
-3. Uses token to impersonate operator and modify DNS zones
+3. Uses token to impersonate operator and modify DNS zones, or to set the
+   zones-loaded condition on a BIND9 pod's status (ADR-0017, accepted risk 14)
 
 **Mitigations:**
 - ✅ RBAC least privilege (operator cannot delete resources)
@@ -1224,6 +1267,50 @@ accepted risk 12)
 
 ---
 
+#### D6: An Empty BIND9 Pod Is Admitted to Its Service
+
+**Threat:** A replacement BIND9 pod (rollout, eviction, deletion,
+rescheduling) starts with empty `emptyDir` zone storage. Its readiness used to
+check only that `named` listened and bindcar answered, so it went Ready, its
+Service routed to it, the old pod was terminated, and every zone answered
+`REFUSED` until the zone controller noticed the `Endpoints` change and
+replayed the zones. A change that rolls every primary at once (an operator
+upgrade that changes the rendered configuration) empties every nameserver of
+a zone at the same moment. An attacker who can trigger rollouts (edit an
+instance's spec, evict pods) could turn that into repeated outages.
+
+**Impact:** HIGH (every zone of the instance, every instance of a cluster on
+a cluster-wide rollout)
+**Likelihood:** HIGH before ADR-0017 (every rollout)
+
+**Mitigations:**
+- ✅ **Zones-loaded readiness gate** (M-49, ADR-0017, 2026-10-06): every
+  BIND9 pod template lists `bindy.firestoned.io/zones-loaded` in
+  `readinessGates`; the operator loads every live zone that selects the pod's
+  instance onto the pod (zone, NS and glue records, and on a primary every
+  record tagged with the zone) through the same write paths, restricted to
+  that pod, then sets the condition `True`. Until then Kubernetes keeps the
+  pod out of its Service, and with the default rolling update of a
+  one-replica Deployment (`maxUnavailable` 0) the old pod keeps serving
+- ✅ Writes reach gated pods: record and zone writes target the Service's
+  ready addresses plus the not-ready addresses whose pod is
+  `ContainersReady=True`, so a record written during a rollout is not lost on
+  the new pod
+- ✅ No deadlock: a pod whose instance no live zone selects is admitted at
+  once; a zone that fails on the pod blocks it only while another Ready pod of
+  the instance serves that zone; the gate is a one-way latch, so a new zone
+  never pulls a serving pod back out
+- ✅ The gate is event-driven (Pod and `DNSZone` watches) with the per-object
+  backoff on failure (M-48); no timer
+
+**Residual Risk:** LOW (fail-safe: an operator that is down or lacks the
+`pods/status` grant stalls rollouts rather than serving empty zones, accepted
+risk 15; a user-set `publishNotReadyAddresses: true` on the instance's
+Service bypasses the gate; the operator's token can open the gate early,
+accepted risk 14)
+
+---
+
 ### E - Elevation of Privilege
 
 #### E1: Container Escape to Node
@@ -1284,6 +1371,12 @@ accepted risk 12)
   (unset = watch everything), so this mitigation is not yet load-bearing unless
   a deployer explicitly configures it.
 - ✅ Automated RBAC verification script (`deploy/rbac/verify-rbac.sh`)
+- ✅ **`pods/status` grant bounded** (ADR-0017, 2026-10-06): the zones-loaded
+  gate needs `get`/`patch` on `pods/status` only; `pods` stays
+  `get`/`list`/`watch`. `bootstrap_tests.rs` fails if either operator role
+  grants more than `get`/`patch` on `pods/status` or any write on `pods`, and
+  `verify-rbac.sh` checks both. A status patch cannot change what a pod runs,
+  its ServiceAccount or its labels, so it is not an escalation path
 - ✅ **Scout RBAC drift test** (M-42, 2026-10-05): `cargo test -p bindy-bootstrap
   rbac_drift` fails when `deploy/scout/*.yaml` or the examples in
   `docs/src/guide/scout.md` differ from the RBAC `bindy bootstrap scout` builds,
@@ -1405,6 +1498,9 @@ scenario.
   so a stalled connection cannot hold reconciles for minutes
 - No periodic resync (M-48, ADR-0016): request volume follows change, not
   object count
+- New write path (ADR-0017): `patch` on `pods/status` for the zones-loaded
+  gate, one condition per BIND9 pod, written only when it changes; one more
+  shared watch (bindy's BIND9 pods, label-selected on the API server)
 
 **Risk:** MEDIUM
 
@@ -1579,6 +1675,9 @@ see T4, [Trust Boundary 6](#boundary-6-scout-controller))
 **Impact:**
 - Attacker can modify DNS records (redirect traffic)
 - Attacker can disrupt DNS service (delete zones, BIND9 pods)
+- Attacker can admit a new BIND9 pod before its zones are loaded, or hold new
+  pods out of their Service (`pods/status` patch, ADR-0017); serving pods are
+  not affected until they are replaced
 - Attacker can pivot to other namespaces (if RBAC is weak)
 
 **Mitigations:**
@@ -1780,6 +1879,7 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-46 | **Bounded API cost of DNS writes** (2026-10-05, ADR-0015): per-reconcile `InstanceResolver` (each instance's RNDC key and endpoints read once), endpoints and instance roles from the existing reflector stores, a 60 s in-memory RNDC key cache invalidated on rotation and on any failed write, no record-side rewrite of `DNSZone.status.records`, a zoneRef-only status trigger for record reconciles, tag-once and LIST-based existence checks in zone reconciles; deleted records stay tracked until their DNS data is confirmed gone, and replays skip terminating records | D2 (API amplification: records x instances), T1 (deleted records left served), I1 (key reuse bounded) | ✅ `crates/bindy-bind9/src/instances.rs`, `crates/bindy-bind9/src/record_push.rs`, `crates/bindy-controller-records/src/record_operator.rs`, `crates/bindy-controller-zone/src/dnszone/{cleanup,discovery}.rs` |
 | M-47 | **Configuration written by construction** (2026-10-05, ADR-0013 stage 3): `named.conf` and `named.conf.options` are built as a hornet syntax tree from typed values (ACL entries parsed into address-match elements, forwarders into addresses, the DNSSEC policy into a typed statement) and written by hornet's writer, which quotes and escapes each value for its position; the text templates are retired, a test asserts every rendered file is hornet's canonical output with no raw carrier, and the option matrix and examples pass `named-checkconf` 9.18 and 9.20 | D4 (malformed config), T3 (configuration injected through a CRD value; second layer behind the CRD patterns, `bind9_acl` and M-24) | ✅ `crates/bindy-bind9/src/bind9_resources.rs`, `crates/bindy-bind9/src/bind9_acl.rs`, `crates/bindy-bind9/src/rendered_config_tests.rs` |
 | M-48 | **Event-driven reconciliation, no periodic resync** (2026-10-06, ADR-0016): every controller (records, `DNSZone`, `Bind9Instance`, `Bind9Cluster`, `ClusterBind9Provider`) returns `await_change` on success and on a wait for another object; each wait is ended by a named watch, with pure mappers added for a `DuplicateZone` loser, records waiting on their zone, and cluster-level ConfigMaps; BIND9/bindcar failures retry with the per-object capped backoff (rejected record writes no sooner than the 30 s cooldown); scheduled wakes only for RNDC rotation and KSK rollover, capped at 30 days; record status decided from the watch cache with a patch that never carries `zone`/`zoneRef`, zones read from the store, and the `DNSZone` controller's instance roles, keys and endpoints from the stores and the ADR-0015 resolver | D2 (steady-state reconcile and API cost proportional to object count), T3 (cluster ConfigMap drift now event-driven) | ✅ `crates/bindy-controller-sdk/src/{reconcile,error,retry}.rs`, `crates/bindy-controller-records/src/{record_operator,record_wrappers}.rs`, `crates/bindy-controller-records/src/records/{mod,status_helpers}.rs`, `crates/bindy-controller-zone/src/watch.rs`, `crates/bindy-controller-zone/src/dnszone.rs`, `crates/bindy-controller-instance/src/watch.rs` |
+| M-49 | **Zones-loaded readiness gate** (2026-10-06, ADR-0017): every BIND9 pod template carries `readinessGates: [{conditionType: bindy.firestoned.io/zones-loaded}]`; a Pod controller in the operator (label-selected BIND9 Pod watch plus a filtered `DNSZone` mapper, no timer) loads every live zone selecting the pod's instance, and on a primary every record tagged with it, onto the one pod through the zone controller's write paths, then sets the condition with a strategic merge patch of `pods/status`; BIND9 writes reach container-ready pods the gate still holds out of the Service; a failed zone blocks only while another Ready pod of the instance serves it; one-way latch per pod; RBAC adds `get`/`patch` on `pods/status` only, pinned by tests | D6 (empty pod admitted to its Service: availability), T1 (records written during a rollout reach the new pod) | ✅ `crates/bindy-bind9/src/bind9_resources.rs`, `crates/bindy-bind9/src/instances.rs`, `crates/bindy-controller-zone/src/zones_gate.rs`, `crates/bindy-controller-instance/src/bind9instance/resources.rs`, `deploy/operator/rbac/{role,namespaced/role}.yaml`, `crates/bindy-bootstrap/src/bootstrap_tests.rs` |
 | M-25 | **Scout Secret RBAC scoped** (fixed 2026-07-19, same day as this finding's discovery): removed the cluster-wide `secrets: get` `PolicyRule` from the `bindy-scout` `ClusterRole` entirely. Replaced with a namespaced, `resourceNames`-restricted Role (`bindy-scout-secrets-reader`) scoped to exactly the one Phase 2 kubeconfig Secret, applied only when `--remote-secret` is configured. Same-cluster-only deployments (the default) now get zero Secret access. See I4/E4/Scenario 6 for the full before/after. | I4, E4, T4 (Secret-read component), Scenario 6 | ✅ RBAC — **was the highest-priority open item in v1.1; closed same-day** |
 
 ---
@@ -1855,7 +1955,11 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 
 12. **API request deadline is operator-only, and cuts slow writes (ADR-0014)** - Scout (`bindy scout`, local and remote clients) and the `bindy bootstrap` CLI build their own Kubernetes clients without the M-45 deadline, so a stalled connection can still hold a Scout reconcile for minutes. And a legitimate operator request slower than the deadline (for example behind slow admission webhooks) is now cut and retried rather than completing. Accepted: Scout's write volume is small and its reconciles are independent, the bootstrap CLI is interactive, every operator write is a patch or server-side apply (a retry after a write that did land is idempotent), and the deadline is tunable per deployment. *Revisit when* Scout is load-tested at scale, or timed-out requests appear on a healthy API server.
 
-13. **Out-of-band changes inside BIND9 are not reverted on a timer (ADR-0016)** - A change made directly in a running BIND9 pod (`nsupdate` or `rndc` with the instance's RNDC/TSIG key, a bindcar call with a token its TokenReview accepts, or a compromised operand container, Boundary 4) raises no Kubernetes event. The operator used to re-push every record every 5 minutes and so reverted such a change within that window; it now reverts it only on the owning resource's next event (spec, label, annotation or finalizer change), when the pod is restarted or replaced (the Endpoints watch re-creates the zone and replays its records), when the operator restarts, or when an operator sets the `bindy.firestoned.io/reconcile-trigger` annotation. Accepted: the actor able to make the change holds the RNDC key or a valid bindcar token and could repeat it after any timed revert, so the timer bounded exposure without preventing it, at the cost of one reconcile per object every 5 minutes forever (ADR-0016 Context); the controls stay on the path itself (RNDC keys per instance, readable only by the operator, B-5; RNDC not exposed outside the cluster; bindcar TokenReview and TLS, ADR-0004; DNSSEC, M-14, makes a forged answer detectable by validating resolvers). *Revisit when* a drift detector that compares BIND9's served data with the declared records without re-pushing every record exists (for example a periodic read-only AXFR diff), or a deployment needs a bounded revert window as a compliance control.
+13. **Out-of-band changes inside BIND9 are not reverted on a timer (ADR-0016)** - A change made directly in a running BIND9 pod (`nsupdate` or `rndc` with the instance's RNDC/TSIG key, a bindcar call with a token its TokenReview accepts, or a compromised operand container, Boundary 4) raises no Kubernetes event. The operator used to re-push every record every 5 minutes and so reverted such a change within that window; it now reverts it only on the owning resource's next event (spec, label, annotation or finalizer change), when the pod is replaced (the zones-loaded gate loads the zone and its records onto the new pod, ADR-0017; a container restart inside the same pod keeps the `emptyDir` data, and the change), when the operator restarts, or when an operator sets the `bindy.firestoned.io/reconcile-trigger` annotation. Accepted: the actor able to make the change holds the RNDC key or a valid bindcar token and could repeat it after any timed revert, so the timer bounded exposure without preventing it, at the cost of one reconcile per object every 5 minutes forever (ADR-0016 Context); the controls stay on the path itself (RNDC keys per instance, readable only by the operator, B-5; RNDC not exposed outside the cluster; bindcar TokenReview and TLS, ADR-0004; DNSSEC, M-14, makes a forged answer detectable by validating resolvers). *Revisit when* a drift detector that compares BIND9's served data with the declared records without re-pushing every record exists (for example a periodic read-only AXFR diff), or a deployment needs a bounded revert window as a compliance control.
+
+14. **The operator can open or hold the zones-loaded gate (ADR-0017)** - The operator's ServiceAccount gains `get`/`patch` on `pods/status` in every operand namespace (cluster-wide in the default mode). A holder of that token can set `bindy.firestoned.io/zones-loaded=True` on a new BIND9 pod before its zones load, re-opening the empty-pod window of D6 for that pod, or set it `False`/leave it unset so new pods never enter their Service (serving pods are unaffected until replaced; with `maxUnavailable` 0 a rollout then stalls rather than dropping service). The grant cannot change a pod's spec, image, ServiceAccount or labels, or delete it, and Kubernetes RBAC cannot narrow `patch` to one condition type, so the same token could also rewrite other conditions on any pod in those namespaces (status only, no effect on what runs; the kubelet re-asserts the conditions it owns). Accepted: the same token can already rewrite zones and records (`patch` on `DNSZone` and record CRs, and write access to every BIND9 pod through bindcar; T1, Scenario 1), so this adds no stronger capability; every patch is in the API server audit log. *Revisit when* Kubernetes offers field-level authorization for status subresources, or a `ValidatingAdmissionPolicy` on `pods/status` restricting the operator's patches to the gate condition on bindy's pods is adopted (VAPs can match subresources).
+
+15. **The gate fails safe, and admits partially when a zone cannot load anywhere (ADR-0017)** - If the operator is down, lacks the `pods/status` grant, or is older than the pod template, a new BIND9 pod never becomes Ready: with one replica and `maxUnavailable` 0 the old pod keeps serving and the rollout stalls (visible as a Deployment past `progressDeadlineSeconds` and a pod without the condition); a pod whose predecessor is already gone (eviction, node loss) stays out of service until the operator returns. Separately, a zone that fails to load on the new pod and is served by no other Ready pod of the instance does not hold the pod back: the pod is admitted with `ZonesPartiallyLoaded` and the zone is retried by the `DNSZone` controller, so one invalid zone cannot keep every other zone of a shared instance out of service. Accepted: failing closed on the operator is the point of the gate, and holding a pod for a zone no pod can serve protects nothing. *Revisit when* an instance runs more than one replica per Deployment (the sibling check then has more to compare), or the operator is expected to be unavailable for long periods.
 
 ---
 
@@ -1922,11 +2026,11 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 
 | Control Category | Implemented | Planned | Residual Risk |
 |------------------|-------------|---------|---------------|
-| **Access Control** | RBAC least privilege (main operator), signed commits, B-5 Secret RBAC split, namespace-scoped operator mode (opt-in), 16 `ValidatingAdmissionPolicy` policies, Scout namespace whitelisting (opt-in, M-30), **Scout Secret RBAC scoped (M-25, fixed 2026-07-19)** | Field-level admission for Scout patches (M-28), Scout egress NetworkPolicy (M-27) | MEDIUM — driven by Scout's remaining cluster-wide `patch`/`update` on Ingress/Service/route (T4); the formerly-HIGH Secret-read risk (I4/E4) is resolved |
+| **Access Control** | RBAC least privilege (main operator; `pods/status` `get`/`patch` only for the zones-loaded gate, test-pinned, ADR-0017), signed commits, B-5 Secret RBAC split, namespace-scoped operator mode (opt-in), 16 `ValidatingAdmissionPolicy` policies, Scout namespace whitelisting (opt-in, M-30), **Scout Secret RBAC scoped (M-25, fixed 2026-07-19)** | Field-level admission for Scout patches (M-28), Scout egress NetworkPolicy (M-27) | MEDIUM: driven by Scout's remaining cluster-wide `patch`/`update` on Ingress/Service/route (T4); the formerly-HIGH Secret-read risk (I4/E4) is resolved |
 | **Data Protection** | Secrets encrypted, AXFR restricted, DNSSEC zone signing (opt-in, M-14/ADR-0006) | TSIG for AXFR; DNSSEC-by-default | MEDIUM |
 | **Supply Chain** | Signed commits/images, SLSA Build L3 provenance for all release artifacts (M-33), NTIA-gated SBOM attestations (M-34), anchored signer identity (M-35), gated per-release crypto inventory (M-39), `--locked` release builds, vuln scanning | Required approving reviews (M-36); operand image digest pinning (M-15); reproducibility check (M-37); hybrid PQ key exchange (M-40); revisit Dependabot auto-merge human-review gap (M-29) | LOW-MEDIUM (no required review on `main`, see S3; automated auto-merge removed a manual checkpoint, see E3; classical key exchange is HNDL-exposed, see accepted risk 8) |
 | **Monitoring** | Kubernetes audit logs, vuln scanning | Audit retention policy, secret access trail | MEDIUM |
-| **Resilience** | Rate limiting, per-request API deadline (M-45), event-driven reconciliation with no periodic resync (M-48), resource limits | Edge DDoS protection, HPA | MEDIUM |
+| **Resilience** | Rate limiting, per-request API deadline (M-45), event-driven reconciliation with no periodic resync (M-48), zones-loaded readiness gate so a rollout never admits an empty BIND9 pod (M-49), resource limits | Edge DDoS protection, HPA | MEDIUM |
 | **Container Security** | Non-root, read-only FS, Pod Security Standards, unprivileged DNS port + zero added capabilities (M-23) | Network policies (reference manifest exists, not auto-applied — M-17) | LOW |
 
 ---
@@ -1940,6 +2044,6 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 
 ---
 
-**Last Updated:** 2026-09-27
-**Next Review:** 2026-12-27 (Quarterly)
+**Last Updated:** 2026-10-06
+**Next Review:** 2027-01-06 (Quarterly)
 **Approved By:** Security Team *(pending re-approval for v1.1 — this revision has not yet been formally reviewed/signed off; see the revision note at the top of this document)*

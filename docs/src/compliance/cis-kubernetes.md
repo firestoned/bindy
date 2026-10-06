@@ -104,7 +104,14 @@ kubectl get clusterrole bindy-operator -o yaml | grep -E '\["?\*"?\]'
 - apiGroups: [""]
   resources: ["pods"]
   verbs: ["get", "list", "watch"]  # Read-only, no create/update/delete
+- apiGroups: [""]
+  resources: ["pods/status"]
+  verbs: ["get", "patch"]  # The zones-loaded readiness gate only (ADR-0017)
 ```
+
+The `pods/status` grant lets the operator set one condition
+(`bindy.firestoned.io/zones-loaded`) on its BIND9 pods; it cannot create,
+modify or delete a pod through it.
 
 ---
 

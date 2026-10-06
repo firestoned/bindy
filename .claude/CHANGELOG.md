@@ -1,3 +1,37 @@
+## [2026-10-06 18:00] - BIND9 pods are Ready only once their zones are loaded (ADR-0017)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0017-zones-loaded-readiness-gate.md`.
+- `crates/bindy-api/src/constants.rs`: `ZONES_LOADED_CONDITION_TYPE` (`bindy.firestoned.io/zones-loaded`), the gate reasons (`ZonesLoaded`, `ZonesPartiallyLoaded`, `NoZones`, `ZonesLoading`, `ZonesLoadFailed`, `InstanceUnknown`), `POD_CONDITION_CONTAINERS_READY`, `CONDITION_STATUS_TRUE`/`_FALSE`; `labels.rs`: `BIND9_POD_SELECTOR`.
+- `crates/bindy-bind9/src/bind9_resources.rs`: `zones_loaded_readiness_gates()`; every BIND9 pod template carries the gate.
+- `crates/bindy-bind9/src/instances.rs`: `pod_containers_ready`, `writable_endpoint_addresses`, `cached_writable_endpoints`, `KubeInstanceLookup::with_pods`, `SinglePodLookup`, `InstanceResolver::for_single_pod`.
+- `crates/bindy-bind9/src/record_push.rs`: `replay_zone_records_with` (replay through a caller-supplied resolver).
+- `crates/bindy-controller-sdk/src/context.rs`: a label-selected BIND9 `Pod` watch in the `WatchSet` (`Stores::bind9_pods`), `RecordKind::record_status`, `Stores::records_tagged_with_zone`.
+- `crates/bindy-controller-zone/src/zones_gate.rs`: the zones-loaded gate controller (Pod primary stream filtered with `changed_only`, a filtered `DNSZone` mapper `gated_pods_for_zone`, no timer); run by the zone crate's `controller()` beside the `DNSZone` controller.
+- `crates/bindy-controller-zone/src/dnszone.rs`: `add_dnszone_with_resolver`, `add_dnszone_to_secondaries_with_resolver`.
+- Tests (55 new): zone `zones_gate_tests.rs` (31, new file), bind9 `instances_tests.rs` (14), `bind9_resources_tests.rs` (2), instance `resources_tests.rs` (3), SDK `context_tests.rs` (3, plus the Pod watch registration check), bootstrap `bootstrap_tests.rs` (2).
+
+### Changed
+- BIND9 writes (zone add/delete, NS and glue records, record writes, replays, deletion cleanup) target every writable pod: the Service's ready addresses plus not-ready addresses whose pod is `ContainersReady=True` (the pods the gate holds out of the Service).
+- `crates/bindy-controller-instance/src/bind9instance/resources.rs`: `deployment_needs_update` compares `readinessGates`; the Deployment patch replaces them, so existing Deployments get the gate (pods roll once).
+- `crates/bindy-controller-zone/src/watch.rs`: `reports_duplicate` is crate-visible; `dnszone.rs`: `zone_manager_for_instance` is crate-visible.
+- RBAC: `deploy/operator/rbac/role.yaml` and `deploy/operator/rbac/namespaced/role.yaml` grant `get`/`patch` on `pods/status`; `pods` stays read-only. `deploy/operator/rbac/verify-rbac.sh` checks both.
+- `calm/bindy-control-plane.architecture.json`: new relationship `operator-gates-pod-readiness`; `operator-manages-zones` and `svc-routes-named` descriptions updated (`make calm-validate` clean, `docs/src/architecture/calm-control-plane.md` regenerated).
+- Docs: `operations/troubleshooting.md` (a BIND9 pod stays not Ready), `operations/migration-guide.md`, `operations/rbac.md`, `compliance/cis-kubernetes.md`, `concepts/architecture.md` (watch table, the gate, drift table), `architecture/reconciler-hierarchy.md`, `advanced/ha.md` (rollouts).
+- `docs/src/security/threat-model.md` v1.17: full pass; new threat D6 and mitigation M-49; accepted risks 14 (`pods/status` grant) and 15 (fail-safe stall, partial admission); accepted risk 13 revised; Components, Boundaries 2 to 4, S1, E2, Attack Surface 1, Scenario 1 and the controls summary updated.
+- `.github/community/18-load-testing-framework.md`, `ROADMAPS.md`: a rollout scenario for the gate noted on row 18.
+
+### Why
+Preparing to roll v0.8.0-rc.4: a replacement BIND9 pod (one replica, `emptyDir` zone storage, default `RollingUpdate`) went Ready as soon as `named` listened and bindcar answered, the Service switched to it, the old pod was terminated, and the new pod answered `REFUSED` for every zone until the zone controller replayed them on the `Endpoints` change. A configuration change rolls every primary at once, so every nameserver of a zone could be empty together. Gated pods sit in `notReadyAddresses`, and EndpointSlice `serving` maps to the pod's `Ready` condition (gates included), so writes now also reach `ContainersReady` pods, or the gate would deadlock.
+
+### Impact
+- [ ] Breaking change (RBAC addition and a one-time pod rollout, documented in the migration guide; no CRD change)
+- [x] Requires cluster rollout (operator binary, RBAC, every BIND9 pod rolls once)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-06 15:00] - Watch layer: a subscriber joining during the initial list no longer misses objects
 
 **Author:** Erick Bourgeois

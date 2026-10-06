@@ -1123,6 +1123,8 @@ fn build_init_containers_patch(desired: &Deployment) -> serde_json::Value {
 /// - API container resources
 /// - The BIND config hash on the pod template
 ///   ([`crate::bind9_resources::CONFIG_HASH_ANNOTATION`])
+/// - Volumes, init containers, topology spread constraints, the pod's
+///   `readinessGates` (ADR-0017) and the pod template labels
 fn deployment_needs_update(current: &Deployment, desired: &Deployment) -> bool {
     // The BIND config the pods mount changed: roll them.
     if let Some(desired_hash) = config_hash_of(desired) {
@@ -1233,6 +1235,16 @@ fn deployment_needs_update(current: &Deployment, desired: &Deployment) -> bool {
         return true;
     }
 
+    // The zones-loaded readiness gate (ADR-0017). A Deployment created by an
+    // operator that predates the gate has none; patching it in rolls the pods
+    // once, after which every new pod waits for its zones.
+    if current_pod.and_then(|p| p.readiness_gates.as_ref())
+        != desired_pod.and_then(|p| p.readiness_gates.as_ref())
+    {
+        debug!("Pod readinessGates changed");
+        return true;
+    }
+
     // Pod template labels. `bindy.firestoned.io/cluster` is added here rather
     // than in the (immutable) selector, so an operator upgrade has to be able
     // to patch it onto Deployments that predate it.
@@ -1273,6 +1285,20 @@ fn build_placement_patch(desired: &Deployment) -> serde_json::Value {
     };
 
     json!({ "topologySpreadConstraints": constraints })
+}
+
+/// Builds the `spec.template.spec.readinessGates` value of a Deployment patch.
+///
+/// `readinessGates` has no patch merge key, so a strategic merge patch
+/// replaces the list whole: the result is exactly the gates `desired`
+/// renders (ADR-0017), or `null` to remove the field when it renders none.
+fn build_readiness_gates_patch(desired: &Deployment) -> serde_json::Value {
+    desired
+        .spec
+        .as_ref()
+        .and_then(|s| s.template.spec.as_ref())
+        .and_then(|p| p.readiness_gates.as_ref())
+        .map_or(json!(null), |gates| json!(gates))
 }
 
 /// Create or update the Deployment for BIND9
@@ -1412,6 +1438,9 @@ async fn create_or_update_deployment(
 
     // Init containers, replaced whole: bindy renders every one the pod has.
     patch["spec"]["template"]["spec"]["initContainers"] = build_init_containers_patch(&deployment);
+
+    // The zones-loaded readiness gate (ADR-0017), replaced whole.
+    patch["spec"]["template"]["spec"]["readinessGates"] = build_readiness_gates_patch(&deployment);
 
     // The pod's volumes, in the same Pod spec fragment as the scheduling fields.
     if !volumes_patch.is_null() {
@@ -1624,6 +1653,11 @@ pub(super) fn deployment_needs_update_for_test(current: &Deployment, desired: &D
 #[cfg(test)]
 pub(super) fn build_placement_patch_for_test(desired: &Deployment) -> serde_json::Value {
     build_placement_patch(desired)
+}
+
+#[cfg(test)]
+pub(super) fn build_readiness_gates_patch_for_test(desired: &Deployment) -> serde_json::Value {
+    build_readiness_gates_patch(desired)
 }
 
 /// Test-only re-export of the private `validate_user_pod_shape` helper.

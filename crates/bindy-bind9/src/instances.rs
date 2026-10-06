@@ -4,8 +4,10 @@
 //! Which BIND9 instances a zone targets, and how to reach them.
 //!
 //! Resolving a `DNSZone`'s `bind9InstancesFrom` selectors to instances (with
-//! the cross-namespace gate), and walking each instance's ready pod endpoints
-//! with its RNDC key. Both the zone and the record controllers address BIND9
+//! the cross-namespace gate), and walking each instance's writable pod
+//! endpoints with its RNDC key. Writable means Ready, or held out of the
+//! Service only by the zones-loaded readiness gate with every container ready
+//! (ADR-0017). Both the zone and the record controllers address BIND9
 //! this way, so it lives below them (ADR-0009 §2, amended 2026-10-05); it
 //! moved here from the zone controller's `helpers` and `validation` modules.
 //!
@@ -349,6 +351,7 @@ pub trait InstanceLookup: Send + Sync {
 pub struct KubeInstanceLookup {
     client: Client,
     endpoints: Option<crate::context::MultiStore<Endpoints>>,
+    pods: Option<crate::context::MultiStore<Pod>>,
 }
 
 impl KubeInstanceLookup {
@@ -361,7 +364,24 @@ impl KubeInstanceLookup {
     /// * `endpoints` - The shared `Endpoints` reflector store, if available
     #[must_use]
     pub fn new(client: Client, endpoints: Option<crate::context::MultiStore<Endpoints>>) -> Self {
-        Self { client, endpoints }
+        Self {
+            client,
+            endpoints,
+            pods: None,
+        }
+    }
+
+    /// Also count pods whose containers are ready but whose readiness gate
+    /// still holds them out of the Service as writable (ADR-0017), using the
+    /// shared BIND9 Pod store.
+    ///
+    /// # Arguments
+    ///
+    /// * `pods` - The shared, label-selected BIND9 Pod reflector store
+    #[must_use]
+    pub fn with_pods(mut self, pods: crate::context::MultiStore<Pod>) -> Self {
+        self.pods = Some(pods);
+        self
     }
 }
 
@@ -381,10 +401,15 @@ impl InstanceLookup for KubeInstanceLookup {
         port_name: &'a str,
     ) -> LookupFuture<'a, Vec<EndpointAddress>> {
         Box::pin(async move {
-            let cached = self
-                .endpoints
-                .as_ref()
-                .and_then(|store| cached_endpoints(store, namespace, service_name, port_name));
+            let cached = self.endpoints.as_ref().and_then(|store| {
+                cached_writable_endpoints(
+                    store,
+                    self.pods.as_ref(),
+                    namespace,
+                    service_name,
+                    port_name,
+                )
+            });
             let Some(addresses) = cached else {
                 return get_endpoint(&self.client, namespace, service_name, port_name).await;
             };
@@ -427,8 +452,12 @@ impl InstanceResolver {
         }
     }
 
-    /// The production resolver: a [`KubeInstanceLookup`] over `client` and
-    /// the shared `Endpoints` store in `stores`.
+    /// The production resolver: a [`KubeInstanceLookup`] over `client`, the
+    /// shared `Endpoints` store and the shared BIND9 Pod store in `stores`.
+    ///
+    /// Endpoints are every pod that can take a write: Ready pods, and pods
+    /// whose containers are ready while the zones-loaded readiness gate still
+    /// holds them out of the Service (ADR-0017).
     ///
     /// # Arguments
     ///
@@ -436,9 +465,34 @@ impl InstanceResolver {
     /// * `stores` - The shared reflector stores
     #[must_use]
     pub fn for_kube(client: &Client, stores: &crate::context::Stores) -> Self {
-        Self::new(KubeInstanceLookup::new(
-            client.clone(),
-            Some(stores.endpoints.clone()),
+        Self::new(kube_lookup(client, stores))
+    }
+
+    /// A resolver that addresses one pod only: the pod at `pod_ip` of the
+    /// instance `instance_namespace`/`instance_name`. Every other instance
+    /// resolves to no endpoints, so a write path driven through it touches
+    /// that one pod and nothing else (ADR-0017).
+    ///
+    /// # Arguments
+    ///
+    /// * `client` - Kubernetes API client
+    /// * `stores` - The shared reflector stores
+    /// * `instance_namespace` - Namespace of the pod's instance
+    /// * `instance_name` - Name of the pod's instance
+    /// * `pod_ip` - The pod's IP address
+    #[must_use]
+    pub fn for_single_pod(
+        client: &Client,
+        stores: &crate::context::Stores,
+        instance_namespace: &str,
+        instance_name: &str,
+        pod_ip: &str,
+    ) -> Self {
+        Self::new(SinglePodLookup::new(
+            kube_lookup(client, stores),
+            instance_namespace,
+            instance_name,
+            pod_ip,
         ))
     }
 
@@ -497,6 +551,94 @@ impl InstanceResolver {
     pub fn forget_rndc_key(&self, namespace: &str, instance_name: &str) {
         lock(&self.keys).remove(&(namespace.to_string(), instance_name.to_string()));
         self.lookup.forget_rndc_key(namespace, instance_name);
+    }
+}
+
+/// The production [`KubeInstanceLookup`] over the shared stores.
+fn kube_lookup(client: &Client, stores: &crate::context::Stores) -> KubeInstanceLookup {
+    KubeInstanceLookup::new(client.clone(), Some(stores.endpoints.clone()))
+        .with_pods(stores.bind9_pods.clone())
+}
+
+/// An [`InstanceLookup`] restricted to one pod (ADR-0017).
+///
+/// For the pod's own instance it returns only the pod's address (an error when
+/// the pod is not among the instance's writable endpoints, so a pod that cannot
+/// take writes never counts as loaded); for every other instance it returns no
+/// endpoints. RNDC keys are delegated unchanged. The zones-loaded gate drives
+/// the zone controller's own write paths through it to load zones onto a gated
+/// pod without touching any other pod.
+pub struct SinglePodLookup {
+    inner: Box<dyn InstanceLookup>,
+    instance_namespace: String,
+    instance_name: String,
+    pod_ip: String,
+}
+
+impl SinglePodLookup {
+    /// Restrict `inner` to the pod at `pod_ip` of one instance.
+    ///
+    /// # Arguments
+    ///
+    /// * `inner` - The lookup that resolves the instance's writable endpoints
+    /// * `instance_namespace` - Namespace of the pod's instance
+    /// * `instance_name` - Name of the pod's instance (and of its Service)
+    /// * `pod_ip` - The pod's IP address
+    #[must_use]
+    pub fn new(
+        inner: impl InstanceLookup + 'static,
+        instance_namespace: &str,
+        instance_name: &str,
+        pod_ip: &str,
+    ) -> Self {
+        Self {
+            inner: Box::new(inner),
+            instance_namespace: instance_namespace.to_string(),
+            instance_name: instance_name.to_string(),
+            pod_ip: pod_ip.to_string(),
+        }
+    }
+}
+
+impl InstanceLookup for SinglePodLookup {
+    fn rndc_key<'a>(
+        &'a self,
+        namespace: &'a str,
+        instance_name: &'a str,
+    ) -> LookupFuture<'a, RndcKeyData> {
+        self.inner.rndc_key(namespace, instance_name)
+    }
+
+    fn endpoints<'a>(
+        &'a self,
+        namespace: &'a str,
+        service_name: &'a str,
+        port_name: &'a str,
+    ) -> LookupFuture<'a, Vec<EndpointAddress>> {
+        Box::pin(async move {
+            if namespace != self.instance_namespace || service_name != self.instance_name {
+                return Ok(Vec::new());
+            }
+            let addresses = self
+                .inner
+                .endpoints(namespace, service_name, port_name)
+                .await?;
+            let own: Vec<EndpointAddress> = addresses
+                .into_iter()
+                .filter(|address| address.ip == self.pod_ip)
+                .collect();
+            if own.is_empty() {
+                return Err(anyhow!(
+                    "pod {} of instance {namespace}/{service_name} is not a writable endpoint on port '{port_name}'",
+                    self.pod_ip
+                ));
+            }
+            Ok(own)
+        })
+    }
+
+    fn forget_rndc_key(&self, namespace: &str, instance_name: &str) {
+        self.inner.forget_rndc_key(namespace, instance_name);
     }
 }
 
@@ -625,6 +767,119 @@ pub fn cached_endpoints(
                 && ep.metadata.namespace.as_deref() == Some(namespace)
         })
         .map(|ep| ready_endpoint_addresses(ep, port_name))
+}
+
+/// The writable endpoints of a Service as recorded in the stores: its ready
+/// addresses, plus each not-ready address whose pod has ready containers
+/// (ADR-0017).
+///
+/// # Arguments
+///
+/// * `store` - The shared `Endpoints` reflector store
+/// * `pods` - The shared BIND9 Pod store; without it only ready addresses count
+/// * `namespace` - Namespace of the Service
+/// * `service_name` - Name of the Service (the instance name)
+/// * `port_name` - Name of the port to read
+///
+/// # Returns
+///
+/// `None` when the store does not hold the object (the caller should fall back
+/// to a GET), otherwise its writable addresses for `port_name`, possibly empty.
+#[must_use]
+pub fn cached_writable_endpoints(
+    store: &crate::context::MultiStore<Endpoints>,
+    pods: Option<&crate::context::MultiStore<Pod>>,
+    namespace: &str,
+    service_name: &str,
+    port_name: &str,
+) -> Option<Vec<EndpointAddress>> {
+    let endpoints = store.state().into_iter().find(|ep| {
+        ep.metadata.name.as_deref() == Some(service_name)
+            && ep.metadata.namespace.as_deref() == Some(namespace)
+    })?;
+    let Some(pods) = pods else {
+        return Some(ready_endpoint_addresses(&endpoints, port_name));
+    };
+    Some(writable_endpoint_addresses(
+        &endpoints,
+        port_name,
+        &pods.state(),
+    ))
+}
+
+/// The addresses of an `Endpoints` object a BIND9 write may go to, for the
+/// port named `port_name` (ADR-0017).
+///
+/// Every ready address, and every not-ready address whose `targetRef` names a
+/// pod in `pods` that [`pod_containers_ready`]. That second set is the pods
+/// the zones-loaded readiness gate holds out of the Service: their containers
+/// can take zones and records, and must, or the gate never opens. A
+/// not-ready address with no `targetRef`, or whose pod is unknown or not
+/// container-ready, is skipped as before.
+///
+/// EndpointSlice cannot replace the Pod lookup: its `serving` condition maps
+/// to the pod's `Ready` condition, readiness gates included.
+#[must_use]
+pub fn writable_endpoint_addresses(
+    endpoints: &Endpoints,
+    port_name: &str,
+    pods: &[std::sync::Arc<Pod>],
+) -> Vec<EndpointAddress> {
+    let mut result = ready_endpoint_addresses(endpoints, port_name);
+    for subset in endpoints.subsets.iter().flatten() {
+        let Some(endpoint_port) = subset
+            .ports
+            .iter()
+            .flatten()
+            .find(|p| p.name.as_deref() == Some(port_name))
+        else {
+            continue;
+        };
+        for addr in subset.not_ready_addresses.iter().flatten() {
+            let Some(target) = addr.target_ref.as_ref() else {
+                continue;
+            };
+            let writable = pods.iter().any(|pod| {
+                pod.metadata.name == target.name
+                    && pod.metadata.namespace == target.namespace
+                    && pod_containers_ready(pod)
+            });
+            if writable {
+                result.push(EndpointAddress {
+                    ip: addr.ip.clone(),
+                    port: endpoint_port.port,
+                });
+            }
+        }
+    }
+    result
+}
+
+/// Whether a pod can take BIND9 writes: it has an IP, is not terminating, and
+/// its `ContainersReady` condition is `True` (ADR-0017).
+///
+/// `ContainersReady` reports the containers' readiness probes alone, while
+/// `Ready` also waits for the pod's readiness gates; a BIND9 pod whose zones
+/// are still being loaded is `ContainersReady=True`, `Ready=False`.
+///
+/// # Arguments
+///
+/// * `pod` - The pod to inspect
+#[must_use]
+pub fn pod_containers_ready(pod: &Pod) -> bool {
+    if pod.metadata.deletion_timestamp.is_some() {
+        return false;
+    }
+    let Some(status) = pod.status.as_ref() else {
+        return false;
+    };
+    if status.pod_ip.as_deref().is_none_or(str::is_empty) {
+        return false;
+    }
+    status.conditions.iter().flatten().any(|condition| {
+        condition.type_ == crate::constants::POD_CONDITION_CONTAINERS_READY
+            && condition.status == crate::constants::CONDITION_STATUS_TRUE
+    })
 }
 
 /// The ready addresses of an `Endpoints` object for the port named

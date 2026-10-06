@@ -1157,7 +1157,7 @@ pub(crate) fn remember_first_notify_target(
     });
 }
 
-fn zone_manager_for_instance(
+pub(crate) fn zone_manager_for_instance(
     ctx: &crate::context::Context,
     instance_name: &str,
     instance_namespace: &str,
@@ -1234,6 +1234,34 @@ pub async fn add_dnszone(
     status_updater: &mut bindy_controller_sdk::status::DNSZoneStatusUpdater,
     instance_refs: &[crate::crd::InstanceReference],
 ) -> Result<types::ZoneConfigOutcome> {
+    // One resolver for every BIND9 write this function makes: each primary's
+    // RNDC key and endpoints are read once, endpoints from the shared store
+    // (ADR-0015, ADR-0016).
+    let resolver = bindy_bind9::instances::InstanceResolver::for_kube(&ctx.client, &ctx.stores);
+    add_dnszone_with_resolver(ctx, dnszone, status_updater, instance_refs, &resolver).await
+}
+
+/// [`add_dnszone`] through a caller-supplied resolver.
+///
+/// The zones-loaded readiness gate passes a resolver that addresses one pod
+/// only, so the zone, its NS and glue records are configured on the pod being
+/// admitted exactly as the zone reconcile configures every pod (ADR-0017).
+/// `instance_refs` must still be every instance the zone selects: the
+/// secondaries' addresses (also-notify, allow-transfer) and the generated
+/// nameservers are derived from them.
+///
+/// # Errors
+///
+/// Returns an error if BIND9 zone addition fails on every endpoint the
+/// resolver returns, or if no PRIMARY instance is assigned.
+#[allow(clippy::too_many_lines)]
+pub(crate) async fn add_dnszone_with_resolver(
+    ctx: Arc<crate::context::Context>,
+    dnszone: DNSZone,
+    status_updater: &mut bindy_controller_sdk::status::DNSZoneStatusUpdater,
+    instance_refs: &[crate::crd::InstanceReference],
+    resolver: &bindy_bind9::instances::InstanceResolver,
+) -> Result<types::ZoneConfigOutcome> {
     let client = ctx.client.clone();
     let namespace = dnszone.namespace().unwrap_or_default();
     let name = dnszone.name_any();
@@ -1293,12 +1321,6 @@ pub async fn add_dnszone(
         &secondary_instance_refs,
     )
     .await?;
-
-    // One resolver for every BIND9 write this function makes: each primary's
-    // RNDC key and endpoints are read once, endpoints from the shared store
-    // (ADR-0015, ADR-0016).
-    let resolver = bindy_bind9::instances::InstanceResolver::for_kube(&client, &ctx.stores);
-    let resolver = &resolver;
 
     if secondary_ips.is_empty() {
         warn!(
@@ -1789,6 +1811,37 @@ pub async fn add_dnszone_to_secondaries(
     status_updater: &mut bindy_controller_sdk::status::DNSZoneStatusUpdater,
     instance_refs: &[crate::crd::InstanceReference],
 ) -> Result<types::ZoneConfigOutcome> {
+    // One resolver for every secondary's RNDC key and endpoints (ADR-0016)
+    let resolver = bindy_bind9::instances::InstanceResolver::for_kube(&ctx.client, &ctx.stores);
+    add_dnszone_to_secondaries_with_resolver(
+        ctx,
+        dnszone,
+        primary_ips,
+        status_updater,
+        instance_refs,
+        &resolver,
+    )
+    .await
+}
+
+/// [`add_dnszone_to_secondaries`] through a caller-supplied resolver.
+///
+/// The zones-loaded readiness gate passes a resolver that addresses one
+/// secondary pod only (ADR-0017).
+///
+/// # Errors
+///
+/// Returns an error if BIND9 zone addition fails on every endpoint the
+/// resolver returns.
+#[allow(clippy::too_many_lines)]
+pub(crate) async fn add_dnszone_to_secondaries_with_resolver(
+    ctx: Arc<crate::context::Context>,
+    dnszone: DNSZone,
+    primary_ips: &[String],
+    status_updater: &mut bindy_controller_sdk::status::DNSZoneStatusUpdater,
+    instance_refs: &[crate::crd::InstanceReference],
+    resolver: &bindy_bind9::instances::InstanceResolver,
+) -> Result<types::ZoneConfigOutcome> {
     let client = ctx.client.clone();
     let namespace = dnszone.namespace().unwrap_or_default();
     let name = dnszone.name_any();
@@ -1814,10 +1867,6 @@ pub async fn add_dnszone_to_secondaries(
     let secondary_instance_refs =
         secondary::filter_secondary_instances(&client, &ctx.stores.bind9_instances, instance_refs)
             .await?;
-
-    // One resolver for every secondary's RNDC key and endpoints (ADR-0016)
-    let resolver = bindy_bind9::instances::InstanceResolver::for_kube(&client, &ctx.stores);
-    let resolver = &resolver;
 
     if secondary_instance_refs.is_empty() {
         info!(

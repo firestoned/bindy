@@ -168,6 +168,49 @@ pub const BIND9_TERMINATION_GRACE_PERIOD_SECS: i64 = 45;
 pub const MAX_UNAVAILABLE_OPERANDS: i32 = 1;
 
 // ============================================================================
+// Zones-loaded readiness gate (ADR-0017)
+// ============================================================================
+
+/// The Pod condition type every BIND9 pod lists in `spec.readinessGates`.
+///
+/// Kubernetes reports the pod `Ready` only once this condition is `True`. The
+/// operator's zones-loaded gate controller sets it after loading every live
+/// zone that selects the pod's instance onto the pod, so a replacement pod
+/// enters its Service only when it can answer for those zones.
+pub const ZONES_LOADED_CONDITION_TYPE: &str = "bindy.firestoned.io/zones-loaded";
+
+/// Gate reason: every live zone selecting the instance is loaded on the pod.
+pub const ZONES_LOADED_REASON_LOADED: &str = "ZonesLoaded";
+
+/// Gate reason: the pod is admitted with every zone it could load; the zones
+/// it could not load are served by no other pod of its instance either, so
+/// holding the pod back would protect nothing (ADR-0017).
+pub const ZONES_LOADED_REASON_PARTIAL: &str = "ZonesPartiallyLoaded";
+
+/// Gate reason: no live zone selects the pod's instance, nothing to load.
+pub const ZONES_LOADED_REASON_NO_ZONES: &str = "NoZones";
+
+/// Gate reason: the operator is loading the pod's zones.
+pub const ZONES_LOADED_REASON_LOADING: &str = "ZonesLoading";
+
+/// Gate reason: loading at least one zone onto the pod failed; retried with
+/// backoff.
+pub const ZONES_LOADED_REASON_FAILED: &str = "ZonesLoadFailed";
+
+/// Gate reason: the pod's `Bind9Instance` is not in the operator's cache yet.
+pub const ZONES_LOADED_REASON_INSTANCE_UNKNOWN: &str = "InstanceUnknown";
+
+/// The Pod condition Kubernetes sets when every container of the pod is ready,
+/// independent of readiness gates.
+pub const POD_CONDITION_CONTAINERS_READY: &str = "ContainersReady";
+
+/// The status value of a condition that holds.
+pub const CONDITION_STATUS_TRUE: &str = "True";
+
+/// The status value of a condition that does not hold.
+pub const CONDITION_STATUS_FALSE: &str = "False";
+
+// ============================================================================
 // Controller Error Handling Constants
 // ============================================================================
 

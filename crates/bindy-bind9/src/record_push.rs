@@ -1187,15 +1187,56 @@ pub async fn replay_zone_records(
     record_refs: &[crate::crd::RecordReferenceWithTimestamp],
     primary_refs: &[crate::crd::InstanceReference],
 ) -> RecordReplayOutcome {
-    let mut outcome = RecordReplayOutcome::default();
-
     if record_refs.is_empty() || primary_refs.is_empty() {
-        return outcome;
+        return RecordReplayOutcome::default();
     }
 
     // One resolver for the whole replay: each primary's RNDC key and
     // endpoints are read once, not once per record (ADR-0015).
     let resolver = crate::instances::InstanceResolver::for_kube(client, stores);
+    replay_zone_records_with(
+        client,
+        stores,
+        &resolver,
+        zone_name,
+        record_refs,
+        primary_refs,
+    )
+    .await
+}
+
+/// [`replay_zone_records`] through a caller-supplied resolver.
+///
+/// The zones-loaded readiness gate passes a resolver restricted to one pod
+/// (`InstanceResolver::for_single_pod`), so the replay writes every record to
+/// the pod being admitted and to no other (ADR-0017).
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `stores` - Context stores used to build a `Bind9Manager` per instance
+/// * `resolver` - Where the primaries' RNDC keys and endpoints come from
+/// * `zone_name` - DNS zone name (e.g. "example.com")
+/// * `record_refs` - The records to replay
+/// * `primary_refs` - PRIMARY instances to push to (secondaries pull via AXFR)
+///
+/// # Returns
+///
+/// A [`RecordReplayOutcome`]; individual record failures are collected, not
+/// propagated.
+pub async fn replay_zone_records_with(
+    client: &Client,
+    stores: &crate::context::Stores,
+    resolver: &crate::instances::InstanceResolver,
+    zone_name: &str,
+    record_refs: &[crate::crd::RecordReferenceWithTimestamp],
+    primary_refs: &[crate::crd::InstanceReference],
+) -> RecordReplayOutcome {
+    let mut outcome = RecordReplayOutcome::default();
+
+    if record_refs.is_empty() || primary_refs.is_empty() {
+        return outcome;
+    }
 
     for record_ref in record_refs {
         outcome.attempted += 1;
@@ -1206,7 +1247,7 @@ pub async fn replay_zone_records(
         let result = match replay_dispatch(
             client,
             stores,
-            &resolver,
+            resolver,
             zone_name,
             &record_ref.kind,
             namespace,

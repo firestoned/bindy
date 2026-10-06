@@ -60,7 +60,7 @@ fn zone_name_key(zone: &DNSZone) -> u64 {
 }
 
 /// Whether a zone reports it lost a zone-name conflict.
-fn reports_duplicate(zone: &DNSZone) -> bool {
+pub(crate) fn reports_duplicate(zone: &DNSZone) -> bool {
     zone.status
         .as_ref()
         .and_then(|status| {

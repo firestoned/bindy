@@ -1495,4 +1495,84 @@ mod tests {
             );
         }
     }
+
+    // The zones-loaded readiness gate (ADR-0017) has to reach Deployments
+    // created before it existed: an operator upgrade patches it in, which
+    // rolls the pods once.
+    mod readiness_gate_convergence {
+        use crate::bind9_resources::build_deployment;
+        use crate::bind9instance::resources::{
+            build_readiness_gates_patch_for_test as build_readiness_gates_patch,
+            deployment_needs_update_for_test as deployment_needs_update,
+        };
+        use crate::constants::ZONES_LOADED_CONDITION_TYPE;
+        use crate::crd::{Bind9Instance, Bind9InstanceSpec, ServerRole};
+        use k8s_openapi::api::apps::v1::Deployment;
+        use kube::api::ObjectMeta;
+
+        fn deployment() -> Deployment {
+            #[allow(deprecated)]
+            let inst = Bind9Instance {
+                metadata: ObjectMeta {
+                    name: Some("primary-0".into()),
+                    namespace: Some("dns".into()),
+                    ..Default::default()
+                },
+                spec: Bind9InstanceSpec {
+                    cluster_ref: "my-dns".into(),
+                    role: ServerRole::Primary,
+                    replicas: Some(1),
+                    version: Some("9.18".into()),
+                    image: None,
+                    config_map_refs: None,
+                    config: None,
+                    primary_servers: None,
+                    volumes: None,
+                    volume_mounts: None,
+                    rndc_secret_ref: None,
+                    rndc_key: None,
+                    storage: None,
+                    placement: None,
+                    bindcar_config: None,
+                },
+                status: None,
+            };
+            build_deployment("primary-0", "dns", &inst, None, None, "rndc-key")
+        }
+
+        /// A Deployment built before the gate existed: same template, no
+        /// `readinessGates`.
+        fn pre_gate_deployment() -> Deployment {
+            let mut current = deployment();
+            if let Some(pod) = current
+                .spec
+                .as_mut()
+                .and_then(|spec| spec.template.spec.as_mut())
+            {
+                pod.readiness_gates = None;
+            }
+            current
+        }
+
+        #[test]
+        fn a_deployment_without_the_gate_needs_an_update() {
+            assert!(deployment_needs_update(
+                &pre_gate_deployment(),
+                &deployment()
+            ));
+        }
+
+        #[test]
+        fn a_deployment_with_the_gate_is_up_to_date() {
+            assert!(!deployment_needs_update(&deployment(), &deployment()));
+        }
+
+        #[test]
+        fn the_patch_sets_exactly_the_zones_loaded_gate() {
+            let patch = build_readiness_gates_patch(&deployment());
+            let gates = patch.as_array().expect("readinessGates patch is a list");
+            assert_eq!(gates.len(), 1, "{patch}");
+            assert_eq!(gates[0]["conditionType"], ZONES_LOADED_CONDITION_TYPE);
+        }
+    }
 }

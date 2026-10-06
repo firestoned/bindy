@@ -8,6 +8,8 @@ The Bindy operator needs permissions to:
 - Manage Bind9Instance, DNSZone, and DNS record resources
 - Create and manage Deployments, Services, ConfigMaps, and ServiceAccounts
 - Update resource status fields
+- Read BIND9 pods, and set the `bindy.firestoned.io/zones-loaded` condition on
+  their status (the zones-loaded readiness gate, ADR-0017)
 - Create events for logging
 
 ## ClusterRole
@@ -54,10 +56,35 @@ rules:
     resources: ["services", "configmaps", "serviceaccounts"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 
+  # BIND9 pods: read-only, plus the zones-loaded readiness gate (ADR-0017)
+  - apiGroups: [""]
+    resources: ["pods", "endpoints"]
+    verbs: ["get", "list", "watch"]
+
+  - apiGroups: [""]
+    resources: ["pods/status"]
+    verbs: ["get", "patch"]
+
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
 ```
+
+This is an abridged view; `deploy/operator/rbac/role.yaml` is authoritative.
+
+### Why `pods/status` patch
+
+Every BIND9 pod lists `bindy.firestoned.io/zones-loaded` in
+`spec.readinessGates`, so Kubernetes keeps it out of its Service until the
+operator sets that condition `True`, which it does once the pod has every live
+zone (and, on a primary, every record) loaded. The operator writes that one
+condition with a strategic merge patch of `pods/status`; it has no write verb
+on `pods`, so it cannot change a pod's spec or labels, or delete it.
+
+Apply the updated role **with or before** an operator that uses the gate. An
+operator without the grant cannot open the gate: new BIND9 pods stay not
+Ready (the old pods keep serving) and the operator logs `403 Forbidden` on
+`pods/status`.
 
 ## ServiceAccount
 
@@ -109,6 +136,11 @@ rules:
   - apiGroups: [""]
     resources: ["services", "configmaps"]
     verbs: ["*"]
+
+  # The zones-loaded readiness gate (ADR-0017)
+  - apiGroups: [""]
+    resources: ["pods/status"]
+    verbs: ["get", "patch"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -210,6 +242,11 @@ Check if operator has required permissions:
 ```bash
 # Check what the ServiceAccount can do
 kubectl auth can-i list dnszones \
+  --as=system:serviceaccount:bindy-system:bindy
+
+# The zones-loaded readiness gate needs pods/status patch in every operand
+# namespace (ADR-0017)
+kubectl auth can-i patch pods/status -n bindy-system \
   --as=system:serviceaccount:bindy-system:bindy
 
 # Describe the ClusterRoleBinding

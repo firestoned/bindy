@@ -10,6 +10,10 @@
 //! controller's own status writes (ADR-0009 §4), and the controller drains on
 //! the context's shutdown signal. The one public entry point is
 //! [`controller`].
+//!
+//! The crate also runs the zones-loaded readiness gate (ADR-0017): a Pod
+//! controller that loads every live zone onto a new BIND9 pod, with the same
+//! write paths, before Kubernetes lets the pod into its Service.
 
 use bindy_controller_sdk::context::Context;
 use std::sync::Arc;
@@ -20,12 +24,19 @@ pub(crate) use bindy_bind9::{bind9, bind9_resources, context};
 
 mod dnszone;
 mod watch;
+mod zones_gate;
 
-/// Run the `DNSZone` controller, one per namespace target, until the shutdown
+/// Run the `DNSZone` controller and the zones-loaded readiness gate
+/// controller (ADR-0017), one each per namespace target, until the shutdown
 /// signal in `ctx` fires and every reconcile has drained.
 ///
 /// # Errors
-/// Returns an error if the controller fails.
+/// Returns an error if either controller fails.
 pub async fn controller(ctx: Arc<Context>) -> anyhow::Result<()> {
-    watch::run_dnszone_controllers(ctx).await
+    let (zones, gate) = futures::join!(
+        watch::run_dnszone_controllers(ctx.clone()),
+        zones_gate::run_zones_gate_controllers(ctx)
+    );
+    zones?;
+    gate
 }
