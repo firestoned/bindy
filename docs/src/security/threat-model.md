@@ -1,14 +1,39 @@
 # Threat Model - Bindy DNS Operator
 
-**Version:** 1.18
+**Version:** 1.19
 **Last Updated:** 2026-10-07
 **Owner:** Security Team
 **Compliance:** SOX 404, PCI-DSS 6.4.1, Basel III Cyber Risk
 
 > Last full pass 2026-10-07, against ADR-0001 ... ADR-0018 (ADR-0006 as amended;
 > ADR-0009 as amended 2026-10-05, fully implemented; ADR-0013 stages 1 to 3,
-> ADR-0014, ADR-0015, ADR-0016, ADR-0017 as amended 2026-10-07 and ADR-0018
-> implemented).
+> ADR-0014, ADR-0015, ADR-0016, ADR-0017 as amended and corrected 2026-10-07
+> and ADR-0018 as amended 2026-10-07 implemented).
+>
+> **Revision note (v1.19):** Full pass for two findings from rolling
+> v0.8.0-rc.6 on a real cluster. (1) **Correction to M-50.** The operator
+> does set a terminating pod's gate `False` (`PodTerminating`) at the
+> deletion event, but the pod's `Ready` condition followed only on the
+> kubelet's next status sync, about 18 s later, past the 10 s preStop drain;
+> the EndpointSlice `serving` flag follows `Ready`, so the flip does not
+> move traffic before `named` exits, as v1.18 claimed. What kept the
+> handover short was the new pod being Ready first and ADR-0018's
+> staggering keeping a zone's other nameservers up: 2 of 136 probe queries
+> lost over a staggered rollout of three instances, against 9 to 12 s of
+> total outage on both `LoadBalancer` IPs in rc.5. M-50, the **D6**
+> mitigations and accepted risk **16** are reworded; the likelihood rating
+> is unchanged because it rested on M-51 as much as M-50. (2) **M-51 no-op
+> loop fixed** (ADR-0018 decision 8). The drift check compared the bindcar
+> container's `resources` with `!=`, and the API server stores an absent
+> value as `{}`, so every reconcile saw a pod-template change; with the
+> rollout queue that became a hot loop (about two no-op Deployment PATCHes
+> a second, instances left `RolloutQueued` after every rollout had
+> finished). The drift check now compares every owned field semantically,
+> and a template patch that bumps no generation is remembered as a known
+> no-op so it cannot repeat. This was an availability defect of an existing
+> control (self-inflicted API load, misleading status), not a new threat:
+> no new actor, asset, boundary, RBAC grant, CRD field or dependency. All
+> other sections re-walked unchanged.
 >
 > **Revision note (v1.18):** Full pass for the ADR-0017 amendment (decision
 > 6, hand over at the start of termination) and ADR-0018 (staggered BIND9
@@ -1351,19 +1376,25 @@ Local`); LOW after M-50 and M-51
   never pulls a serving pod back out
 - ✅ The gate is event-driven (Pod and `DNSZone` watches) with the per-object
   backoff on failure (M-48); no timer
-- ✅ **Handover at the start of termination** (M-50, ADR-0017 decision 6,
-  2026-10-07): when a gated pod gets a `deletionTimestamp`, the operator sets
-  its gate `False` (`PodTerminating`) in the same Pod event, so the pod is
-  not `Ready`, its endpoint is not `serving`, and kube-proxy and MetalLB move
-  traffic to the remaining Ready pods while `named` drains (10 s,
-  `BIND9_PRESTOP_DRAIN_SECS`); a failed patch retries with backoff
+- ✅ **Gate closed at the start of termination** (M-50, ADR-0017 decision
+  6, 2026-10-07, corrected in v1.19): when a gated pod gets a
+  `deletionTimestamp`, the operator sets its gate `False` (`PodTerminating`)
+  in the same Pod event; a failed patch retries with backoff. The pod's
+  `Ready`, and so its endpoint's `serving`, follow only on the kubelet's next
+  status sync (about 18 s on rc.6), so this does not move traffic before
+  `named` exits. The handover is kept short by the new pod being Ready
+  before the old one is deleted (`maxUnavailable` 0 and the gate) and by
+  M-51
 - ✅ **Staggered rollouts** (M-51, ADR-0018, 2026-10-07): a pod-template
   change is applied only while no instance that serves a zone in common or
   belongs to the same cluster is mid-rollout (read from the Deployment and
   Pod stores); first come, first served, with claims against concurrent
   reconciles; a rollout past `progressDeadlineSeconds` stops blocking;
   woken by Deployment and Pod events, no timer. Creation, replica changes
-  and RNDC key rotation are not delayed
+  and RNDC key rotation are not delayed. The drift check compares owned
+  fields semantically, and a template patch that bumps no generation is
+  remembered as a known no-op, so a comparison miss cannot loop (ADR-0018
+  decision 8, v1.19)
 
 **Residual Risk:** LOW (fail-safe: an operator that is down or lacks the
 `pods/status` grant stalls rollouts rather than serving empty zones, accepted
@@ -1950,8 +1981,8 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-47 | **Configuration written by construction** (2026-10-05, ADR-0013 stage 3): `named.conf` and `named.conf.options` are built as a hornet syntax tree from typed values (ACL entries parsed into address-match elements, forwarders into addresses, the DNSSEC policy into a typed statement) and written by hornet's writer, which quotes and escapes each value for its position; the text templates are retired, a test asserts every rendered file is hornet's canonical output with no raw carrier, and the option matrix and examples pass `named-checkconf` 9.18 and 9.20 | D4 (malformed config), T3 (configuration injected through a CRD value; second layer behind the CRD patterns, `bind9_acl` and M-24) | ✅ `crates/bindy-bind9/src/bind9_resources.rs`, `crates/bindy-bind9/src/bind9_acl.rs`, `crates/bindy-bind9/src/rendered_config_tests.rs` |
 | M-48 | **Event-driven reconciliation, no periodic resync** (2026-10-06, ADR-0016): every controller (records, `DNSZone`, `Bind9Instance`, `Bind9Cluster`, `ClusterBind9Provider`) returns `await_change` on success and on a wait for another object; each wait is ended by a named watch, with pure mappers added for a `DuplicateZone` loser, records waiting on their zone, and cluster-level ConfigMaps; BIND9/bindcar failures retry with the per-object capped backoff (rejected record writes no sooner than the 30 s cooldown); scheduled wakes only for RNDC rotation and KSK rollover, capped at 30 days; record status decided from the watch cache with a patch that never carries `zone`/`zoneRef`, zones read from the store, and the `DNSZone` controller's instance roles, keys and endpoints from the stores and the ADR-0015 resolver | D2 (steady-state reconcile and API cost proportional to object count), T3 (cluster ConfigMap drift now event-driven) | ✅ `crates/bindy-controller-sdk/src/{reconcile,error,retry}.rs`, `crates/bindy-controller-records/src/{record_operator,record_wrappers}.rs`, `crates/bindy-controller-records/src/records/{mod,status_helpers}.rs`, `crates/bindy-controller-zone/src/watch.rs`, `crates/bindy-controller-zone/src/dnszone.rs`, `crates/bindy-controller-instance/src/watch.rs` |
 | M-49 | **Zones-loaded readiness gate** (2026-10-06, ADR-0017): every BIND9 pod template carries `readinessGates: [{conditionType: bindy.firestoned.io/zones-loaded}]`; a Pod controller in the operator (label-selected BIND9 Pod watch plus a filtered `DNSZone` mapper, no timer) loads every live zone selecting the pod's instance, and on a primary every record tagged with it, onto the one pod through the zone controller's write paths, then sets the condition with a strategic merge patch of `pods/status`; BIND9 writes reach container-ready pods the gate still holds out of the Service; a failed zone blocks only while another Ready pod of the instance serves it; one-way latch per pod; RBAC adds `get`/`patch` on `pods/status` only, pinned by tests | D6 (empty pod admitted to its Service: availability), T1 (records written during a rollout reach the new pod) | ✅ `crates/bindy-bind9/src/bind9_resources.rs`, `crates/bindy-bind9/src/instances.rs`, `crates/bindy-controller-zone/src/zones_gate.rs`, `crates/bindy-controller-instance/src/bind9instance/resources.rs`, `deploy/operator/rbac/{role,namespaced/role}.yaml`, `crates/bindy-bootstrap/src/bootstrap_tests.rs` |
-| M-50 | **Handover at the start of termination** (2026-10-07, ADR-0017 decision 6): the zones-loaded gate controller sets a terminating pod's `bindy.firestoned.io/zones-loaded` condition `False` (`PodTerminating`) on the Pod deletion event, with no wait; the pod's `Ready` turns `False` without a probe, its EndpointSlice entry stops `serving`, and kube-proxy and the load balancer move traffic before `named` exits; a pod without the gate or already `False` is left alone; a failed patch retries with the per-object backoff, a pod already gone is done; preStop drain kept at 10 s to cover endpoint, kube-proxy and MetalLB convergence plus one resolver retry | D6 (availability during rollouts: dead endpoint still `serving`) | ✅ `crates/bindy-controller-zone/src/zones_gate.rs` (`gate_step`, `termination_condition`), `crates/bindy-api/src/constants.rs`, `crates/bindy-controller-zone/src/zones_gate_tests.rs` |
-| M-51 | **Staggered BIND9 rollouts** (2026-10-07, ADR-0018): a Deployment change under `spec.template` is applied only while no instance in the instance's conflict set (shares a `DNSZone` in `status.bind9Instances`, or the same `Bind9Cluster` / `ClusterBind9Provider`) is mid-rollout, read from the Deployment and Pod stores; one in-process queue (first come, first served, claims close the race between concurrent reconciles); `ProgressDeadlineExceeded` and post-rollout degradation do not block; woken by Deployment and Pod mappers and by the queue, no timer; queued instances report `Rollout=False/RolloutQueued` and keep their observed generations; creation, replica changes and RNDC rotation are not delayed | D6 (every nameserver of a zone rolled at once) | ✅ `crates/bindy-controller-instance/src/rollout.rs`, `crates/bindy-controller-instance/src/bind9instance/resources.rs` (`deployment_change`, `create_or_update_deployment`), `crates/bindy-controller-instance/src/watch.rs`, `crates/bindy-controller-instance/src/rollout_tests.rs` |
+| M-50 | **Gate closed at the start of termination** (2026-10-07, ADR-0017 decision 6, corrected in v1.19): the zones-loaded gate controller sets a terminating pod's `bindy.firestoned.io/zones-loaded` condition `False` (`PodTerminating`) on the Pod deletion event, with no wait; the condition is `False` at once, but the pod's `Ready` (and its EndpointSlice `serving`) follow only on the kubelet's next status sync, about 18 s later on rc.6, so traffic does not move before `named` exits; the handover is kept short by the new pod being Ready first and by M-51 (rc.6: 2 of 136 probe queries lost over a staggered rollout); a pod without the gate or already `False` is left alone; a failed patch retries with the per-object backoff, a pod already gone is done; preStop drain kept at 10 s | D6 (availability during rollouts: dead endpoint still `serving`) | ✅ `crates/bindy-controller-zone/src/zones_gate.rs` (`gate_step`, `termination_condition`), `crates/bindy-api/src/constants.rs`, `crates/bindy-controller-zone/src/zones_gate_tests.rs` |
+| M-51 | **Staggered BIND9 rollouts** (2026-10-07, ADR-0018): a Deployment change under `spec.template` is applied only while no instance in the instance's conflict set (shares a `DNSZone` in `status.bind9Instances`, or the same `Bind9Cluster` / `ClusterBind9Provider`) is mid-rollout, read from the Deployment and Pod stores; one in-process queue (first come, first served, claims close the race between concurrent reconciles); `ProgressDeadlineExceeded` and post-rollout degradation do not block; woken by Deployment and Pod mappers and by the queue, no timer; queued instances report `Rollout=False/RolloutQueued` and keep their observed generations; creation, replica changes and RNDC rotation are not delayed; the drift check compares every owned pod-template field semantically (API-server defaulting absorbed) and a template patch that bumps no generation is remembered as a known no-op, dropping its claim and queue place once, so a comparison miss cannot loop (ADR-0018 decision 8, v1.19) | D6 (every nameserver of a zone rolled at once) | ✅ `crates/bindy-controller-instance/src/rollout.rs` (`begin_template_change`, `finish_template_patch`), `crates/bindy-controller-instance/src/bind9instance/resources.rs` (`deployment_change`, `template_difference`, `create_or_update_deployment`), `crates/bindy-controller-instance/src/bind9instance/template_drift.rs`, `crates/bindy-controller-instance/src/watch.rs`, `crates/bindy-controller-instance/src/rollout_tests.rs`, `crates/bindy-controller-instance/src/bind9instance/resources_tests.rs` (`live_api_server_shape`) |
 | M-25 | **Scout Secret RBAC scoped** (fixed 2026-07-19, same day as this finding's discovery): removed the cluster-wide `secrets: get` `PolicyRule` from the `bindy-scout` `ClusterRole` entirely. Replaced with a namespaced, `resourceNames`-restricted Role (`bindy-scout-secrets-reader`) scoped to exactly the one Phase 2 kubeconfig Secret, applied only when `--remote-secret` is configured. Same-cluster-only deployments (the default) now get zero Secret access. See I4/E4/Scenario 6 for the full before/after. | I4, E4, T4 (Secret-read component), Scenario 6 | ✅ RBAC — **was the highest-priority open item in v1.1; closed same-day** |
 
 ---
@@ -2033,7 +2064,7 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 
 15. **The gate fails safe, and admits partially when a zone cannot load anywhere (ADR-0017)** - If the operator is down, lacks the `pods/status` grant, or is older than the pod template, a new BIND9 pod never becomes Ready: with one replica and `maxUnavailable` 0 the old pod keeps serving and the rollout stalls (visible as a Deployment past `progressDeadlineSeconds` and a pod without the condition); a pod whose predecessor is already gone (eviction, node loss) stays out of service until the operator returns. Separately, a zone that fails to load on the new pod and is served by no other Ready pod of the instance does not hold the pod back: the pod is admitted with `ZonesPartiallyLoaded` and the zone is retried by the `DNSZone` controller, so one invalid zone cannot keep every other zone of a shared instance out of service. Accepted: failing closed on the operator is the point of the gate, and holding a pod for a zone no pod can serve protects nothing. *Revisit when* an instance runs more than one replica per Deployment (the sibling check then has more to compare), or the operator is expected to be unavailable for long periods.
 
-16. **Rollout handover gaps that remain (ADR-0017 decision 6, ADR-0018)** - (a) With a MetalLB layer-2 `LoadBalancer` on `externalTrafficPolicy: Local`, a handover that takes the last Ready pod off the announcing node drops traffic to that IP until MetalLB re-announces from another node and clients take the gratuitous ARP ("a few seconds", longer for clients that mishandle gratuitous ARP); the zone's other nameservers answer meanwhile because rollouts are staggered. (b) A rollout that never completes (a new pod held by `ZonesLoadFailed`, an image that cannot be pulled) blocks the instances in its conflict set until its Deployment reports `ProgressDeadlineExceeded` (600 s by default) for every change; an actor who can edit one instance or break one zone can thereby delay, not prevent, the rollouts of instances sharing its cluster or zones. (c) The ordering is held in the leader's memory: after a leader change, rollouts in flight are seen in the store and the new leader's claims order the rest, but waiting instances lose their queue positions (they re-queue in the order they reconcile), and a deposed leader's last in-flight reconcile can start one rollout while the new leader starts another (accepted risk 10). Accepted: (a) is a property of layer-2 failover with `Local`, removed by `externalTrafficPolicy: Cluster` and made rarer by more than one replica (documented in the HA guide); (b) is bounded and visible (`Rollout=True/RolloutPeerStalled` on the instance that proceeded, the stalled Deployment's own condition); (c) costs at most one overlap and needs no new state. *Revisit when* MetalLB or Kubernetes offers a drain-aware announcement handover, bindy sets a shorter `progressDeadlineSeconds`, or instances run with more than one replica by default.
+16. **Rollout handover gaps that remain (ADR-0017 decision 6, ADR-0018)** - (a) With a MetalLB layer-2 `LoadBalancer` on `externalTrafficPolicy: Local`, a handover that takes the last Ready pod off the announcing node drops traffic to that IP until MetalLB re-announces from another node and clients take the gratuitous ARP ("a few seconds", longer for clients that mishandle gratuitous ARP); the zone's other nameservers answer meanwhile because rollouts are staggered (rc.6: one query timeout per primary handover, 2 of 136 over a full rollout). (b) A rollout that never completes (a new pod held by `ZonesLoadFailed`, an image that cannot be pulled) blocks the instances in its conflict set until its Deployment reports `ProgressDeadlineExceeded` (600 s by default) for every change; an actor who can edit one instance or break one zone can thereby delay, not prevent, the rollouts of instances sharing its cluster or zones. (c) The ordering is held in the leader's memory: after a leader change, rollouts in flight are seen in the store and the new leader's claims order the rest, but waiting instances lose their queue positions (they re-queue in the order they reconcile), and a deposed leader's last in-flight reconcile can start one rollout while the new leader starts another (accepted risk 10). Accepted: (a) is a property of layer-2 failover with `Local`, removed by `externalTrafficPolicy: Cluster` and made rarer by more than one replica (documented in the HA guide); (b) is bounded and visible (`Rollout=True/RolloutPeerStalled` on the instance that proceeded, the stalled Deployment's own condition); (c) costs at most one overlap and needs no new state. *Revisit when* MetalLB or Kubernetes offers a drain-aware announcement handover, bindy sets a shorter `progressDeadlineSeconds`, or instances run with more than one replica by default.
 
 ---
 

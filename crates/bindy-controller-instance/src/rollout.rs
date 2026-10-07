@@ -13,10 +13,12 @@
 //! Everything here but [`RolloutQueue`] is pure: the decisions read store
 //! snapshots and return values, so they are tested without a cluster. The
 //! queue is the one piece of process state: a first-come-first-served list
-//! of waiting instances and the *claims* that close the window between two
-//! concurrent reconciles reading the same idle store. It holds nothing the
-//! cluster does not: after a restart, rollouts in flight are seen in the
-//! Deployment store and waiters re-queue on their first reconcile.
+//! of waiting instances, the *claims* that close the window between two
+//! concurrent reconciles reading the same idle store, and the template
+//! patches known to change nothing (ADR-0018 decision 8). It holds nothing
+//! the cluster does not: after a restart, rollouts in flight are seen in the
+//! Deployment store, waiters re-queue on their first reconcile, and a known
+//! no-op is re-learnt with one more no-op patch.
 //!
 //! Event-driven (ADR-0016): a deferred instance awaits a change and is woken
 //! by a conflicting instance's Deployment or Pod events
@@ -418,6 +420,40 @@ struct QueueState {
     /// Instances that decided to roll, with the Deployment generation they
     /// decided on; a claim lasts until the store shows a later generation
     claims: BTreeMap<InstanceId, i64>,
+    /// Template patches known to change nothing, per instance
+    known_noops: BTreeMap<InstanceId, KnownNoop>,
+}
+
+/// A pod-template patch that bumped no Deployment generation: the drift
+/// check saw a difference the API server's defaulting erases. Sending the
+/// same patch to the same generation again would change nothing again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct KnownNoop {
+    /// The Deployment generation the patch was sent to
+    generation: i64,
+    /// The fingerprint of the patch
+    fingerprint: u64,
+}
+
+/// How a pod-template change starts ([`RolloutQueue::begin_template_change`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TemplateStart {
+    /// The same patch already changed nothing at this generation: treat the
+    /// template as up to date. The instance is off the waiting list.
+    KnownNoop,
+    /// The queue decided.
+    Decided(RolloutDecision),
+}
+
+/// What a sent pod-template patch did ([`RolloutQueue::finish_template_patch`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PatchOutcome {
+    /// It bumped the Deployment generation: the pods roll. The status to
+    /// report.
+    Rolled(RolloutStatus),
+    /// It bumped no generation: nothing rolls, and the instance reports no
+    /// rollout.
+    NoOp,
 }
 
 /// The process-wide rollout queue (ADR-0018 decision 5). Only the leader
@@ -501,8 +537,9 @@ impl RolloutQueue {
         decision
     }
 
-    /// Drop `me`'s claim: its patch failed or changed nothing, so nothing is
-    /// rolling and no Deployment event will wake its waiters. Wakes them.
+    /// Drop `me`'s claim: its patch failed, so nothing is rolling and no
+    /// Deployment event will wake its waiters. Wakes them. (A patch that
+    /// changed nothing goes through [`RolloutQueue::finish_template_patch`].)
     pub(crate) fn release(&self, me: &InstanceId) {
         let waiting = {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
@@ -526,6 +563,109 @@ impl RolloutQueue {
             state.waiting.keys().cloned().collect::<Vec<_>>()
         };
         self.wake(&waiting);
+    }
+
+    /// Start a pod-template change: [`TemplateStart::KnownNoop`] (and off
+    /// the waiting list) when the same patch already changed nothing at
+    /// `my_generation`, else [`RolloutQueue::try_start`]'s decision.
+    ///
+    /// This is what stops a perpetual false difference from looping: an
+    /// instance sends a given patch to a given generation at most once, so
+    /// it claims, and wakes the waiters, at most once for it.
+    ///
+    /// # Arguments
+    /// * `me` - The instance
+    /// * `my_generation` - Its Deployment's generation before the patch
+    /// * `fingerprint` - The fingerprint of the patch it would send
+    /// * `peers`, `store_generation` - As for [`RolloutQueue::try_start`]
+    ///
+    /// # Returns
+    /// The [`TemplateStart`].
+    pub(crate) fn begin_template_change(
+        &self,
+        me: &InstanceId,
+        my_generation: i64,
+        fingerprint: u64,
+        peers: &[(InstanceId, PeerRollout)],
+        store_generation: impl Fn(&InstanceId) -> Option<i64>,
+    ) -> TemplateStart {
+        let known = KnownNoop {
+            generation: my_generation,
+            fingerprint,
+        };
+        let is_known = self
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .known_noops
+            .get(me)
+            == Some(&known);
+        if is_known {
+            self.leave(me);
+            return TemplateStart::KnownNoop;
+        }
+        TemplateStart::Decided(self.try_start(me, my_generation, peers, store_generation))
+    }
+
+    /// Record what a sent pod-template patch did.
+    ///
+    /// A patch that bumped the generation rolls the pods: `me` keeps its
+    /// claim until the store shows the patch, and reports `decision`. One
+    /// that bumped nothing rolled nothing: `me` drops its claim, leaves the
+    /// waiting list, and the patch is remembered as a known no-op for
+    /// [`RolloutQueue::begin_template_change`]. The waiters are woken (one
+    /// may wait for this claim and no Deployment event will come), which
+    /// happens at most once per known no-op.
+    ///
+    /// # Arguments
+    /// * `me` - The instance
+    /// * `decision` - The decision it patched on
+    /// * `generation_before` - Its Deployment's generation before the patch
+    /// * `generation_after` - The generation the patch returned
+    /// * `fingerprint` - The fingerprint of the patch
+    ///
+    /// # Returns
+    /// The [`PatchOutcome`].
+    pub(crate) fn finish_template_patch(
+        &self,
+        me: &InstanceId,
+        decision: &RolloutDecision,
+        generation_before: i64,
+        generation_after: i64,
+        fingerprint: u64,
+    ) -> PatchOutcome {
+        if generation_after > generation_before {
+            return PatchOutcome::Rolled(RolloutStatus::from_decision(decision));
+        }
+        let waiting = {
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            state.known_noops.insert(
+                me.clone(),
+                KnownNoop {
+                    generation: generation_before,
+                    fingerprint,
+                },
+            );
+            let held_claim = state.claims.remove(me).is_some();
+            let was_waiting = state.waiting.remove(me).is_some();
+            if !held_claim && !was_waiting {
+                return PatchOutcome::NoOp;
+            }
+            state.waiting.keys().cloned().collect::<Vec<_>>()
+        };
+        self.wake(&waiting);
+        PatchOutcome::NoOp
+    }
+
+    /// `me` is gone (deleted) or was just created: forget its known no-op
+    /// patch and leave the waiting list ([`RolloutQueue::leave`]).
+    pub(crate) fn forget(&self, me: &InstanceId) {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .known_noops
+            .remove(me);
+        self.leave(me);
     }
 
     /// The waiting instances, ordered by id.
@@ -559,18 +699,25 @@ pub(crate) struct RolloutGate<'a> {
 }
 
 impl RolloutGate<'_> {
-    /// Decide whether `instance` may apply its pod-template change now,
-    /// reading every input from the stores (no API call).
+    /// Start `instance`'s pod-template change
+    /// ([`RolloutQueue::begin_template_change`]), reading every input from
+    /// the stores (no API call).
     ///
     /// # Arguments
     /// * `instance` - The instance about to roll
     /// * `my_generation` - Its Deployment's generation before the patch
+    /// * `fingerprint` - The fingerprint of the patch it would send
     ///
     /// # Returns
-    /// The [`RolloutDecision`]; on `Proceed` the instance holds a claim that
-    /// the caller must [`RolloutQueue::release`] if the patch fails or
-    /// changes nothing.
-    pub(crate) fn decide(&self, instance: &Bind9Instance, my_generation: i64) -> RolloutDecision {
+    /// The [`TemplateStart`]. On `Proceed` the instance holds a claim: the
+    /// caller must [`RolloutQueue::release`] it if the patch fails, and pass
+    /// a sent patch's result to [`RolloutQueue::finish_template_patch`].
+    pub(crate) fn begin(
+        &self,
+        instance: &Bind9Instance,
+        my_generation: i64,
+        fingerprint: u64,
+    ) -> TemplateStart {
         let instances = self.stores.bind9_instances.state();
         let zones = self.stores.dnszones.state();
         let provider_names: BTreeSet<String> = self
@@ -594,10 +741,13 @@ impl RolloutGate<'_> {
             .iter()
             .filter_map(|d| Some((instance_of_deployment(d)?, d.metadata.generation?)))
             .collect();
-        self.queue
-            .try_start(&InstanceId::of(instance), my_generation, &peers, |id| {
-                generations.get(id).copied()
-            })
+        self.queue.begin_template_change(
+            &InstanceId::of(instance),
+            my_generation,
+            fingerprint,
+            &peers,
+            |id| generations.get(id).copied(),
+        )
     }
 }
 

@@ -1,0 +1,438 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "Deployment",
+  "metadata": {
+    "annotations": {
+      "deployment.kubernetes.io/revision": "10"
+    },
+    "generation": 10,
+    "labels": {
+      "app": "bind9",
+      "app.kubernetes.io/component": "dns-server",
+      "app.kubernetes.io/instance": "example-dns-primary-0",
+      "app.kubernetes.io/managed-by": "Bind9Cluster",
+      "app.kubernetes.io/name": "bind9",
+      "app.kubernetes.io/part-of": "bindy",
+      "bindy.firestoned.io/role": "primary",
+      "instance": "example-dns-primary-0"
+    },
+    "name": "example-dns-primary-0",
+    "namespace": "dns-system",
+    "ownerReferences": [
+      {
+        "apiVersion": "bindy.firestoned.io/v1beta1",
+        "blockOwnerDeletion": true,
+        "controller": true,
+        "kind": "Bind9Instance",
+        "name": "example-dns-primary-0",
+        "uid": "00000000-0000-4000-8000-000000000001"
+      }
+    ]
+  },
+  "spec": {
+    "progressDeadlineSeconds": 600,
+    "replicas": 1,
+    "revisionHistoryLimit": 10,
+    "selector": {
+      "matchLabels": {
+        "app": "bind9",
+        "app.kubernetes.io/component": "dns-server",
+        "app.kubernetes.io/instance": "example-dns-primary-0",
+        "app.kubernetes.io/managed-by": "Bind9Cluster",
+        "app.kubernetes.io/name": "bind9",
+        "app.kubernetes.io/part-of": "bindy",
+        "bindy.firestoned.io/role": "primary",
+        "instance": "example-dns-primary-0"
+      }
+    },
+    "strategy": {
+      "rollingUpdate": {
+        "maxSurge": "25%",
+        "maxUnavailable": "25%"
+      },
+      "type": "RollingUpdate"
+    },
+    "template": {
+      "metadata": {
+        "annotations": {
+          "bindy.firestoned.io/config-hash": "70040e7e8120839f81c6871ae572064b4b688d111dde622b402ede6cd0f7219b"
+        },
+        "labels": {
+          "app": "bind9",
+          "app.kubernetes.io/component": "dns-server",
+          "app.kubernetes.io/instance": "example-dns-primary-0",
+          "app.kubernetes.io/managed-by": "Bind9Cluster",
+          "app.kubernetes.io/name": "bind9",
+          "app.kubernetes.io/part-of": "bindy",
+          "bindy.firestoned.io/cluster": "example-dns",
+          "bindy.firestoned.io/role": "primary",
+          "instance": "example-dns-primary-0"
+        }
+      },
+      "spec": {
+        "containers": [
+          {
+            "args": [
+              "-c",
+              "/etc/bind/named.conf",
+              "-g"
+            ],
+            "command": [
+              "named"
+            ],
+            "env": [
+              {
+                "name": "TZ",
+                "value": "UTC"
+              },
+              {
+                "name": "MALLOC_CONF",
+                "value": "dirty_decay_ms:0,muzzy_decay_ms:0"
+              }
+            ],
+            "image": "internetsystemsconsortium/bind9:9.18",
+            "imagePullPolicy": "IfNotPresent",
+            "lifecycle": {
+              "preStop": {
+                "exec": {
+                  "command": [
+                    "/bin/sh",
+                    "-c",
+                    "sleep 10; rndc -c /etc/bind/rndc.conf sync -clean || true"
+                  ]
+                }
+              }
+            },
+            "livenessProbe": {
+              "failureThreshold": 3,
+              "initialDelaySeconds": 30,
+              "periodSeconds": 10,
+              "successThreshold": 1,
+              "tcpSocket": {
+                "port": 5353
+              },
+              "timeoutSeconds": 5
+            },
+            "name": "bind9",
+            "ports": [
+              {
+                "containerPort": 5353,
+                "name": "dns-tcp",
+                "protocol": "TCP"
+              },
+              {
+                "containerPort": 5353,
+                "name": "dns-udp",
+                "protocol": "UDP"
+              },
+              {
+                "containerPort": 9530,
+                "name": "rndc",
+                "protocol": "TCP"
+              }
+            ],
+            "readinessProbe": {
+              "failureThreshold": 3,
+              "initialDelaySeconds": 10,
+              "periodSeconds": 5,
+              "successThreshold": 1,
+              "tcpSocket": {
+                "port": 5353
+              },
+              "timeoutSeconds": 3
+            },
+            "resources": {},
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              },
+              "runAsGroup": 101,
+              "runAsNonRoot": true,
+              "runAsUser": 101,
+              "seccompProfile": {
+                "type": "RuntimeDefault"
+              }
+            },
+            "terminationMessagePath": "/dev/termination-log",
+            "terminationMessagePolicy": "File",
+            "volumeMounts": [
+              {
+                "mountPath": "/etc/bind/zones",
+                "name": "zones"
+              },
+              {
+                "mountPath": "/var/cache/bind",
+                "name": "cache"
+              },
+              {
+                "mountPath": "/etc/bind/keys",
+                "name": "rndc-key",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/etc/bind/named.conf",
+                "name": "config",
+                "subPath": "named.conf"
+              },
+              {
+                "mountPath": "/etc/bind/named.conf.options",
+                "name": "config",
+                "subPath": "named.conf.options"
+              },
+              {
+                "mountPath": "/etc/bind/rndc.conf",
+                "name": "config",
+                "subPath": "rndc.conf"
+              },
+              {
+                "mountPath": "/var/cache/bind/keys",
+                "name": "dnssec-keys"
+              }
+            ]
+          },
+          {
+            "env": [
+              {
+                "name": "BIND_ZONE_DIR",
+                "value": "/var/cache/bind"
+              },
+              {
+                "name": "API_PORT",
+                "value": "8080"
+              },
+              {
+                "name": "RUST_LOG",
+                "value": "info"
+              },
+              {
+                "name": "BIND_ALLOWED_SERVICE_ACCOUNTS",
+                "value": "system:serviceaccount:bindy-system:bindy"
+              },
+              {
+                "name": "BIND_TOKEN_AUDIENCES",
+                "value": "bindcar"
+              },
+              {
+                "name": "TMPDIR",
+                "value": "/tmp"
+              },
+              {
+                "name": "RNDC_SECRET",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "secret",
+                    "name": "example-dns-primary-0-rndc-key",
+                    "optional": false
+                  }
+                }
+              },
+              {
+                "name": "RNDC_ALGORITHM",
+                "valueFrom": {
+                  "secretKeyRef": {
+                    "key": "algorithm",
+                    "name": "example-dns-primary-0-rndc-key",
+                    "optional": false
+                  }
+                }
+              },
+              {
+                "name": "NSUPDATE_PORT",
+                "value": "5353"
+              },
+              {
+                "name": "BINDY_ROLLOUT_TEST",
+                "value": "1"
+              }
+            ],
+            "image": "ghcr.io/firestoned/bindcar:v0.9.0",
+            "imagePullPolicy": "IfNotPresent",
+            "name": "api",
+            "ports": [
+              {
+                "containerPort": 8080,
+                "name": "http",
+                "protocol": "TCP"
+              }
+            ],
+            "readinessProbe": {
+              "failureThreshold": 3,
+              "httpGet": {
+                "path": "/api/v1/ready",
+                "port": 8080,
+                "scheme": "HTTP"
+              },
+              "initialDelaySeconds": 10,
+              "periodSeconds": 5,
+              "successThreshold": 1,
+              "timeoutSeconds": 3
+            },
+            "resources": {},
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              },
+              "readOnlyRootFilesystem": true,
+              "runAsGroup": 101,
+              "runAsNonRoot": true,
+              "runAsUser": 101,
+              "seccompProfile": {
+                "type": "RuntimeDefault"
+              }
+            },
+            "terminationMessagePath": "/dev/termination-log",
+            "terminationMessagePolicy": "File",
+            "volumeMounts": [
+              {
+                "mountPath": "/var/cache/bind",
+                "name": "cache"
+              },
+              {
+                "mountPath": "/etc/bind/keys",
+                "name": "rndc-key",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/etc/bind/rndc.conf",
+                "name": "config",
+                "subPath": "rndc.conf"
+              },
+              {
+                "mountPath": "/tmp",
+                "name": "tmp"
+              }
+            ]
+          }
+        ],
+        "dnsPolicy": "ClusterFirst",
+        "initContainers": [
+          {
+            "args": [
+              "-c",
+              "set -eu\nsrc=\"$1\"; dst=\"$2\"; n=0\nfor f in \"$src\"/*; do\n  [ -f \"$f\" ] || continue\n  base=\"${f##*/}\"\n  name=\"$(printf '%s' \"$base\" | sed -nE 's/^(K.+)_([0-9]{3})_([0-9]{5})\\.(key|private|state)$/\\1+\\2+\\3.\\4/p')\"\n  if [ -z \"$name\" ]; then\n    echo \"dnssec-keys-init: skipping $base (not K<zone>._<alg>_<id>.key|private|state)\" >&2\n    continue\n  fi\n  cp -L \"$f\" \"$dst/$name\"\n  chmod 0600 \"$dst/$name\"\n  echo \"dnssec-keys-init: $base -> $name\"\n  n=$((n + 1))\ndone\nif [ \"$n\" -eq 0 ]; then\n  echo \"dnssec-keys-init: no DNSSEC key files in $src\" >&2\n  exit 1\nfi\n",
+              "sh",
+              "/etc/bind/dnssec-keys-source",
+              "/var/cache/bind/keys"
+            ],
+            "command": [
+              "sh"
+            ],
+            "image": "internetsystemsconsortium/bind9:9.18",
+            "imagePullPolicy": "IfNotPresent",
+            "name": "dnssec-keys-init",
+            "resources": {},
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              },
+              "readOnlyRootFilesystem": true,
+              "runAsGroup": 101,
+              "runAsNonRoot": true,
+              "runAsUser": 101,
+              "seccompProfile": {
+                "type": "RuntimeDefault"
+              }
+            },
+            "terminationMessagePath": "/dev/termination-log",
+            "terminationMessagePolicy": "File",
+            "volumeMounts": [
+              {
+                "mountPath": "/etc/bind/dnssec-keys-source",
+                "name": "dnssec-keys-source",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/var/cache/bind/keys",
+                "name": "dnssec-keys"
+              }
+            ]
+          }
+        ],
+        "readinessGates": [
+          {
+            "conditionType": "bindy.firestoned.io/zones-loaded"
+          }
+        ],
+        "restartPolicy": "Always",
+        "schedulerName": "default-scheduler",
+        "securityContext": {
+          "fsGroup": 101,
+          "runAsGroup": 101,
+          "runAsNonRoot": true,
+          "runAsUser": 101,
+          "seccompProfile": {
+            "type": "RuntimeDefault"
+          }
+        },
+        "serviceAccount": "bind9",
+        "serviceAccountName": "bind9",
+        "terminationGracePeriodSeconds": 45,
+        "topologySpreadConstraints": [
+          {
+            "labelSelector": {
+              "matchLabels": {
+                "bindy.firestoned.io/cluster": "example-dns",
+                "bindy.firestoned.io/role": "primary"
+              }
+            },
+            "maxSkew": 1,
+            "topologyKey": "topology.kubernetes.io/zone",
+            "whenUnsatisfiable": "ScheduleAnyway"
+          }
+        ],
+        "volumes": [
+          {
+            "emptyDir": {},
+            "name": "zones"
+          },
+          {
+            "emptyDir": {},
+            "name": "cache"
+          },
+          {
+            "name": "rndc-key",
+            "secret": {
+              "defaultMode": 420,
+              "secretName": "example-dns-primary-0-rndc-key"
+            }
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "tmp"
+          },
+          {
+            "configMap": {
+              "defaultMode": 420,
+              "name": "example-dns-config"
+            },
+            "name": "config"
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "dnssec-keys"
+          },
+          {
+            "name": "dnssec-keys-source",
+            "secret": {
+              "defaultMode": 288,
+              "secretName": "example-dnssec-keys"
+            }
+          }
+        ]
+      }
+    }
+  }
+}

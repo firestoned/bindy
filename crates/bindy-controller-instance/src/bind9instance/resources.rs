@@ -9,13 +9,19 @@
 #[allow(clippy::wildcard_imports)]
 use super::types::*;
 
+use super::template_drift::{
+    env_equivalent, list_equivalent, map_equivalent, pull_policy_equivalent, resources_equivalent,
+};
 use crate::bind9::Bind9Manager;
 use crate::bind9_resources::{
     build_cluster_configmap, build_configmap, build_deployment, build_service,
     build_service_account,
 };
 use crate::constants::{API_GROUP_VERSION, KIND_BIND9_INSTANCE};
-use crate::rollout::{InstanceId, RolloutDecision, RolloutGate, RolloutStatus};
+use crate::rollout::{
+    rollout_queued, InstanceId, PatchOutcome, RolloutDecision, RolloutGate, RolloutStatus,
+    TemplateStart,
+};
 use anyhow::Context as _;
 use bindy_controller_sdk::resources::create_or_apply;
 
@@ -1155,9 +1161,16 @@ pub(super) enum DeploymentChange {
 /// A pod-template difference wins over a replica difference: the patch that
 /// applies it rolls the pods either way.
 fn deployment_change(current: &Deployment, desired: &Deployment) -> DeploymentChange {
-    if pod_template_needs_update(current, desired) {
+    if let Some(field) = template_difference(current, desired) {
+        debug!("Pod template differs in {field}");
         return DeploymentChange::Template;
     }
+    replica_change(current, desired)
+}
+
+/// [`DeploymentChange::Scale`] when `spec.replicas` differs, else
+/// [`DeploymentChange::None`]. The pod template is not looked at.
+fn replica_change(current: &Deployment, desired: &Deployment) -> DeploymentChange {
     let desired_replicas = desired.spec.as_ref().and_then(|s| s.replicas);
     let current_replicas = current.spec.as_ref().and_then(|s| s.replicas);
     if desired_replicas != current_replicas {
@@ -1177,143 +1190,135 @@ fn deployment_needs_update(current: &Deployment, desired: &Deployment) -> bool {
     deployment_change(current, desired) != DeploymentChange::None
 }
 
-/// Whether the pod template bindy renders differs from the running one, in
-/// the fields bindy owns. Returns true if any of the following have changed:
-/// - API container image
-/// - API container environment variables
-/// - API container imagePullPolicy
-/// - API container resources
-/// - The BIND config hash on the pod template
+/// The bindcar (`api`) container of a Deployment's pod template.
+fn bindcar_container(deployment: &Deployment) -> Option<&k8s_openapi::api::core::v1::Container> {
+    deployment
+        .spec
+        .as_ref()?
+        .template
+        .spec
+        .as_ref()?
+        .containers
+        .iter()
+        .find(|c| c.name == crate::constants::CONTAINER_NAME_BINDCAR)
+}
+
+/// The first pod-template field bindy owns in which the running Deployment
+/// differs from the rendered one, or `None` when they match. The fields:
+/// - the BIND config hash on the pod template
 ///   ([`crate::bind9_resources::CONFIG_HASH_ANNOTATION`])
-/// - Volumes, init containers, topology spread constraints, the pod's
-///   `readinessGates` (ADR-0017) and the pod template labels
-fn pod_template_needs_update(current: &Deployment, desired: &Deployment) -> bool {
+/// - volumes and bind9 volume mounts, init containers
+/// - the bindcar container's image, env, imagePullPolicy and resources
+/// - topology spread constraints, the pod's `readinessGates` (ADR-0017) and
+///   the pod template labels
+///
+/// Fields are compared semantically ([`super::template_drift`]): what the
+/// API server stores for an absent or non-canonical value equals that value.
+/// A plain `!=` reported a difference no patch could remove, and with the
+/// rollout queue (ADR-0018) that became a reconcile hot loop.
+///
+/// # Returns
+/// A short name of the differing field, for logs.
+fn template_difference(current: &Deployment, desired: &Deployment) -> Option<&'static str> {
     // The BIND config the pods mount changed: roll them.
     if let Some(desired_hash) = config_hash_of(desired) {
         if config_hash_of(current) != Some(desired_hash) {
-            debug!("BIND config hash changed: rolling the pods");
-            return true;
+            return Some("the BIND config hash");
         }
     }
 
     // A volume or bind9 mount bindy now renders (e.g. the DNSSEC key volume
     // after signing was enabled) is missing from the running Deployment.
     if volumes_missing(current, desired) {
-        debug!("Pod volumes or bind9 volume mounts changed");
-        return true;
+        return Some("pod volumes or bind9 volume mounts");
     }
 
     // An init container added or removed (the DNSSEC key copy, ADR-0012).
     if init_container_names(current) != init_container_names(desired) {
-        debug!("Pod init containers changed");
-        return true;
+        return Some("init containers");
     }
 
-    // Get the current api container
-    let current_api_container = current
-        .spec
-        .as_ref()
-        .and_then(|s| s.template.spec.as_ref())
-        .and_then(|pod_spec| {
-            pod_spec
-                .containers
-                .iter()
-                .find(|c| c.name == crate::constants::CONTAINER_NAME_BINDCAR)
-        });
-
-    // Get the desired api container
-    let desired_api_container = desired
-        .spec
-        .as_ref()
-        .and_then(|s| s.template.spec.as_ref())
-        .and_then(|pod_spec| {
-            pod_spec
-                .containers
-                .iter()
-                .find(|c| c.name == crate::constants::CONTAINER_NAME_BINDCAR)
-        });
-
-    // Check api container fields if both exist
-    if let (Some(current_api), Some(desired_api)) = (current_api_container, desired_api_container) {
-        // Check image
-        if current_api.image != desired_api.image {
-            debug!(
-                "API container image changed: current={:?}, desired={:?}",
-                current_api.image, desired_api.image
-            );
-            return true;
-        }
-
-        // Check env variables
-        if current_api.env != desired_api.env {
-            debug!("API container env changed");
-            return true;
-        }
-
-        // Check imagePullPolicy
-        if current_api.image_pull_policy != desired_api.image_pull_policy {
-            debug!(
-                "API container imagePullPolicy changed: current={:?}, desired={:?}",
-                current_api.image_pull_policy, desired_api.image_pull_policy
-            );
-            return true;
-        }
-
-        // Check resources
-        if current_api.resources != desired_api.resources {
-            debug!("API container resources changed");
-            return true;
-        }
-    } else if current_api_container.is_some() != desired_api_container.is_some() {
-        // One exists but not the other - needs update
-        debug!("API container existence changed");
-        return true;
+    if let Some(field) = bindcar_difference(bindcar_container(current), bindcar_container(desired))
+    {
+        return Some(field);
     }
 
     // Scheduling fields. Without this the operator would happily create a
     // Deployment with topology spread constraints and then never reconcile a
-    // later change to them: every field below is absent from the comparison
-    // above, so `placement` edits would silently never reach a running
-    // Deployment.
+    // later change to them: `placement` edits would silently never reach a
+    // running Deployment.
     let current_pod = current.spec.as_ref().and_then(|s| s.template.spec.as_ref());
     let desired_pod = desired.spec.as_ref().and_then(|s| s.template.spec.as_ref());
 
-    if current_pod.and_then(|p| p.topology_spread_constraints.as_ref())
-        != desired_pod.and_then(|p| p.topology_spread_constraints.as_ref())
-    {
-        debug!("Pod topologySpreadConstraints changed");
-        return true;
+    if !list_equivalent(
+        current_pod.and_then(|p| p.topology_spread_constraints.as_ref()),
+        desired_pod.and_then(|p| p.topology_spread_constraints.as_ref()),
+    ) {
+        return Some("topologySpreadConstraints");
     }
 
     // The zones-loaded readiness gate (ADR-0017). A Deployment created by an
     // operator that predates the gate has none; patching it in rolls the pods
     // once, after which every new pod waits for its zones.
-    if current_pod.and_then(|p| p.readiness_gates.as_ref())
-        != desired_pod.and_then(|p| p.readiness_gates.as_ref())
-    {
-        debug!("Pod readinessGates changed");
-        return true;
+    if !list_equivalent(
+        current_pod.and_then(|p| p.readiness_gates.as_ref()),
+        desired_pod.and_then(|p| p.readiness_gates.as_ref()),
+    ) {
+        return Some("readinessGates");
     }
 
     // Pod template labels. `bindy.firestoned.io/cluster` is added here rather
     // than in the (immutable) selector, so an operator upgrade has to be able
     // to patch it onto Deployments that predate it.
-    let current_pod_labels = current
-        .spec
-        .as_ref()
-        .and_then(|s| s.template.metadata.as_ref())
-        .and_then(|m| m.labels.as_ref());
-    let desired_pod_labels = desired
-        .spec
-        .as_ref()
-        .and_then(|s| s.template.metadata.as_ref())
-        .and_then(|m| m.labels.as_ref());
-    if current_pod_labels != desired_pod_labels {
-        debug!("Pod template labels changed");
-        return true;
+    if !map_equivalent(pod_template_labels(current), pod_template_labels(desired)) {
+        return Some("pod template labels");
     }
 
-    false
+    None
+}
+
+/// The labels on a Deployment's pod template.
+fn pod_template_labels(
+    deployment: &Deployment,
+) -> Option<&std::collections::BTreeMap<String, String>> {
+    deployment
+        .spec
+        .as_ref()?
+        .template
+        .metadata
+        .as_ref()?
+        .labels
+        .as_ref()
+}
+
+/// The first bindcar container field bindy owns (image, env,
+/// imagePullPolicy, resources) that differs, or the container's presence.
+fn bindcar_difference(
+    current: Option<&k8s_openapi::api::core::v1::Container>,
+    desired: Option<&k8s_openapi::api::core::v1::Container>,
+) -> Option<&'static str> {
+    let (current, desired) = match (current, desired) {
+        (Some(current), Some(desired)) => (current, desired),
+        (None, None) => return None,
+        _ => return Some("the bindcar container's presence"),
+    };
+    if current.image != desired.image {
+        return Some("the bindcar image");
+    }
+    if !env_equivalent(current.env.as_ref(), desired.env.as_ref()) {
+        return Some("the bindcar env");
+    }
+    if !pull_policy_equivalent(
+        current.image_pull_policy.as_deref(),
+        desired.image_pull_policy.as_deref(),
+        desired.image.as_deref(),
+    ) {
+        return Some("the bindcar imagePullPolicy");
+    }
+    if !resources_equivalent(current.resources.as_ref(), desired.resources.as_ref()) {
+        return Some("the bindcar resources");
+    }
+    None
 }
 
 /// Builds the `spec.template.spec` fragment that reconciles scheduling fields.
@@ -1535,44 +1540,65 @@ async fn create_or_update_deployment(
     let Some(current_deployment) = api.get_opt(name).await? else {
         info!("Creating Deployment {}/{}", namespace, name);
         api.create(&PostParams::default(), &deployment).await?;
-        gate.queue.leave(&me);
+        gate.queue.forget(&me);
         return Ok(RolloutStatus::None);
     };
 
-    let change = deployment_change(&current_deployment, &deployment);
-    if change == DeploymentChange::None {
+    let current_generation = current_deployment.metadata.generation.unwrap_or_default();
+    let full_patch = build_deployment_patch(&deployment);
+    let fingerprint = patch_fingerprint(&full_patch);
+
+    // A pod-template change waits for conflicting rollouts (ADR-0018),
+    // unless this very patch already changed nothing at this generation.
+    let mut change = deployment_change(&current_deployment, &deployment);
+    let mut decision = None;
+    if change == DeploymentChange::Template {
+        match gate.begin(instance, current_generation, fingerprint) {
+            TemplateStart::KnownNoop => {
+                debug!(
+                    "Deployment {}/{}: the pod template patch is known to change nothing at generation {}, treating the template as up to date",
+                    namespace, name, current_generation
+                );
+                change = replica_change(&current_deployment, &deployment);
+            }
+            TemplateStart::Decided(decided) => decision = Some(decided),
+        }
+    }
+
+    let Some(decision) = decision else {
+        gate.queue.leave(&me);
+        if change == DeploymentChange::Scale {
+            info!("Scaling Deployment {}/{}", namespace, name);
+            api.patch(
+                name,
+                &PatchParams::default(),
+                &Patch::Strategic(&build_scale_patch(&deployment)),
+            )
+            .await?;
+            return Ok(RolloutStatus::None);
+        }
         debug!(
             "Deployment {}/{} is up to date, skipping patch",
             namespace, name
         );
-        gate.queue.leave(&me);
         return Ok(RolloutStatus::None);
-    }
+    };
 
-    if change == DeploymentChange::Scale {
-        info!("Scaling Deployment {}/{}", namespace, name);
-        gate.queue.leave(&me);
-        api.patch(
-            name,
-            &PatchParams::default(),
-            &Patch::Strategic(&build_scale_patch(&deployment)),
-        )
-        .await?;
-        return Ok(RolloutStatus::None);
-    }
-
-    // A pod-template change: wait for conflicting rollouts (ADR-0018).
-    let current_generation = current_deployment.metadata.generation.unwrap_or_default();
-    let decision = gate.decide(instance, current_generation);
-    let status = RolloutStatus::from_decision(&decision);
     if let RolloutDecision::Wait { blocker, .. } = &decision {
-        info!(
-            "Deployment {}/{} has a pod template change queued behind Bind9Instance {}",
-            namespace, name, blocker
-        );
-        let desired_replicas = deployment.spec.as_ref().and_then(|s| s.replicas);
-        let current_replicas = current_deployment.spec.as_ref().and_then(|s| s.replicas);
-        if desired_replicas != current_replicas {
+        // Logged at INFO when the instance joins the queue; a waiter is
+        // reconciled again on every wake, which is not news.
+        if rollout_queued(instance) {
+            debug!(
+                "Deployment {}/{} still has a pod template change queued behind Bind9Instance {}",
+                namespace, name, blocker
+            );
+        } else {
+            info!(
+                "Deployment {}/{} has a pod template change queued behind Bind9Instance {}",
+                namespace, name, blocker
+            );
+        }
+        if replica_change(&current_deployment, &deployment) == DeploymentChange::Scale {
             api.patch(
                 name,
                 &PatchParams::default(),
@@ -1580,7 +1606,7 @@ async fn create_or_update_deployment(
             )
             .await?;
         }
-        return Ok(status);
+        return Ok(RolloutStatus::from_decision(&decision));
     }
 
     info!(
@@ -1591,7 +1617,7 @@ async fn create_or_update_deployment(
         .patch(
             name,
             &PatchParams::default(),
-            &Patch::Strategic(&build_deployment_patch(&deployment)),
+            &Patch::Strategic(&full_patch),
         )
         .await
     {
@@ -1601,12 +1627,38 @@ async fn create_or_update_deployment(
             return Err(e.into());
         }
     };
-    // A patch that changed nothing (the drift check saw a difference the API
-    // server's defaulting erases) rolls nothing: do not hold the others.
-    if patched.metadata.generation.unwrap_or_default() <= current_generation {
-        gate.queue.release(&me);
+    let outcome = gate.queue.finish_template_patch(
+        &me,
+        &decision,
+        current_generation,
+        patched.metadata.generation.unwrap_or_default(),
+        fingerprint,
+    );
+    match outcome {
+        PatchOutcome::Rolled(status) => Ok(status),
+        PatchOutcome::NoOp => {
+            // The drift check saw a difference the API server's defaulting
+            // erases. Once per patch and generation: the queue remembers it.
+            warn!(
+                "Deployment {}/{}: the pod template patch for {} changed nothing (generation {} unchanged); treating the template as up to date",
+                namespace,
+                name,
+                template_difference(&current_deployment, &deployment).unwrap_or("an unknown field"),
+                current_generation
+            );
+            Ok(RolloutStatus::None)
+        }
     }
-    Ok(status)
+}
+
+/// A fingerprint of a Deployment patch, to recognise the same patch sent
+/// again ([`crate::rollout::RolloutQueue::begin_template_change`]). Stable
+/// within the process, which is as long as the queue lives.
+fn patch_fingerprint(patch: &serde_json::Value) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    patch.to_string().hash(&mut hasher);
+    hasher.finish()
 }
 
 /// Create or update the Service for BIND9

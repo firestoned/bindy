@@ -1,0 +1,67 @@
+{
+  "apiVersion": "bindy.firestoned.io/v1beta1",
+  "kind": "Bind9Cluster",
+  "metadata": {
+    "finalizers": [
+      "bindy.firestoned.io/bind9cluster-finalizer"
+    ],
+    "generation": 8,
+    "name": "example-dns",
+    "namespace": "dns-system"
+  },
+  "spec": {
+    "global": {
+      "allowQuery": [
+        "127.0.0.1",
+        "198.51.100.0/24",
+        "203.0.113.0/24",
+        "192.0.2.0/25"
+      ],
+      "bindcarConfig": {
+        "envVars": [
+          {
+            "name": "BINDY_ROLLOUT_TEST",
+            "value": "1"
+          }
+        ]
+      },
+      "dnssec": {
+        "signing": {
+          "algorithm": "ECDSAP256SHA256",
+          "enabled": true,
+          "keysFrom": {
+            "secretRef": {
+              "name": "example-dnssec-keys"
+            }
+          },
+          "nsec3": true,
+          "nsec3Iterations": 0,
+          "policy": "example-dns"
+        },
+        "validation": true
+      },
+      "forwarders": [
+        "192.0.2.53"
+      ],
+      "recursion": true
+    },
+    "primary": {
+      "replicas": 2,
+      "service": {
+        "spec": {
+          "externalTrafficPolicy": "Local",
+          "type": "LoadBalancer"
+        }
+      }
+    },
+    "secondary": {
+      "replicas": 1,
+      "service": {
+        "spec": {
+          "type": "ClusterIP"
+        }
+      }
+    },
+    "version": "9.18"
+  }
+}

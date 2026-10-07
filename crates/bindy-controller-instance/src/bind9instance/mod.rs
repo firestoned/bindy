@@ -12,6 +12,8 @@
 //! - [`config`] - RNDC configuration precedence resolution
 //! - [`resources`] - Resource lifecycle (`ConfigMap`, Deployment, Service)
 //! - [`status_helpers`] - Status calculation and updates
+//! - `template_drift` - Semantic comparison of the pod-template fields bindy
+//!   owns, absorbing the API server's defaulting
 //! - [`types`] - Shared types and imports
 //! - [`zones`] - Zone reconciliation logic
 
@@ -20,6 +22,7 @@ pub mod cluster_helpers;
 pub mod config;
 pub mod resources;
 pub mod status_helpers;
+mod template_drift;
 pub mod types;
 pub mod zones;
 
@@ -304,8 +307,8 @@ pub(crate) async fn reconcile_bind9instance(
     // Check if the instance is being deleted
     if instance.metadata.deletion_timestamp.is_some() {
         // A deleted instance waits for nothing and must not hold a place in
-        // the rollout queue (ADR-0018).
-        rollouts.leave(&InstanceId::of(&instance));
+        // the rollout queue (ADR-0018), nor a known no-op patch.
+        rollouts.forget(&InstanceId::of(&instance));
         handle_deletion(&client, &instance, FINALIZER_BIND9_INSTANCE, || {
             cleanup_bind9instance(&instance, &client)
         })

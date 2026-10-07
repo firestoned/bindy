@@ -60,7 +60,7 @@ classDef highlight fill:#fdf7ec,stroke:#f0c060,stroke-width:1px,color:#000000;
     crd-cluster -->|creates / owns| crd-instance
     crd-instance -->|creates / owns Deployment; a pod-template change is applied only while no instance sharing a zone or a cluster with it is mid-rollout, one at a time in queue order #40;ADR-0018#41;| bind9-pod
     crd-dnszone -->|selects member records via label selector| crd-records
-    bindy-operator -->|watches BIND9 pods #40;label-selected#41; and patches the bindy.firestoned.io/zones-loaded condition on pods/status once every live zone and its records are loaded on the pod, and back to False when the pod starts terminating so traffic moves before named exits #40;ADR-0017, amended 2026-10-07#41;| bind9-pod
+    bindy-operator -->|watches BIND9 pods #40;label-selected#41; and patches the bindy.firestoned.io/zones-loaded condition on pods/status once every live zone and its records are loaded on the pod, and back to False when the pod starts terminating; the Ready condition of the pod follows on the next kubelet status sync #40;ADR-0017, amended and corrected 2026-10-07#41;| bind9-pod
     bindy-operator -->|add / delete / notify zones #40;SA token, TokenReview#41;, on every container-ready pod, including pods the zones-loaded gate holds out of Service #40;ADR-0017#41;| bindcar
     bindy-operator -->|DNS UPDATE #40;RFC 2136, TSIG#41;| named
     bindy-operator -->|queries DNSKEY #40;read-only, DNS over UDP :5353#41; to derive DS records for DNSZone status — ADR-0006| named
@@ -68,7 +68,7 @@ classDef highlight fill:#fdf7ec,stroke:#f0c060,stroke-width:1px,color:#000000;
     dnssec-keys-init -->|reads the shared DNSSEC keys #40;Secret volume, read-only, init container only#41; - ADR-0012| dnssec-key-secret
     dnssec-keys-init -->|copies the keys into named's writable key-directory #40;emptyDir#41; before named starts - ADR-0012| named
     dns-client -->|DNS query| bind9-svc
-    bind9-svc -->|routes :53 to named :5353 on Ready pods only; a pod is Ready once its zones-loaded readiness gate is True, and stops being Ready as soon as it starts terminating #40;ADR-0017#41;| named
+    bind9-svc -->|routes :53 to named :5353 on Ready pods only; a pod is Ready once its zones-loaded readiness gate is True, and stops being Ready once the kubelet syncs the closed gate of a terminating pod #40;ADR-0017#41;| named
 
 
 

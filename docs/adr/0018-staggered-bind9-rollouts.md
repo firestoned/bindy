@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-07
 - **Deciders:** Erick Bourgeois
+- **Amended:** 2026-10-07 (Decision 8: a pod-template patch that bumps no generation is not a rollout; the drift check compares semantically; found on v0.8.0-rc.6 as a reconcile hot loop)
 - **Related:** Builds on [ADR-0017](0017-zones-loaded-readiness-gate.md) (a new pod is Ready only with its zones; decision 6, the handover at termination), [ADR-0016](0016-event-driven-reconciliation.md) (every wake is a watch event or a backoff retry), [ADR-0013](0013-validate-and-render-bind9-config-with-hornet.md) (a change of the rendered configuration rolls every pod) and [ADR-0009](0009-workspace-crate-split-and-shared-watch-layer.md) §3 and §5 (shared watches, pure mappers)
 
 ## Context
@@ -101,9 +102,10 @@ of a zone from landing together.
      `spec.replicas`, or a non-terminating pod of the instance is not `Ready`
      (its zones-loaded gate is still closed).
 
-   A terminating old pod does not count: by then ADR-0017 decision 6 has
-   moved its traffic, and the next instance's own handover is at least that
-   instance's pod start plus its zone load away.
+   A terminating old pod does not count: by then its replacement is Ready
+   (`maxUnavailable` 0 and the zones-loaded gate), and the next instance's
+   own handover is at least that instance's pod start plus its zone load
+   away.
 
 5. **Ordering, with no deadlock and no starvation.** A process-wide
    `RolloutQueue` (one per operator; only the leader reconciles) holds two
@@ -112,8 +114,8 @@ of a zone from landing together.
      it is deferred (first come, first served);
    - **claims**: an instance that has decided to roll holds a claim from the
      decision until the Deployment store shows its patch (store generation
-     above the generation it decided on), or the patch fails or changed
-     nothing (released at once). The claim closes the window in which two
+     above the generation it decided on), or the patch fails (released at
+     once) or changes nothing (decision 8). The claim closes the window in which two
      instances reconciling at the same moment would both read an idle store
      and both roll.
 
@@ -166,6 +168,44 @@ of a zone from landing together.
    `type: Rollout, status: "True", reason: RolloutPeerStalled` naming that
    peer, until its next status write.
 
+8. **A template patch that changes nothing is not a rollout** (amended
+   2026-10-07). Two parts:
+   - **The drift check compares semantically.** The API server defaults and
+     canonicalises what it stores: an absent `resources` comes back as `{}`,
+     `0.5` CPU as `500m`, an env `value: ""` as absent, a `fieldRef` gains
+     `apiVersion: v1`, an absent `imagePullPolicy` becomes the image's
+     default. Every pod-template field bindy owns is compared with those
+     differences absorbed (`bind9instance/template_drift.rs`), so a
+     Deployment bindy rendered compares equal to itself as stored. A
+     regression test builds the desired Deployment from a sanitized capture
+     of a live instance, cluster and ConfigMap and requires no difference
+     from the captured live Deployment.
+   - **Defence in depth: a no-op patch is remembered.** If a template patch
+     still bumps no `metadata.generation`, the drift check was wrong. The
+     instance drops its claim, leaves the waiting list, reports no
+     `Rollout` condition, and the queue remembers the patch (its
+     fingerprint and the generation it was sent to) as a known no-op
+     (`RolloutQueue::finish_template_patch`). Its next reconciles treat the
+     template as up to date while both are unchanged
+     (`RolloutQueue::begin_template_change`), applying only a replica
+     change if there is one. The waiters are woken once (one may wait for
+     the dropped claim), which cannot repeat: an instance claims, and
+     wakes, at most once per known no-op. It is logged once, at `WARN`,
+     naming the field the drift check saw. Like the rest of the queue, the
+     memory is per process: after a restart or a leader change each
+     affected instance re-learns it with one more no-op patch.
+
+   *Why.* On rc.6 the bindcar container's `resources: {}` never equalled
+   the `None` bindy renders. Before the queue that cost one no-op PATCH per
+   reconcile; with it it became a hot loop once three instances
+   waited at the same time: each in turn classified a template change,
+   took the claim, sent a PATCH that bumped nothing, released and woke the
+   others, which did the same. About two instance reconciles and two no-op
+   Deployment PATCHes per second, about 40 `INFO` lines a minute, and
+   instances left with `RolloutQueued` naming peers after every rollout had
+   finished. The "queued behind" line is now logged at `INFO` only when an
+   instance joins the queue.
+
 ## Consequences
 
 - **A cluster-wide change rolls one nameserver at a time per zone.** For a
@@ -195,6 +235,9 @@ of a zone from landing together.
   their first reconcile (in the order they reconcile). A deposed leader's
   last in-flight reconcile (accepted risk 10 of the threat model) could roll
   one instance while the new leader rolls another.
+- **A no-op patch costs one PATCH and one `WARN`.** A comparison bug that
+  the semantic check misses can no longer loop; it shows as one `WARN` per
+  instance and Deployment generation, and is fixed in the comparison.
 - **Not done here.** Staggering across operators (two bindy installations
   serving the same zone) and a configurable concurrency (more than one
   instance of a conflict set at a time) are out of scope.

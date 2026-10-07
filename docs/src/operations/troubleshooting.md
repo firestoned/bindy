@@ -143,7 +143,7 @@ kubectl get pod <pod> -n <namespace> -o wide   # READINESS GATES column: 0/1 or 
 | `ZonesLoadFailed` | A zone could not be loaded on this pod while another pod of the instance still serves it. The old pod keeps serving; the rollout waits. Retried with backoff (2 s to 60 s). | The message names each zone and the error. Check the zone's `DNSZone` status and the operator log (`Zones-loaded gate:`). |
 | `InstanceUnknown` | The pod's `Bind9Instance` is not in the operator's cache. | Check that the instance exists; retried with backoff. |
 | `ZonesLoaded` / `NoZones` | Gate open: every live zone loaded, or no live zone selects the instance. | Nothing. |
-| `PodTerminating` | The pod is being deleted. The operator closed its gate at the start of termination so traffic moves to the remaining Ready pods while `named` drains (ADR-0017 decision 6). `kubectl get pods` shows it `0/2` (or `1/2`) until it is gone. | Nothing: expected for every terminating BIND9 pod. |
+| `PodTerminating` | The pod is being deleted. The operator closed its gate at the start of termination (ADR-0017 decision 6). The pod's `Ready` follows on the kubelet's next status sync, so `kubectl get pods` may show it `2/2` for several seconds, then `0/2` (or `1/2`) until it is gone. | Nothing: expected for every terminating BIND9 pod. |
 | `ZonesPartiallyLoaded` | Gate open, but the zones in the message could not be loaded and no other pod of the instance served them either. | Fix those zones; the `DNSZone` controller keeps retrying them. |
 
 The gate is evaluated once per pod: once `True` it stays `True` for the pod's
@@ -184,6 +184,36 @@ reports `ProgressDeadlineExceeded` (after `progressDeadlineSeconds`, 600 s by
 default); the waiting instance then rolls and reports
 `Rollout=True, reason: RolloutPeerStalled`. Replica changes and new
 instances are never queued.
+
+### An Instance Stays `RolloutQueued` After Every Rollout Finished
+
+Symptoms, seen on v0.8.0-rc.6: instances keep `Rollout=False/RolloutQueued`
+naming each other although every Deployment is rolled out, the operator logs
+"has a pod template change queued behind Bind9Instance ..." many times a
+minute, and the API server sees a steady stream of Deployment PATCHes that
+change nothing (`metadata.generation` does not move).
+
+Cause: the drift check saw a pod-template difference that the API server's
+defaulting erases (the bindcar container's `resources: {}` against none
+rendered), so every reconcile tried to roll and the rollout queue passed the
+turn around forever. Fixed by
+[ADR-0018](https://github.com/firestoned/bindy/blob/main/docs/adr/0018-staggered-bind9-rollouts.md)
+decision 8: owned fields are compared semantically, and a template patch
+that bumps no generation is remembered and not sent again. After upgrading,
+an affected instance clears its `Rollout` condition on its next reconcile.
+The "queued behind" line is now logged at `INFO` only when an instance joins
+the queue (`DEBUG` on later wakes).
+
+If a comparison miss ever recurs, the operator logs it once per instance and
+Deployment generation at `WARN`:
+
+```text
+Deployment <ns>/<name>: the pod template patch for <field> changed nothing (generation <n> unchanged); treating the template as up to date
+```
+
+`<field>` names what the drift check compared. Report it with the
+Deployment's `spec.template` (`kubectl get deployment <name> -n <ns> -o yaml`):
+it is a comparison bug, and the instance keeps working meanwhile.
 
 ## Debugging Steps
 

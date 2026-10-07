@@ -9,7 +9,8 @@ mod tests {
     use super::super::{
         conflict_set, decide_rollout, deployment_rollout_key, peer_rollout, peer_states,
         pod_rollout_key, rollout_condition, rollout_queued, waiters_to_wake, InstanceId,
-        PeerRollout, RolloutDecision, RolloutQueue, RolloutStatus, WaitReason,
+        PatchOutcome, PeerRollout, RolloutDecision, RolloutQueue, RolloutStatus, TemplateStart,
+        WaitReason,
     };
     use crate::crd::{Bind9Instance, DNSZone};
     use crate::status_reasons::{
@@ -792,5 +793,389 @@ mod tests {
             ..Default::default()
         });
         assert!(rollout_queued(&inst));
+    }
+
+    // ------------------------------------------------------------------
+    // No-op template patches (ADR-0018, amended 2026-10-07)
+    // ------------------------------------------------------------------
+
+    /// The fingerprint of the patch an instance sends.
+    const FINGERPRINT: u64 = 42;
+
+    /// The fingerprint of a different patch (the rendered template changed).
+    const OTHER_FINGERPRINT: u64 = 43;
+
+    /// Far more reconciles than three instances need when nothing loops.
+    const RECONCILE_BUDGET: usize = 60;
+
+    /// How an instance's rendered pod template compares with its Deployment.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Drift {
+        /// A difference no patch removes (the rc.6 `resources: {}` trap)
+        Perpetual,
+        /// No difference
+        Gone,
+    }
+
+    /// What a [`run`] did.
+    struct Run {
+        reconciles: usize,
+        patches: usize,
+    }
+
+    /// Drive reconciles the way the controller does until nothing is left
+    /// to do, panicking past [`RECONCILE_BUDGET`].
+    ///
+    /// Each round every pending instance decides (concurrent reconciles all
+    /// read the queue before any patch lands), then the proceeding ones
+    /// patch, which changes nothing. An instance is pending again when the
+    /// queue wakes it, or when its reported status changed (the status write
+    /// is a watch event on the instance).
+    fn run(
+        queue: &RolloutQueue,
+        wakes: &mut tokio::sync::mpsc::UnboundedReceiver<InstanceId>,
+        drift: &BTreeMap<InstanceId, Drift>,
+        peers_of: &dyn Fn(&InstanceId) -> Vec<(InstanceId, PeerRollout)>,
+        statuses: &mut BTreeMap<InstanceId, RolloutStatus>,
+        start: &[InstanceId],
+    ) -> Run {
+        let mut pending: BTreeSet<InstanceId> = start.iter().cloned().collect();
+        let mut done = Run {
+            reconciles: 0,
+            patches: 0,
+        };
+        while !pending.is_empty() {
+            done.reconciles += pending.len();
+            assert!(
+                done.reconciles <= RECONCILE_BUDGET,
+                "reconcile loop: {} reconciles, {} patches",
+                done.reconciles,
+                done.patches
+            );
+            let mut reported = BTreeMap::new();
+            let mut proceeding = vec![];
+            for me in &pending {
+                let status = match drift[me] {
+                    Drift::Gone => {
+                        queue.leave(me);
+                        RolloutStatus::None
+                    }
+                    Drift::Perpetual => match queue.begin_template_change(
+                        me,
+                        GENERATION,
+                        FINGERPRINT,
+                        &peers_of(me),
+                        |_| Some(GENERATION),
+                    ) {
+                        TemplateStart::KnownNoop => RolloutStatus::None,
+                        TemplateStart::Decided(decision @ RolloutDecision::Wait { .. }) => {
+                            RolloutStatus::from_decision(&decision)
+                        }
+                        TemplateStart::Decided(decision) => {
+                            proceeding.push((me.clone(), decision));
+                            continue;
+                        }
+                    },
+                };
+                reported.insert(me.clone(), status);
+            }
+            for (me, decision) in proceeding {
+                done.patches += 1;
+                // The patch bumps no generation: it changed nothing.
+                let status = match queue.finish_template_patch(
+                    &me,
+                    &decision,
+                    GENERATION,
+                    GENERATION,
+                    FINGERPRINT,
+                ) {
+                    PatchOutcome::Rolled(status) => status,
+                    PatchOutcome::NoOp => RolloutStatus::None,
+                };
+                reported.insert(me, status);
+            }
+            let mut next = BTreeSet::new();
+            while let Ok(woken) = wakes.try_recv() {
+                next.insert(woken);
+            }
+            for (me, status) in reported {
+                if statuses.get(&me) != Some(&status) {
+                    statuses.insert(me.clone(), status);
+                    next.insert(me);
+                }
+            }
+            pending = next;
+        }
+        done
+    }
+
+    /// Three instances of one cluster, plus `d`, whose real rollout they
+    /// queue behind; `d_rolling` says whether it is still rolling.
+    fn three_behind_d(
+        d_rolling: &std::cell::Cell<bool>,
+    ) -> impl Fn(&InstanceId) -> Vec<(InstanceId, PeerRollout)> + '_ {
+        move |me: &InstanceId| {
+            let d_state = if d_rolling.get() {
+                PeerRollout::Rolling("rolling out".to_string())
+            } else {
+                PeerRollout::Idle
+            };
+            ["a", "b", "c"]
+                .iter()
+                .map(|name| id(NS, name))
+                .filter(|peer| peer != me)
+                .map(|peer| (peer, PeerRollout::Idle))
+                .chain(std::iter::once((id(NS, "d"), d_state)))
+                .collect()
+        }
+    }
+
+    /// The rc.6 hot loop: three instances queued behind a real rollout, each
+    /// with a template difference no patch removes. Once the rollout ends,
+    /// each patches once, sees nothing changed, and stops; nobody is left
+    /// queued and no status says `RolloutQueued`.
+    #[test]
+    fn a_perpetual_false_diff_cannot_loop() {
+        let queue = RolloutQueue::new();
+        let mut wakes = queue.subscribe();
+        let instances = [id(NS, "a"), id(NS, "b"), id(NS, "c")];
+        let drift: BTreeMap<InstanceId, Drift> = instances
+            .iter()
+            .map(|i| (i.clone(), Drift::Perpetual))
+            .collect();
+        let d_rolling = std::cell::Cell::new(true);
+        let peers_of = three_behind_d(&d_rolling);
+        let mut statuses = BTreeMap::new();
+
+        let queued = run(
+            &queue,
+            &mut wakes,
+            &drift,
+            &peers_of,
+            &mut statuses,
+            &instances,
+        );
+        assert_eq!(queued.patches, 0, "nobody rolls while d is rolling");
+        assert_eq!(queue.waiting(), instances.to_vec());
+
+        // d's rollout completes: its Deployment events wake the waiters.
+        d_rolling.set(false);
+        let settled = run(
+            &queue,
+            &mut wakes,
+            &drift,
+            &peers_of,
+            &mut statuses,
+            &instances,
+        );
+        assert_eq!(settled.patches, instances.len(), "one no-op patch each");
+        assert!(queue.waiting().is_empty());
+        assert!(statuses.values().all(|s| *s == RolloutStatus::None));
+
+        // Any later event finds nothing to do and wakes nobody.
+        let later = run(
+            &queue,
+            &mut wakes,
+            &drift,
+            &peers_of,
+            &mut statuses,
+            &instances,
+        );
+        assert_eq!(later.patches, 0);
+        assert_eq!(later.reconciles, instances.len());
+        assert!(wakes.try_recv().is_err());
+    }
+
+    /// Two waiters whose own template stopped differing (e.g. after an
+    /// operator upgrade) leave the queue and clear their `RolloutQueued`
+    /// status when the instance ahead of them makes a no-op patch.
+    #[test]
+    fn waiters_without_a_diff_leave_when_woken_by_a_no_op_patch() {
+        let queue = RolloutQueue::new();
+        let mut wakes = queue.subscribe();
+        let instances = [id(NS, "a"), id(NS, "b"), id(NS, "c")];
+        let mut drift: BTreeMap<InstanceId, Drift> = instances
+            .iter()
+            .map(|i| (i.clone(), Drift::Perpetual))
+            .collect();
+        let d_rolling = std::cell::Cell::new(true);
+        let peers_of = three_behind_d(&d_rolling);
+        let mut statuses = BTreeMap::new();
+        let _ = run(
+            &queue,
+            &mut wakes,
+            &drift,
+            &peers_of,
+            &mut statuses,
+            &instances,
+        );
+        assert!(statuses
+            .values()
+            .all(|s| matches!(s, RolloutStatus::Queued(_))));
+
+        drift.insert(id(NS, "b"), Drift::Gone);
+        drift.insert(id(NS, "c"), Drift::Gone);
+        d_rolling.set(false);
+        let settled = run(
+            &queue,
+            &mut wakes,
+            &drift,
+            &peers_of,
+            &mut statuses,
+            &[id(NS, "a")],
+        );
+
+        assert_eq!(settled.patches, 1);
+        assert!(queue.waiting().is_empty());
+        assert!(statuses.values().all(|s| *s == RolloutStatus::None));
+    }
+
+    #[test]
+    fn a_no_op_patch_wakes_the_waiters_it_blocked() {
+        let queue = RolloutQueue::new();
+        let mut wakes = queue.subscribe();
+        let a = id(NS, "a");
+        let b = id(NS, "b");
+        let store = |_: &InstanceId| Some(GENERATION);
+        let TemplateStart::Decided(decision) =
+            queue.begin_template_change(&a, GENERATION, FINGERPRINT, &[], store)
+        else {
+            panic!("a has no known no-op");
+        };
+        let _ = queue.try_start(&b, GENERATION, &[(a.clone(), PeerRollout::Idle)], store);
+
+        let outcome =
+            queue.finish_template_patch(&a, &decision, GENERATION, GENERATION, FINGERPRINT);
+
+        assert_eq!(outcome, PatchOutcome::NoOp);
+        assert_eq!(wakes.try_recv().ok(), Some(b.clone()));
+        assert_eq!(
+            queue.try_start(&b, GENERATION, &[(a, PeerRollout::Idle)], store),
+            RolloutDecision::Proceed {
+                stalled_peers: vec![]
+            }
+        );
+    }
+
+    #[test]
+    fn a_rolling_patch_keeps_its_claim_and_reports_the_decision() {
+        let queue = RolloutQueue::new();
+        let mut wakes = queue.subscribe();
+        let a = id(NS, "a");
+        let b = id(NS, "b");
+        let decision = RolloutDecision::Proceed {
+            stalled_peers: vec![b.clone()],
+        };
+        let _ = queue.try_start(&a, GENERATION, &[], |_| Some(GENERATION));
+
+        let outcome =
+            queue.finish_template_patch(&a, &decision, GENERATION, GENERATION + 1, FINGERPRINT);
+
+        assert_eq!(
+            outcome,
+            PatchOutcome::Rolled(RolloutStatus::from_decision(&decision))
+        );
+        assert!(wakes.try_recv().is_err());
+        // b still waits for a's claim until the store shows the patch.
+        assert!(matches!(
+            queue.try_start(&b, GENERATION, &[(a, PeerRollout::Idle)], |_| Some(
+                GENERATION
+            )),
+            RolloutDecision::Wait {
+                reason: WaitReason::Claimed,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_known_no_op_is_tied_to_the_generation_and_the_patch() {
+        let queue = RolloutQueue::new();
+        let a = id(NS, "a");
+        let store = |_: &InstanceId| Some(GENERATION);
+        let TemplateStart::Decided(decision) =
+            queue.begin_template_change(&a, GENERATION, FINGERPRINT, &[], store)
+        else {
+            panic!("nothing known yet");
+        };
+        let _ = queue.finish_template_patch(&a, &decision, GENERATION, GENERATION, FINGERPRINT);
+
+        assert_eq!(
+            queue.begin_template_change(&a, GENERATION, FINGERPRINT, &[], store),
+            TemplateStart::KnownNoop
+        );
+        // A different rendered template is a new change.
+        assert!(matches!(
+            queue.begin_template_change(&a, GENERATION, OTHER_FINGERPRINT, &[], store),
+            TemplateStart::Decided(_)
+        ));
+    }
+
+    #[test]
+    fn a_known_no_op_ends_when_the_deployment_generation_moves() {
+        let queue = RolloutQueue::new();
+        let a = id(NS, "a");
+        let store = |_: &InstanceId| Some(GENERATION);
+        let TemplateStart::Decided(decision) =
+            queue.begin_template_change(&a, GENERATION, FINGERPRINT, &[], store)
+        else {
+            panic!("nothing known yet");
+        };
+        let _ = queue.finish_template_patch(&a, &decision, GENERATION, GENERATION, FINGERPRINT);
+
+        assert!(matches!(
+            queue.begin_template_change(&a, GENERATION + 1, FINGERPRINT, &[], |_| Some(
+                GENERATION + 1
+            )),
+            TemplateStart::Decided(_)
+        ));
+    }
+
+    #[test]
+    fn a_known_no_op_leaves_the_waiting_list() {
+        let queue = RolloutQueue::new();
+        let mut wakes = queue.subscribe();
+        let a = id(NS, "a");
+        let b = id(NS, "b");
+        let store = |_: &InstanceId| Some(GENERATION);
+        let TemplateStart::Decided(decision) =
+            queue.begin_template_change(&a, GENERATION, FINGERPRINT, &[], store)
+        else {
+            panic!("nothing known yet");
+        };
+        let _ = queue.finish_template_patch(&a, &decision, GENERATION, GENERATION, FINGERPRINT);
+        let _ = queue.try_start(&b, GENERATION, &[], store);
+        // a got back on the waiting list behind a rolling c (a stale state
+        // from before the no-op was learnt)...
+        let rolling_c = (id(NS, "c"), PeerRollout::Rolling("r".to_string()));
+        let _ = queue.try_start(&a, GENERATION, &[rolling_c], store);
+        while wakes.try_recv().is_ok() {}
+
+        // ...a reconcile that knows the patch is a no-op takes it off.
+        assert_eq!(
+            queue.begin_template_change(&a, GENERATION, FINGERPRINT, &[], store),
+            TemplateStart::KnownNoop
+        );
+        assert!(!queue.waiting().contains(&a));
+    }
+
+    #[test]
+    fn forgetting_an_instance_drops_its_known_no_op() {
+        let queue = RolloutQueue::new();
+        let a = id(NS, "a");
+        let store = |_: &InstanceId| Some(GENERATION);
+        let TemplateStart::Decided(decision) =
+            queue.begin_template_change(&a, GENERATION, FINGERPRINT, &[], store)
+        else {
+            panic!("nothing known yet");
+        };
+        let _ = queue.finish_template_patch(&a, &decision, GENERATION, GENERATION, FINGERPRINT);
+
+        queue.forget(&a);
+
+        assert!(matches!(
+            queue.begin_template_change(&a, GENERATION, FINGERPRINT, &[], store),
+            TemplateStart::Decided(_)
+        ));
     }
 }

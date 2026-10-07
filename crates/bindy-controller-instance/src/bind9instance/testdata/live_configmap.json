@@ -1,0 +1,22 @@
+{
+  "apiVersion": "v1",
+  "data": {
+    "named.conf": "include \"/etc/bind/named.conf.options\";\n\ninclude \"/etc/bind/keys/rndc.key\";\n\ncontrols {\n    inet 127.0.0.1 port 9530 allow { localhost; } keys { \"bindy-operator\"; };\n};\n\nlogging {\n    channel \"default_stderr\" {\n        stderr;\n        severity info;\n        print-time iso8601;\n        print-severity yes;\n        print-category yes;\n    };\n    channel \"queries_stderr\" {\n        stderr;\n        severity info;\n        print-time iso8601;\n        print-severity yes;\n        print-category yes;\n    };\n    channel \"security_stderr\" {\n        stderr;\n        severity warning;\n        print-time iso8601;\n        print-severity yes;\n        print-category yes;\n    };\n    category \"default\" {\n        \"default_stderr\";\n    };\n    category \"general\" {\n        \"default_stderr\";\n    };\n    category \"config\" {\n        \"default_stderr\";\n    };\n    category \"network\" {\n        \"default_stderr\";\n    };\n    category \"queries\" {\n        \"queries_stderr\";\n    };\n    category \"security\" {\n        \"security_stderr\";\n    };\n    category \"dnssec\" {\n        \"security_stderr\";\n    };\n    category \"xfer-in\" {\n        \"default_stderr\";\n    };\n    category \"xfer-out\" {\n        \"default_stderr\";\n    };\n    category \"notify\" {\n        \"default_stderr\";\n    };\n    category \"update\" {\n        \"default_stderr\";\n    };\n    category \"update-security\" {\n        \"security_stderr\";\n    };\n};\n",
+    "named.conf.options": "options {\n    directory \"/var/cache/bind\";\n    dump-file \"/var/cache/bind/cache_dump.db\";\n    statistics-file \"/var/cache/bind/named_stats.txt\";\n    memstatistics-file \"/var/cache/bind/named_mem_stats.txt\";\n    pid-file \"/var/cache/bind/named.pid\";\n    session-keyfile \"/var/cache/bind/session.key\";\n    key-directory \"/var/cache/bind/keys\";\n    listen-on port 5353 { any; };\n    listen-on-v6 port 5353 { any; };\n    forwarders {\n        192.0.2.53;\n    };\n    allow-query { 127.0.0.1; 198.51.100.0/24; 203.0.113.0/24; 192.0.2.0/25; };\n    allow-transfer { none; };\n    recursion yes;\n    allow-new-zones yes;\n    dnssec-validation auto;\n    rate-limit {\n        responses-per-second 15;\n    };\n};\n\ndnssec-policy \"example-dns\" {\n    keys {\n        ksk lifetime unlimited algorithm ECDSAP256SHA256;\n        zsk lifetime unlimited algorithm ECDSAP256SHA256;\n    };\n    max-zone-ttl 86400;\n    nsec3param iterations 0 optout no salt-length 16;\n    parent-propagation-delay 3600;\n    signatures-refresh 5d;\n    signatures-validity 30d;\n    signatures-validity-dnskey 30d;\n    zone-propagation-delay 300;\n};\n",
+    "rndc.conf": "# RNDC client configuration for bindy operator\n# This file is used by the 'rndc' command-line tool to connect to BIND9\n# Key file is mounted from Secret at /etc/bind/keys/rndc.key\n\ninclude \"/etc/bind/keys/rndc.key\";\n\n# Default options for RNDC client\n# Using 127.0.0.1 to connect to local BIND9 instance within the same pod\noptions {\n    default-server 127.0.0.1;\n    default-port 9530;\n    default-key \"bindy-operator\";\n};\n\n# Server configuration - connects to BIND9 on localhost within the pod\nserver 127.0.0.1 {\n    key \"bindy-operator\";\n    port 9530;\n};\n"
+  },
+  "kind": "ConfigMap",
+  "metadata": {
+    "labels": {
+      "app": "bind9",
+      "app.kubernetes.io/component": "dns-cluster",
+      "app.kubernetes.io/instance": "example-dns",
+      "app.kubernetes.io/managed-by": "Bind9Cluster",
+      "app.kubernetes.io/name": "bind9",
+      "app.kubernetes.io/part-of": "bindy",
+      "cluster": "example-dns"
+    },
+    "name": "example-dns-config",
+    "namespace": "dns-system"
+  }
+}

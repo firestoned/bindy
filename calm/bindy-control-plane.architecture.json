@@ -214,7 +214,7 @@
     },
     {
       "unique-id": "operator-gates-pod-readiness",
-      "description": "watches BIND9 pods (label-selected) and patches the bindy.firestoned.io/zones-loaded condition on pods/status once every live zone and its records are loaded on the pod, and back to False when the pod starts terminating so traffic moves before named exits (ADR-0017, amended 2026-10-07)",
+      "description": "watches BIND9 pods (label-selected) and patches the bindy.firestoned.io/zones-loaded condition on pods/status once every live zone and its records are loaded on the pod, and back to False when the pod starts terminating; the Ready condition of the pod follows on the next kubelet status sync (ADR-0017, amended and corrected 2026-10-07)",
       "protocol": "HTTPS",
       "relationship-type": {
         "connects": {
@@ -298,7 +298,7 @@
     },
     {
       "unique-id": "svc-routes-named",
-      "description": "routes :53 to named :5353 on Ready pods only; a pod is Ready once its zones-loaded readiness gate is True, and stops being Ready as soon as it starts terminating (ADR-0017)",
+      "description": "routes :53 to named :5353 on Ready pods only; a pod is Ready once its zones-loaded readiness gate is True, and stops being Ready once the kubelet syncs the closed gate of a terminating pod (ADR-0017)",
       "relationship-type": {
         "connects": {
           "source": { "node": "bind9-svc" },
