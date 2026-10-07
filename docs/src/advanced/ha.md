@@ -243,6 +243,30 @@ readinessProbe:
   periodSeconds: 5
 ```
 
+### Rollouts: the Zones-Loaded Readiness Gate
+
+A probe tells Kubernetes that `named` and bindcar are up, not that the pod
+holds any zone. BIND9 pods keep zone data on `emptyDir` volumes, so a
+replacement pod starts empty. bindy therefore adds a readiness gate to every
+BIND9 pod,
+`readinessGates: [{conditionType: bindy.firestoned.io/zones-loaded}]`
+([ADR-0017](https://github.com/firestoned/bindy/blob/main/docs/adr/0017-zones-loaded-readiness-gate.md)):
+
+- The operator loads every live zone of the pod's instance onto the new pod
+  (and, on a primary, replays every record), then sets the condition `True`.
+  Only then does the pod become Ready and join its Service.
+- A one-replica BIND9 Deployment (each cluster-managed instance) rolls with
+  the default `RollingUpdate`, which rounds to `maxSurge` 1 and
+  `maxUnavailable` 0, so the old pod keeps serving until the new one is
+  Ready: a rollout,
+  including one that rolls every primary at once after an operator upgrade,
+  never leaves a nameserver answering `REFUSED`.
+- `kubectl rollout status` completes when the new pod's zones are loaded.
+- If the operator is down, new pods wait and the old ones keep serving.
+- A zone that cannot be loaded blocks a new pod only while another pod of
+  the instance still serves it; see
+  [Troubleshooting](../operations/troubleshooting.md#a-bind9-pod-stays-not-ready-zones-loaded-readiness-gate).
+
 ### Pod Disruption Budgets
 
 Limit concurrent disruptions:

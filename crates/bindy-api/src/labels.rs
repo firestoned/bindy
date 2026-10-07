@@ -46,6 +46,15 @@ pub const COMPONENT_DNS_SERVER: &str = "dns-server";
 /// Component value for DNS clusters
 pub const COMPONENT_DNS_CLUSTER: &str = "dns-cluster";
 
+/// Label selector for the BIND9 operand pods bindy creates
+/// (`app.kubernetes.io/part-of=bindy`, `app.kubernetes.io/component=dns-server`).
+///
+/// The shared Pod watch uses it so its cache holds only bindy's BIND9 pods,
+/// not every pod in a watched namespace (ADR-0017). Every pod template built
+/// by `build_pod_labels_from_instance` carries both labels.
+pub const BIND9_POD_SELECTOR: &str =
+    "app.kubernetes.io/part-of=bindy,app.kubernetes.io/component=dns-server";
+
 /// Application name for BIND9 instances
 pub const APP_NAME_BIND9: &str = "bind9";
 

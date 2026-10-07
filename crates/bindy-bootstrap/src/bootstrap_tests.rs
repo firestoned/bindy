@@ -198,6 +198,58 @@ mod tests {
         }
     }
 
+    // --- ADR-0017: the zones-loaded readiness gate ---
+
+    /// The verbs `rules` grant on exactly `resource`.
+    fn verbs_on(rules: &[k8s_openapi::api::rbac::v1::PolicyRule], resource: &str) -> Vec<String> {
+        rules
+            .iter()
+            .filter(|r| {
+                r.resources
+                    .as_ref()
+                    .is_some_and(|res| res.iter().any(|x| x == resource))
+            })
+            .flat_map(|r| r.verbs.clone())
+            .collect()
+    }
+
+    /// The operator sets the zones-loaded condition through `pods/status`
+    /// (get + patch), in the cluster-wide role and in the per-namespace Role
+    /// of namespace-restricted mode, and nothing more on that subresource.
+    #[test]
+    fn test_operator_roles_grant_pod_status_patch_for_zones_loaded_gate() {
+        for (name, yaml) in [
+            ("role.yaml", BINDY_ROLE_YAML),
+            ("namespaced/role.yaml", BINDY_NAMESPACED_ROLE_YAML),
+        ] {
+            let mut verbs = verbs_on(&parse_role_rules(yaml), "pods/status");
+            verbs.sort();
+            assert_eq!(
+                verbs,
+                vec!["get".to_string(), "patch".to_string()],
+                "{name} must grant exactly get+patch on pods/status"
+            );
+        }
+    }
+
+    /// Writing a pod's status must not come with writing the pod: the
+    /// operator stays read-only on `pods` (it cannot change a pod's spec or
+    /// labels, or delete it).
+    #[test]
+    fn test_operator_roles_keep_pods_read_only() {
+        for (name, yaml) in [
+            ("role.yaml", BINDY_ROLE_YAML),
+            ("namespaced/role.yaml", BINDY_NAMESPACED_ROLE_YAML),
+        ] {
+            for verb in verbs_on(&parse_role_rules(yaml), "pods") {
+                assert!(
+                    matches!(verb.as_str(), "get" | "list" | "watch"),
+                    "{name} must keep pods read-only, found verb: {verb}"
+                );
+            }
+        }
+    }
+
     // --- P1-2: the namespace-scoped RBAC split must stay faithful ---
 
     /// The only bindy kind with `scope: Cluster`. Everything else is Namespaced and

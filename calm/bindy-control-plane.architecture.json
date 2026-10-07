@@ -213,8 +213,19 @@
       }
     },
     {
+      "unique-id": "operator-gates-pod-readiness",
+      "description": "watches BIND9 pods (label-selected) and patches the bindy.firestoned.io/zones-loaded condition on pods/status once every live zone and its records are loaded on the pod (ADR-0017)",
+      "protocol": "HTTPS",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "bindy-operator" },
+          "destination": { "node": "bind9-pod" }
+        }
+      }
+    },
+    {
       "unique-id": "operator-manages-zones",
-      "description": "add / delete / notify zones (SA token, TokenReview)",
+      "description": "add / delete / notify zones (SA token, TokenReview), on every container-ready pod, including pods the zones-loaded gate holds out of Service (ADR-0017)",
       "protocol": "HTTPS",
       "relationship-type": {
         "connects": {
@@ -287,7 +298,7 @@
     },
     {
       "unique-id": "svc-routes-named",
-      "description": "routes :53 to named :5353",
+      "description": "routes :53 to named :5353 on Ready pods only; a pod is Ready once its zones-loaded readiness gate is True (ADR-0017)",
       "relationship-type": {
         "connects": {
           "source": { "node": "bind9-svc" },

@@ -16,11 +16,12 @@
 use crate::watch::{MultiStore, WatchSet};
 use bindy_api::crd::{
     AAAARecord, ARecord, Bind9Cluster, Bind9Instance, CAARecord, CNAMERecord, ClusterBind9Provider,
-    DNSZone, LabelSelector, MXRecord, NSRecord, PTRRecord, SRVRecord, TXTRecord,
+    DNSZone, LabelSelector, MXRecord, NSRecord, PTRRecord, RecordReferenceWithTimestamp,
+    RecordStatus, SRVRecord, TXTRecord,
 };
 use bindy_api::selector::matches_selector;
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::Endpoints;
+use k8s_openapi::api::core::v1::{Endpoints, Pod};
 use kube::core::NamespaceResourceScope;
 use kube::{Client, Resource, ResourceExt};
 use serde::de::DeserializeOwned;
@@ -140,6 +141,12 @@ impl Context {
         // restricted mode needs only its per-namespace `endpoints` Role.
         let endpoints = watch
             .register_selected::<Endpoints>("Endpoints", bindy_api::labels::BINDY_PART_OF_SELECTOR);
+        // bindy's BIND9 pods only (label-selected on the API server): the
+        // zones-loaded gate controller's primary resource, and how a write
+        // tells a pod whose containers are ready but whose readiness gate is
+        // still closed from a pod that cannot take writes yet (ADR-0017).
+        let bind9_pods =
+            watch.register_selected::<Pod>("Pod", bindy_api::labels::BIND9_POD_SELECTOR);
 
         let http_client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(BINDCAR_HTTP_TIMEOUT_SECS))
@@ -155,6 +162,7 @@ impl Context {
                 bind9_instances,
                 bind9_deployments,
                 endpoints,
+                bind9_pods,
                 dnszones,
                 records,
             },
@@ -185,6 +193,9 @@ pub trait RecordKind:
 
     /// The [`RecordRef`] variant for a record of this kind.
     fn record_ref(name: String, namespace: String) -> RecordRef;
+
+    /// The record's status, if it has one.
+    fn record_status(&self) -> Option<&RecordStatus>;
 }
 
 macro_rules! record_kind {
@@ -193,6 +204,9 @@ macro_rules! record_kind {
             const KIND: &'static str = $kind;
             fn record_ref(name: String, namespace: String) -> RecordRef {
                 RecordRef::$variant(name, namespace)
+            }
+            fn record_status(&self) -> Option<&RecordStatus> {
+                self.status.as_ref()
             }
         }
     };
@@ -220,6 +234,7 @@ pub struct RecordKindOps {
     /// tools that run without a `WatchSet`).
     pub insert_empty: fn(&mut RecordStores),
     collect: fn(&RecordStores, &LabelSelector, &str, &mut Vec<RecordRef>),
+    collect_tagged: fn(&RecordStores, &str, &str, &mut Vec<RecordReferenceWithTimestamp>),
 }
 
 const fn ops<K: RecordKind>() -> RecordKindOps {
@@ -228,6 +243,7 @@ const fn ops<K: RecordKind>() -> RecordKindOps {
         register: register_kind::<K>,
         insert_empty: insert_empty_kind::<K>,
         collect: collect_matching::<K>,
+        collect_tagged: collect_tagged::<K>,
     }
 }
 
@@ -271,6 +287,38 @@ fn collect_matching<K: RecordKind>(
     }
 }
 
+/// Push every record of kind `K` whose `status.zoneRef` names the zone
+/// `zone_namespace`/`zone_name` and that is not being deleted.
+fn collect_tagged<K: RecordKind>(
+    records: &RecordStores,
+    zone_namespace: &str,
+    zone_name: &str,
+    out: &mut Vec<RecordReferenceWithTimestamp>,
+) {
+    for record in records.get::<K>().state() {
+        if record.meta().deletion_timestamp.is_some() {
+            continue;
+        }
+        let Some(zone_ref) = record.record_status().and_then(|s| s.zone_ref.as_ref()) else {
+            continue;
+        };
+        if zone_ref.namespace != zone_namespace || zone_ref.name != zone_name {
+            continue;
+        }
+        out.push(RecordReferenceWithTimestamp {
+            api_version: BINDY_API_VERSION.to_string(),
+            kind: K::KIND.to_string(),
+            name: record.name_any(),
+            namespace: record.namespace().unwrap_or_default(),
+            record_name: None,
+            last_reconciled_at: None,
+        });
+    }
+}
+
+/// The API version of every bindy custom resource.
+const BINDY_API_VERSION: &str = "bindy.firestoned.io/v1beta1";
+
 /// The reflector views of every record kind, keyed by type.
 #[derive(Clone, Default)]
 pub struct RecordStores {
@@ -311,6 +359,10 @@ pub struct Stores {
     /// instance: where a record or zone write finds the instance's ready pods
     /// without a GET per write (ADR-0015)
     pub endpoints: MultiStore<Endpoints>,
+    /// bindy's BIND9 pods (label-selected, [`bindy_api::labels::BIND9_POD_SELECTOR`]):
+    /// the zones-loaded gate's primary resource, and the container readiness
+    /// of pods a readiness gate still holds out of their Service (ADR-0017)
+    pub bind9_pods: MultiStore<Pod>,
     /// DNS zones
     pub dnszones: MultiStore<DNSZone>,
     /// Every record kind (see [`RECORD_KINDS`])
@@ -336,6 +388,32 @@ impl Stores {
         let mut results = Vec::new();
         for ops in &RECORD_KINDS {
             (ops.collect)(&self.records, selector, namespace, &mut results);
+        }
+        results
+    }
+
+    /// Every record, of every kind, tagged with a zone through its
+    /// `status.zoneRef` and not being deleted, in [`RECORD_KINDS`] order.
+    ///
+    /// These are the records the record controller writes into the zone, so
+    /// they are what a pod that is being given the zone must receive
+    /// (ADR-0017).
+    ///
+    /// # Arguments
+    /// * `zone_namespace` - Namespace of the `DNSZone`
+    /// * `zone_name` - Name of the `DNSZone` resource
+    ///
+    /// # Returns
+    /// One reference per tagged record, without timestamps
+    #[must_use]
+    pub fn records_tagged_with_zone(
+        &self,
+        zone_namespace: &str,
+        zone_name: &str,
+    ) -> Vec<RecordReferenceWithTimestamp> {
+        let mut results = Vec::new();
+        for ops in &RECORD_KINDS {
+            (ops.collect_tagged)(&self.records, zone_namespace, zone_name, &mut results);
         }
         results
     }

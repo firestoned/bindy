@@ -2,6 +2,45 @@
 
 This document collects the breaking-change migrations for Bindy, newest first.
 
+## BIND9 pods are Ready only once their zones are loaded (ADR-0017)
+
+Every BIND9 pod now carries the readiness gate
+`bindy.firestoned.io/zones-loaded`
+([ADR-0017](https://github.com/firestoned/bindy/blob/main/docs/adr/0017-zones-loaded-readiness-gate.md)).
+A replacement pod stays out of its Service until the operator has loaded
+every live zone (and, on a primary, every record) onto it, so a rollout no
+longer leaves a nameserver answering `REFUSED`.
+
+**Required: apply the new RBAC with, or before, the new operator.** The
+operator needs `get` and `patch` on `pods/status` in every namespace that
+runs BIND9 pods:
+
+- cluster-wide install: re-apply `deploy/operator/rbac/role.yaml`;
+- namespace-restricted install (`BINDY_WATCH_NAMESPACES`): re-apply
+  `deploy/operator/rbac/namespaced/role.yaml` in every watched namespace.
+
+Without it the gate cannot be opened: new pods stay not Ready (the old pods
+keep serving) and the operator logs `403 Forbidden` on `pods/status`.
+
+**Every BIND9 Deployment rolls once.** The gate is part of the pod
+template. Pods created before the upgrade have no gate and are not touched.
+An ADR-0013 stage 3 upgrade rolls the pods anyway, so this costs no extra
+rollout when both land together.
+
+**Behaviour to be aware of:**
+
+- `kubectl rollout status` for a BIND9 Deployment completes when the new
+  pod's zones are loaded, not when `named` starts listening.
+- If the operator is stopped, or its version predates the gate while the pod
+  template has it, new BIND9 pods stay not Ready. Old pods keep serving
+  (`maxUnavailable` 0). This is the intended fail-safe.
+- A Service with `publishNotReadyAddresses: true` (a user override of the
+  instance's Service spec) routes to pods regardless of readiness and so
+  bypasses the gate.
+- Diagnose a pod that stays not Ready from its
+  `bindy.firestoned.io/zones-loaded` condition; see
+  [Troubleshooting](troubleshooting.md#a-bind9-pod-stays-not-ready-zones-loaded-readiness-gate).
+
 ## No periodic resync: out-of-band BIND9 changes are no longer reverted (ADR-0016)
 
 Every controller (records, `DNSZone`, `Bind9Instance`, `Bind9Cluster`,

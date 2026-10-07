@@ -450,6 +450,55 @@ mod tests {
         );
     }
 
+    /// Every BIND9 pod is held out of its Service until the operator reports
+    /// its zones loaded (ADR-0017): the pod template lists exactly the
+    /// zones-loaded readiness gate.
+    #[test]
+    fn test_pod_spec_has_zones_loaded_readiness_gate() {
+        let instance = create_test_instance("test");
+        let deployment =
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+        let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
+
+        let gates: Vec<String> = pod_spec
+            .readiness_gates
+            .expect("pod spec must declare readinessGates")
+            .into_iter()
+            .map(|gate| gate.condition_type)
+            .collect();
+        assert_eq!(
+            gates,
+            vec![crate::constants::ZONES_LOADED_CONDITION_TYPE.to_string()]
+        );
+    }
+
+    /// The gate is part of every role's pod template, secondaries included:
+    /// a secondary that has not been given its zones answers REFUSED too.
+    #[test]
+    fn test_secondary_pod_spec_has_zones_loaded_readiness_gate() {
+        let mut instance = create_test_instance("test-secondary");
+        instance.spec.role = ServerRole::Secondary;
+        let deployment = build_deployment(
+            "test-secondary",
+            "test-ns",
+            &instance,
+            None,
+            None,
+            "test-rndc-key",
+        );
+        let gates = deployment
+            .spec
+            .unwrap()
+            .template
+            .spec
+            .unwrap()
+            .readiness_gates
+            .unwrap_or_default();
+        assert!(gates
+            .iter()
+            .any(|gate| gate.condition_type == crate::constants::ZONES_LOADED_CONDITION_TYPE));
+    }
+
     /// Without a PodDisruptionBudget a node drain or cluster upgrade can evict
     /// every primary of a cluster at once, which is the case that produced a
     /// ~115s window where the Pods were Ready but served no zones.

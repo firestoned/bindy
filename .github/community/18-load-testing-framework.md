@@ -4,6 +4,8 @@
 >
 > **Manual load tests in the meantime.** The v0.8.0-rc.2 and rc.3 runs (300 `ARecord`s, 3 primaries) were driven by hand, and their findings landed as [ADR-0014](../../docs/adr/0014-bounded-kube-api-request-timeout.md) (request deadline), [ADR-0015](../../docs/adr/0015-bounded-api-cost-of-dns-writes.md) (API cost of DNS writes) and [ADR-0016](../../docs/adr/0016-event-driven-reconciliation.md) (no periodic resync). The burst scenario in Milestone 4.1 should assert what those runs measured by hand: reconciles per record, API requests per record, and zero reconciles at rest.
 >
+> **Rollout availability.** Preparing to roll v0.8.0-rc.4 showed that a replacement BIND9 pod went Ready, and into its Service, before its zones were loaded; [ADR-0017](../../docs/adr/0017-zones-loaded-readiness-gate.md) (2026-10-06) adds the zones-loaded readiness gate. A rollout scenario should assert it under load: query every zone continuously while every primary rolls, and expect no `REFUSED` and a `kubectl rollout status` that completes once the zones are on the new pods.
+>
 > *Migrated 2026-09-10 from the external roadmap set. Status verified against `fix-idempotency` @ `648ff7a`.*
 
 ---

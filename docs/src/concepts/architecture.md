@@ -449,6 +449,7 @@ subscribes to the same watch and reads the same cache.
 | `DNSZone` | yes | its controller, `Bind9Instance`, every record controller |
 | The 9 record kinds | yes | their controller, `DNSZone` |
 | `Endpoints` of bindy's Services (label `app.kubernetes.io/part-of=bindy`, filtered by the API server) | yes | `DNSZone` (all namespaces) |
+| BIND9 `Pod`s (labels `app.kubernetes.io/part-of=bindy,app.kubernetes.io/component=dns-server`, filtered by the API server) | yes | zones-loaded gate (ADR-0017); every BIND9 write, to reach pods the gate still holds out of their Service |
 | Owned `Secret`, `ConfigMap`, `ServiceAccount`, `Service` | no, an ordinary watch | `Bind9Instance` (owns) |
 
 Kinds in the last row are watched by one controller only and never cached;
@@ -477,8 +478,10 @@ How a shared watch behaves:
 In the default cluster-wide mode the operator holds 19 watch connections (15
 shared, 4 ordinary), measured on a kind cluster against the API server's
 `apiserver_longrunning_requests` (bindy v0.7.1, before the shared watch layer:
-58). In namespace-restricted mode the namespaced ones are
-repeated per watched namespace.
+58). The BIND9 Pod watch of the zones-loaded gate (ADR-0017) adds one more
+shared watch, 20 in all (computed, not re-measured). In
+namespace-restricted mode the namespaced ones are repeated per watched
+namespace.
 
 ### DNSZone Operator Watches
 
@@ -507,6 +510,46 @@ controller
 The wiring lives in `crates/bindy-controller-zone/src/watch.rs`. Because the
 primary stream drops status-only writes, the zone controller no longer needs
 the 2-second rate limiter it used to carry.
+
+### Zones-Loaded Readiness Gate
+
+Every BIND9 pod lists `bindy.firestoned.io/zones-loaded` in
+`spec.readinessGates`
+([ADR-0017](https://github.com/firestoned/bindy/blob/main/docs/adr/0017-zones-loaded-readiness-gate.md)),
+so a new pod, which starts with empty `emptyDir` zone storage, joins its
+Service only after the operator says its zones are loaded. A second
+controller in the zone crate (`crates/bindy-controller-zone/src/zones_gate.rs`)
+owns that condition:
+
+```mermaid
+sequenceDiagram
+    participant K as Kubernetes
+    participant G as Zones-loaded gate
+    participant P as New BIND9 pod (bindcar)
+    K->>G: Pod event: ContainersReady=True, gate unset
+    G->>K: patch pods/status: zones-loaded=False (ZonesLoading)
+    loop every live DNSZone selecting the instance
+        G->>P: add zone (same path as the DNSZone controller)
+        G->>P: replay every record tagged with the zone (primary)
+    end
+    G->>K: patch pods/status: zones-loaded=True (ZonesLoaded)
+    K->>K: Pod Ready, added to the Service endpoints
+    K-->>K: old pod terminated (maxUnavailable 0)
+```
+
+- **Primary resource:** the label-selected BIND9 Pod watch, filtered on
+  `ContainersReady`, the gate condition, the IP and deletion.
+- **Also woken by:** a `DNSZone` becoming live, changing its instance
+  selectors or being deleted (the gated pods of every instance it selects).
+- **Writes reach gated pods:** every BIND9 write (zones, records, replays,
+  deletes) targets the Service's ready addresses plus the not-ready
+  addresses whose pod is `ContainersReady=True`. EndpointSlice `serving`
+  cannot stand in for this: it maps to the pod's `Ready` condition, gates
+  included.
+- **One-way latch:** once `True` the gate is never re-evaluated for the pod;
+  a later zone reaches it through the `DNSZone` controller.
+- **Never deadlocks on one zone:** a zone that fails to load blocks the pod
+  only while another Ready pod of the instance still serves it.
 
 ### Bind9Instance Operator Watches
 
@@ -722,7 +765,8 @@ What the operator repairs, and what triggers it:
 
 | Drift | Repaired by |
 |---|---|
-| A BIND9 pod killed, evicted or restarted (zone data lost) | The zone's `Endpoints` watch: the zone is re-created and its records replayed |
+| A BIND9 pod replaced (rollout, eviction, deletion, rescheduling: zone data lost) | The zones-loaded gate: every live zone and its records are loaded onto the new pod before it is Ready (ADR-0017); the zone's `Endpoints` watch then finds them present |
+| A BIND9 container restarted inside the same pod | Nothing to repair: `named`'s working directory and the zone files are `emptyDir` volumes that live as long as the pod |
 | An owned Deployment, Service, Secret, ServiceAccount or instance ConfigMap edited or deleted | The instance controller's owned-object watches |
 | A cluster's shared ConfigMap edited or deleted | The instance controller's ConfigMap watch, mapped to the cluster's instances |
 | Any custom resource's spec, labels, annotations or finalizers changed | That resource's own watch |

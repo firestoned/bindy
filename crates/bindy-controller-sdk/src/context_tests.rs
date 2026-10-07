@@ -13,7 +13,7 @@ mod tests {
         PTRRecord,
     };
     use k8s_openapi::api::apps::v1::Deployment;
-    use k8s_openapi::api::core::v1::Endpoints;
+    use k8s_openapi::api::core::v1::{Endpoints, Pod};
     use kube::runtime::reflector::{self, Store};
     use kube::runtime::watcher;
     use serde::de::DeserializeOwned;
@@ -123,6 +123,7 @@ mod tests {
             bind9_instances: view::<Bind9Instance>(vec![]),
             bind9_deployments: view::<Deployment>(vec![]),
             endpoints: view::<Endpoints>(vec![]),
+            bind9_pods: view::<Pod>(vec![]),
             dnszones: view(zones),
             records,
         }
@@ -180,6 +181,77 @@ mod tests {
                 RecordRef::PTR("p1".into(), "ns1".into())
             ]
         );
+    }
+
+    /// Tag a record fixture with `status.zoneRef` pointing at `zone`.
+    fn tagged<K: serde::Serialize + DeserializeOwned>(record: K, zone: &str, ns: &str) -> K {
+        let mut value = serde_json::to_value(record).expect("fixture serializes");
+        value["status"] = json!({
+            "conditions": [],
+            "zoneRef": {
+                "apiVersion": "bindy.firestoned.io/v1beta1",
+                "kind": "DNSZone",
+                "name": zone,
+                "namespace": ns,
+                "zoneName": format!("{zone}.example"),
+            }
+        });
+        serde_json::from_value(value).expect("tagged fixture")
+    }
+
+    /// The zones-loaded gate replays the records the record controller would
+    /// write: every record tagged with the zone (ADR-0017).
+    #[test]
+    fn records_tagged_with_zone_returns_tagged_records_of_every_kind() {
+        let s = stores(
+            vec![],
+            vec![
+                tagged(a_record("a1", "ns1", &[]), "z1", "ns1"),
+                tagged(a_record("a2", "ns1", &[]), "other", "ns1"),
+                a_record("a3", "ns1", &[]),
+            ],
+            vec![tagged(ptr_record("p1", "ns1", &[]), "z1", "ns1")],
+        );
+
+        let found = s.records_tagged_with_zone("ns1", "z1");
+
+        let refs: Vec<(String, String, String)> = found
+            .iter()
+            .map(|r| (r.kind.clone(), r.namespace.clone(), r.name.clone()))
+            .collect();
+        assert_eq!(
+            refs,
+            [
+                ("ARecord".into(), "ns1".into(), "a1".into()),
+                ("PTRRecord".into(), "ns1".into(), "p1".into()),
+            ]
+        );
+    }
+
+    /// A record being deleted must not be replayed: its finalizer is removing
+    /// it from DNS.
+    #[test]
+    fn records_tagged_with_zone_skips_terminating_records() {
+        let mut deleting = tagged(a_record("a1", "ns1", &[]), "z1", "ns1");
+        deleting.metadata.deletion_timestamp =
+            Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+                k8s_openapi::jiff::Timestamp::now(),
+            ));
+        let s = stores(vec![], vec![deleting], vec![]);
+
+        assert!(s.records_tagged_with_zone("ns1", "z1").is_empty());
+    }
+
+    #[test]
+    fn records_tagged_with_zone_matches_the_zone_namespace() {
+        let s = stores(
+            vec![],
+            vec![tagged(a_record("a1", "ns1", &[]), "z1", "ns2")],
+            vec![],
+        );
+
+        assert!(s.records_tagged_with_zone("ns1", "z1").is_empty());
+        assert_eq!(s.records_tagged_with_zone("ns2", "z1").len(), 1);
     }
 
     #[test]
@@ -440,7 +512,7 @@ mod context_new {
         ClusterBind9Provider, DNSZone, MXRecord, NSRecord, PTRRecord, SRVRecord, TXTRecord,
     };
     use k8s_openapi::api::apps::v1::Deployment;
-    use k8s_openapi::api::core::v1::Endpoints;
+    use k8s_openapi::api::core::v1::{Endpoints, Pod};
 
     fn unreachable_client() -> kube::Client {
         // Never dialled successfully: these tests only check what is registered.
@@ -464,6 +536,8 @@ mod context_new {
             let _ = ctx.watch.store::<Deployment>(t);
             let _ = ctx.watch.store::<DNSZone>(t);
             let _ = ctx.watch.store::<Endpoints>(t);
+            // The zones-loaded gate's label-selected BIND9 pod watch (ADR-0017).
+            let _ = ctx.watch.store::<Pod>(t);
             let _ = ctx.watch.store::<ARecord>(t);
             let _ = ctx.watch.store::<AAAARecord>(t);
             let _ = ctx.watch.store::<TXTRecord>(t);
@@ -476,6 +550,7 @@ mod context_new {
         }
         assert_eq!(ctx.stores.dnszones.shard_count(), 2);
         assert_eq!(ctx.stores.cluster_bind9_providers.shard_count(), 1);
+        assert_eq!(ctx.stores.bind9_pods.shard_count(), 2);
     }
 
     #[tokio::test]

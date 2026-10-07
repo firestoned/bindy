@@ -253,6 +253,13 @@ test_allowed "watch" "pods" "--namespace=${NAMESPACE}"
 # Operator MUST NOT be able to delete Pods (managed by Deployments)
 test_denied "delete" "pods" "--namespace=${NAMESPACE}"
 
+# Operator SHOULD be able to set the zones-loaded readiness gate (ADR-0017),
+# through pods/status only; the pod itself stays read-only
+test_allowed "get" "pods/status" "--namespace=${NAMESPACE}"
+test_allowed "patch" "pods/status" "--namespace=${NAMESPACE}"
+test_denied "patch" "pods" "--namespace=${NAMESPACE}"
+test_denied "update" "pods" "--namespace=${NAMESPACE}"
+
 echo ""
 echo "========================================"
 echo "RESULTS"

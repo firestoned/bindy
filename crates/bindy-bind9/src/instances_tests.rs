@@ -1073,3 +1073,311 @@ mod resolver_tests {
         assert!(result.is_err());
     }
 }
+
+/// Reaching pods the zones-loaded readiness gate still holds out of their
+/// Service (ADR-0017).
+///
+/// A gated pod is listed under `notReadyAddresses`. The operator must still
+/// write zones and records to it once its containers are ready, or the gate
+/// never opens; it must not write to a pod whose containers are not ready.
+#[cfg(test)]
+mod gated_pod_tests {
+    use crate::bind9::RndcKeyData;
+    use crate::crd::RndcAlgorithm;
+    use crate::instances::*;
+    use k8s_openapi::api::core::v1::{
+        EndpointAddress as K8sAddress, EndpointPort, EndpointSubset, Endpoints, ObjectReference,
+        Pod, PodCondition, PodStatus,
+    };
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, Time};
+    use std::sync::Arc;
+
+    const PORT_HTTP: &str = "http";
+    const HTTP_PORT: i32 = 8080;
+    const NS: &str = "dns";
+    const READY_IP: &str = "10.1.0.1";
+    const GATED_IP: &str = "10.1.0.2";
+    const STARTING_IP: &str = "10.1.0.3";
+
+    fn pod(name: &str, ip: Option<&str>, containers_ready: &str) -> Pod {
+        Pod {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                namespace: Some(NS.to_string()),
+                ..Default::default()
+            },
+            status: Some(PodStatus {
+                pod_ip: ip.map(ToString::to_string),
+                conditions: Some(vec![PodCondition {
+                    type_: "ContainersReady".to_string(),
+                    status: containers_ready.to_string(),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn address(ip: &str, pod_name: Option<&str>) -> K8sAddress {
+        K8sAddress {
+            ip: ip.to_string(),
+            target_ref: pod_name.map(|name| ObjectReference {
+                kind: Some("Pod".to_string()),
+                name: Some(name.to_string()),
+                namespace: Some(NS.to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// `primary-0` with one Ready pod and two not-ready pods: one gated with
+    /// its containers ready, one still starting.
+    fn endpoints() -> Endpoints {
+        Endpoints {
+            metadata: ObjectMeta {
+                name: Some("primary-0".to_string()),
+                namespace: Some(NS.to_string()),
+                ..Default::default()
+            },
+            subsets: Some(vec![EndpointSubset {
+                addresses: Some(vec![address(READY_IP, Some("ready"))]),
+                not_ready_addresses: Some(vec![
+                    address(GATED_IP, Some("gated")),
+                    address(STARTING_IP, Some("starting")),
+                ]),
+                ports: Some(vec![EndpointPort {
+                    name: Some(PORT_HTTP.to_string()),
+                    port: HTTP_PORT,
+                    ..Default::default()
+                }]),
+            }]),
+        }
+    }
+
+    fn pods() -> Vec<Arc<Pod>> {
+        vec![
+            Arc::new(pod("ready", Some(READY_IP), "True")),
+            Arc::new(pod("gated", Some(GATED_IP), "True")),
+            Arc::new(pod("starting", Some(STARTING_IP), "False")),
+        ]
+    }
+
+    fn ips(addresses: &[EndpointAddress]) -> Vec<String> {
+        addresses.iter().map(|a| a.ip.clone()).collect()
+    }
+
+    fn store_of<K>(objects: Vec<K>) -> crate::context::MultiStore<K>
+    where
+        K: kube::Resource<DynamicType = ()> + Clone + 'static,
+    {
+        use kube::runtime::{reflector, watcher};
+        let (store, mut writer) = reflector::store();
+        writer.apply_watcher_event(&watcher::Event::Init);
+        for object in objects {
+            writer.apply_watcher_event(&watcher::Event::InitApply(object));
+        }
+        writer.apply_watcher_event(&watcher::Event::InitDone);
+        crate::context::MultiStore::new(vec![store])
+    }
+
+    // ------------------------------------------------------------------
+    // pod_containers_ready
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn pod_with_ready_containers_and_an_ip_can_take_writes() {
+        assert!(pod_containers_ready(&pod("p", Some(GATED_IP), "True")));
+    }
+
+    #[test]
+    fn pod_whose_containers_are_not_ready_cannot_take_writes() {
+        assert!(!pod_containers_ready(&pod("p", Some(GATED_IP), "False")));
+    }
+
+    #[test]
+    fn pod_without_an_ip_cannot_take_writes() {
+        assert!(!pod_containers_ready(&pod("p", None, "True")));
+    }
+
+    #[test]
+    fn terminating_pod_cannot_take_writes() {
+        let mut terminating = pod("p", Some(GATED_IP), "True");
+        terminating.metadata.deletion_timestamp = Some(Time(k8s_openapi::jiff::Timestamp::now()));
+        assert!(!pod_containers_ready(&terminating));
+    }
+
+    #[test]
+    fn pod_without_conditions_cannot_take_writes() {
+        let mut bare = pod("p", Some(GATED_IP), "True");
+        if let Some(status) = bare.status.as_mut() {
+            status.conditions = None;
+        }
+        assert!(!pod_containers_ready(&bare));
+    }
+
+    // ------------------------------------------------------------------
+    // writable_endpoint_addresses
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn writable_addresses_include_ready_and_gated_container_ready_pods() {
+        let addresses = writable_endpoint_addresses(&endpoints(), PORT_HTTP, &pods());
+
+        assert_eq!(ips(&addresses), vec![READY_IP, GATED_IP]);
+        assert!(addresses.iter().all(|a| a.port == HTTP_PORT));
+    }
+
+    #[test]
+    fn writable_addresses_skip_a_not_ready_address_whose_pod_is_unknown() {
+        // No pod in the cache for the not-ready addresses: only Ready ones.
+        let only_ready = vec![Arc::new(pod("ready", Some(READY_IP), "True"))];
+        let addresses = writable_endpoint_addresses(&endpoints(), PORT_HTTP, &only_ready);
+
+        assert_eq!(ips(&addresses), vec![READY_IP]);
+    }
+
+    #[test]
+    fn writable_addresses_skip_a_not_ready_address_without_a_target_ref() {
+        let mut eps = endpoints();
+        if let Some(subset) = eps.subsets.as_mut().and_then(|s| s.first_mut()) {
+            subset.not_ready_addresses = Some(vec![address(GATED_IP, None)]);
+        }
+        let addresses = writable_endpoint_addresses(&eps, PORT_HTTP, &pods());
+
+        assert_eq!(ips(&addresses), vec![READY_IP]);
+    }
+
+    #[test]
+    fn writable_addresses_are_empty_for_a_missing_port() {
+        assert!(writable_endpoint_addresses(&endpoints(), "rndc-api", &pods()).is_empty());
+    }
+
+    #[test]
+    fn cached_writable_endpoints_reads_both_stores() {
+        let endpoints_store = store_of(vec![endpoints()]);
+        let pod_store = store_of(pods().into_iter().map(|p| (*p).clone()).collect());
+
+        let cached = cached_writable_endpoints(
+            &endpoints_store,
+            Some(&pod_store),
+            NS,
+            "primary-0",
+            PORT_HTTP,
+        )
+        .expect("Endpoints object is cached");
+        assert_eq!(ips(&cached), vec![READY_IP, GATED_IP]);
+
+        let without_pods =
+            cached_writable_endpoints(&endpoints_store, None, NS, "primary-0", PORT_HTTP)
+                .expect("Endpoints object is cached");
+        assert_eq!(
+            ips(&without_pods),
+            vec![READY_IP],
+            "without the Pod store only Ready addresses are writable"
+        );
+
+        assert!(cached_writable_endpoints(
+            &endpoints_store,
+            Some(&pod_store),
+            NS,
+            "other",
+            PORT_HTTP
+        )
+        .is_none());
+    }
+
+    // ------------------------------------------------------------------
+    // SinglePodLookup
+    // ------------------------------------------------------------------
+
+    /// Every instance has the same two endpoints.
+    struct FixedLookup;
+
+    impl InstanceLookup for FixedLookup {
+        fn rndc_key<'a>(
+            &'a self,
+            _namespace: &'a str,
+            instance_name: &'a str,
+        ) -> LookupFuture<'a, RndcKeyData> {
+            Box::pin(async move {
+                Ok(RndcKeyData {
+                    name: instance_name.to_string(),
+                    algorithm: RndcAlgorithm::HmacSha256,
+                    secret: "s".to_string(),
+                })
+            })
+        }
+
+        fn endpoints<'a>(
+            &'a self,
+            _namespace: &'a str,
+            _service_name: &'a str,
+            _port_name: &'a str,
+        ) -> LookupFuture<'a, Vec<EndpointAddress>> {
+            Box::pin(async move {
+                Ok(vec![
+                    EndpointAddress {
+                        ip: READY_IP.to_string(),
+                        port: HTTP_PORT,
+                    },
+                    EndpointAddress {
+                        ip: GATED_IP.to_string(),
+                        port: HTTP_PORT,
+                    },
+                ])
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn single_pod_lookup_returns_only_the_target_pod_of_its_instance() {
+        let lookup = SinglePodLookup::new(FixedLookup, NS, "primary-0", GATED_IP);
+
+        let addresses = lookup
+            .endpoints(NS, "primary-0", PORT_HTTP)
+            .await
+            .expect("the pod is an endpoint");
+
+        assert_eq!(ips(&addresses), vec![GATED_IP]);
+    }
+
+    #[tokio::test]
+    async fn single_pod_lookup_returns_nothing_for_another_instance() {
+        let lookup = SinglePodLookup::new(FixedLookup, NS, "primary-0", GATED_IP);
+
+        let other = lookup
+            .endpoints(NS, "primary-1", PORT_HTTP)
+            .await
+            .expect("another instance is not an error");
+        assert!(other.is_empty());
+
+        let other_ns = lookup
+            .endpoints("elsewhere", "primary-0", PORT_HTTP)
+            .await
+            .expect("an instance in another namespace is not an error");
+        assert!(other_ns.is_empty());
+    }
+
+    #[tokio::test]
+    async fn single_pod_lookup_fails_when_the_pod_is_not_an_endpoint() {
+        let lookup = SinglePodLookup::new(FixedLookup, NS, "primary-0", STARTING_IP);
+
+        let result = lookup.endpoints(NS, "primary-0", PORT_HTTP).await;
+
+        assert!(
+            result.is_err(),
+            "a pod that cannot take writes must not count as loaded"
+        );
+    }
+
+    #[tokio::test]
+    async fn single_pod_lookup_delegates_rndc_keys() {
+        let lookup = SinglePodLookup::new(FixedLookup, NS, "primary-0", GATED_IP);
+
+        let key = lookup.rndc_key(NS, "primary-1").await.expect("key");
+
+        assert_eq!(key.name, "primary-1");
+    }
+}
