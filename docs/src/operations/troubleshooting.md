@@ -143,15 +143,47 @@ kubectl get pod <pod> -n <namespace> -o wide   # READINESS GATES column: 0/1 or 
 | `ZonesLoadFailed` | A zone could not be loaded on this pod while another pod of the instance still serves it. The old pod keeps serving; the rollout waits. Retried with backoff (2 s to 60 s). | The message names each zone and the error. Check the zone's `DNSZone` status and the operator log (`Zones-loaded gate:`). |
 | `InstanceUnknown` | The pod's `Bind9Instance` is not in the operator's cache. | Check that the instance exists; retried with backoff. |
 | `ZonesLoaded` / `NoZones` | Gate open: every live zone loaded, or no live zone selects the instance. | Nothing. |
+| `PodTerminating` | The pod is being deleted. The operator closed its gate at the start of termination so traffic moves to the remaining Ready pods while `named` drains (ADR-0017 decision 6). `kubectl get pods` shows it `0/2` (or `1/2`) until it is gone. | Nothing: expected for every terminating BIND9 pod. |
 | `ZonesPartiallyLoaded` | Gate open, but the zones in the message could not be loaded and no other pod of the instance served them either. | Fix those zones; the `DNSZone` controller keeps retrying them. |
 
 The gate is evaluated once per pod: once `True` it stays `True` for the pod's
-life, including across container restarts. A zone created later is
-configured on the running pod by the `DNSZone` controller as usual.
+life, including across container restarts, until the pod is deleted (then
+`PodTerminating`). A zone created later is configured on the running pod by
+the `DNSZone` controller as usual.
 
 If the operator is down, new BIND9 pods stay not Ready on purpose: with the
 default rolling update (`maxUnavailable` 0) the old pod keeps serving until
 the operator is back.
+
+### A Bind9Instance Does Not Roll Out (`RolloutQueued`)
+
+A pod-template change (a cluster configuration change, an image or bindcar
+change, a bindy upgrade that renders differently) is applied to one instance
+at a time among instances that serve a zone in common or belong to the same
+cluster
+([ADR-0018](https://github.com/firestoned/bindy/blob/main/docs/adr/0018-staggered-bind9-rollouts.md)).
+An instance waiting its turn shows:
+
+```bash
+kubectl get bind9instance <name> -n <namespace> \
+  -o jsonpath='{range .status.conditions[?(@.type=="Rollout")]}{.status} {.reason}: {.message}{"\n"}{end}'
+# False RolloutQueued: Pod template change waits for Bind9Instance dns/primary-0, which is rolling out (...)
+```
+
+Its pods keep serving the previous configuration and its `Ready` condition is
+unaffected. It rolls as soon as the named instance finishes:
+
+| The message says the blocker... | What to check |
+|---|---|
+| is rolling out | Normal: `kubectl rollout status deployment/<blocker> -n <namespace>`. A blocker held by its zones-loaded gate shows why in its new pod's `bindy.firestoned.io/zones-loaded` condition (section above). |
+| is starting its rollout | Normal, lasts until the blocker's patch reaches the operator's cache (well under a second). |
+| was queued earlier | Instances roll first come, first served; the blocker itself waits for another one. Follow the chain through each `Rollout` condition. |
+
+A blocker whose rollout never completes stops blocking once its Deployment
+reports `ProgressDeadlineExceeded` (after `progressDeadlineSeconds`, 600 s by
+default); the waiting instance then rolls and reports
+`Rollout=True, reason: RolloutPeerStalled`. Replica changes and new
+instances are never queued.
 
 ## Debugging Steps
 

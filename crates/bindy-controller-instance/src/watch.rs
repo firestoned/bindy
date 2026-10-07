@@ -14,6 +14,11 @@
 //! change to itself, to anything it owns, to the cluster-level ConfigMap its
 //! pods mount ([`instances_for_configmap`]), to its cluster or provider, or to
 //! the zones that select it; and once more when its RNDC key falls due.
+//!
+//! A pod-template change queued behind another instance's rollout (ADR-0018)
+//! is woken by that instance's Deployment or Pod events
+//! ([`rollout_waiters`]) and by the rollout queue itself, when a claim is
+//! released or a waiter leaves without rolling. No timer.
 
 use crate::bind9instance::reconcile_bind9instance;
 use crate::constants::KIND_BIND9_INSTANCE;
@@ -21,16 +26,22 @@ use crate::crd::{Bind9Cluster, Bind9Instance, ClusterBind9Provider, DNSZone};
 use crate::labels::{
     COMPONENT_DNS_CLUSTER, K8S_COMPONENT, K8S_INSTANCE, K8S_MANAGED_BY, MANAGED_BY_BIND9_CLUSTER,
 };
-use bindy_controller_sdk::context::Context;
+use crate::rollout::{
+    deployment_rollout_key, instance_of_deployment, instance_of_pod, pod_rollout_key,
+    waiters_to_wake, InstanceId, RolloutQueue,
+};
+use bindy_controller_sdk::context::{Context, Stores};
 use bindy_controller_sdk::error::{error_policy, ReconcileError};
 use bindy_controller_sdk::namespace_scope::{owned_targets, scoped_namespaced_api};
 use bindy_controller_sdk::reconcile::instrumented_scheduled;
 use bindy_controller_sdk::watch::changed_only;
 use futures::StreamExt;
-use k8s_openapi::api::core::v1::{ConfigMap, Secret, Service, ServiceAccount};
+use k8s_openapi::api::apps::v1::Deployment;
+use k8s_openapi::api::core::v1::{ConfigMap, Pod, Secret, Service, ServiceAccount};
 use kube::runtime::reflector::ObjectRef;
 use kube::runtime::{controller::Action, watcher, Controller};
 use kube::ResourceExt;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use tracing::{debug, info};
 
@@ -171,21 +182,55 @@ pub(crate) fn instances_of_provider(
         .collect()
 }
 
+/// The waiting instances a Deployment or pod change of `changed` must wake
+/// (ADR-0018): those in its conflict set. Reads the stores and the queue
+/// only, no I/O.
+pub(crate) fn rollout_waiters(
+    stores: &Stores,
+    rollouts: &RolloutQueue,
+    changed: &InstanceId,
+) -> Vec<ObjectRef<Bind9Instance>> {
+    let waiting = rollouts.waiting();
+    if waiting.is_empty() {
+        return vec![];
+    }
+    let provider_names: BTreeSet<String> = stores
+        .cluster_bind9_providers
+        .state()
+        .iter()
+        .map(|provider| provider.name_any())
+        .collect();
+    waiters_to_wake(
+        changed,
+        &waiting,
+        &stores.bind9_instances.state(),
+        &stores.dnszones.state(),
+        &provider_names,
+    )
+}
+
 /// Run one `Bind9Instance` controller per namespace target. Cluster-wide mode
-/// yields exactly one.
+/// yields exactly one. Every target shares one rollout queue, so instances of
+/// a `ClusterBind9Provider` in different namespaces are ordered together.
 pub(crate) async fn run_bind9instance_controllers(ctx: Arc<Context>) -> anyhow::Result<()> {
     info!("Starting Bind9Instance controller");
     let targets = owned_targets(&ctx.namespace_scope);
+    let rollouts = Arc::new(RolloutQueue::new());
     futures::future::join_all(
         targets
             .into_iter()
-            .map(|target| run_bind9instance_controller(ctx.clone(), target)),
+            .map(|target| run_bind9instance_controller(ctx.clone(), target, rollouts.clone())),
     )
     .await;
     Ok(())
 }
 
-async fn run_bind9instance_controller(ctx: Arc<Context>, target: Option<String>) {
+#[allow(clippy::too_many_lines)] // one builder chain: every watch of the controller
+async fn run_bind9instance_controller(
+    ctx: Arc<Context>,
+    target: Option<String>,
+    rollouts: Arc<RolloutQueue>,
+) {
     debug!(
         namespace = target.as_deref().unwrap_or("<all>"),
         "Starting Bind9Instance controller"
@@ -211,6 +256,41 @@ async fn run_bind9instance_controller(ctx: Arc<Context>, target: Option<String>)
                 .is_some()
         },
     );
+
+    // Staggered rollouts (ADR-0018): a conflicting instance's Deployment or
+    // pod changing wakes the instances queued behind it, and so does the
+    // queue when a waiter is released without a Deployment event.
+    let deployment_store = ws.store::<Deployment>(target.as_deref());
+    let stores_for_deployment_rollouts = ctx.stores.clone();
+    let rollouts_for_deployments = rollouts.clone();
+    let deployment_rollout_changes = changed_only(
+        ws.subscribe::<Deployment>(target.as_deref()),
+        deployment_rollout_key,
+        move |deployment: &Deployment| {
+            deployment_store
+                .get(&ObjectRef::from_obj(deployment))
+                .is_some()
+        },
+    );
+    let pod_store = ws.store::<Pod>(target.as_deref());
+    let stores_for_pod_rollouts = ctx.stores.clone();
+    let rollouts_for_pods = rollouts.clone();
+    let pod_rollout_changes = changed_only(
+        ws.subscribe::<Pod>(target.as_deref()),
+        pod_rollout_key,
+        move |pod: &Pod| pod_store.get(&ObjectRef::from_obj(pod)).is_some(),
+    );
+    let wake_store = ws.store::<Bind9Instance>(target.as_deref());
+    let queue_wakes = futures::stream::unfold(rollouts.subscribe(), |mut rx| async move {
+        rx.recv().await.map(|id| (id, rx))
+    })
+    .filter_map(move |id: InstanceId| {
+        let found = wake_store
+            .get(&id.object_ref())
+            .map(|instance| Ok::<_, watcher::Error>((*instance).clone()));
+        futures::future::ready(found)
+    });
+    let rollouts_for_run = rollouts;
 
     // Bind9Instance, Deployment, DNSZone, Bind9Cluster and ClusterBind9Provider
     // come from the shared WatchSet; the other owned kinds are watched only
@@ -264,8 +344,31 @@ async fn run_bind9instance_controller(ctx: Arc<Context>, target: Option<String>)
             )
         },
     )
+    .watches_stream(deployment_rollout_changes, move |deployment| {
+        instance_of_deployment(&deployment)
+            .map(|changed| {
+                rollout_waiters(
+                    &stores_for_deployment_rollouts,
+                    &rollouts_for_deployments,
+                    &changed,
+                )
+            })
+            .unwrap_or_default()
+    })
+    .watches_stream(pod_rollout_changes, move |pod| {
+        instance_of_pod(&pod)
+            .map(|changed| rollout_waiters(&stores_for_pod_rollouts, &rollouts_for_pods, &changed))
+            .unwrap_or_default()
+    })
+    .watches_stream(queue_wakes, |instance: Bind9Instance| {
+        Some(ObjectRef::from_obj(&instance))
+    })
     .graceful_shutdown_on(ctx.shutdown.wait())
-    .run(reconcile_bind9instance_wrapper, error_policy, ctx)
+    .run(
+        move |instance, ctx| reconcile_bind9instance_wrapper(instance, ctx, rollouts_for_run.clone()),
+        error_policy,
+        ctx,
+    )
     .for_each(|_| futures::future::ready(()))
     .await;
 }
@@ -273,6 +376,7 @@ async fn run_bind9instance_controller(ctx: Arc<Context>, target: Option<String>)
 async fn reconcile_bind9instance_wrapper(
     instance: Arc<Bind9Instance>,
     ctx: Arc<Context>,
+    rollouts: Arc<RolloutQueue>,
 ) -> Result<Action, ReconcileError> {
     let name = instance.name_any();
     info!("Reconciling instance {name}");
@@ -281,7 +385,7 @@ async fn reconcile_bind9instance_wrapper(
     instrumented_scheduled(
         KIND_BIND9_INSTANCE,
         &name,
-        Box::pin(reconcile_bind9instance(ctx, (*instance).clone())),
+        Box::pin(async move { reconcile_bind9instance(ctx, (*instance).clone(), &rollouts).await }),
     )
     .await
 }

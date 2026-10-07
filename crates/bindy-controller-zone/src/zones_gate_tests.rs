@@ -8,13 +8,13 @@
 mod tests {
     use super::super::{
         condition_matches, gate_outcome, gate_patch, gate_step, gated_pods_for_zone, pod_gate_key,
-        required_zones, sibling_addresses, transition_time, truncate_message, zone_gate_key,
-        GateStep, ZoneLoad, MAX_GATE_MESSAGE_CHARS,
+        required_zones, sibling_addresses, termination_condition, transition_time,
+        truncate_message, zone_gate_key, GateStep, ZoneLoad, MAX_GATE_MESSAGE_CHARS,
     };
     use crate::constants::{
         CONDITION_STATUS_FALSE, CONDITION_STATUS_TRUE, ZONES_LOADED_CONDITION_TYPE,
         ZONES_LOADED_REASON_FAILED, ZONES_LOADED_REASON_LOADED, ZONES_LOADED_REASON_LOADING,
-        ZONES_LOADED_REASON_PARTIAL,
+        ZONES_LOADED_REASON_PARTIAL, ZONES_LOADED_REASON_TERMINATING,
     };
     use crate::crd::{Bind9Instance, DNSZone};
     use bindy_bind9::instances::EndpointAddress;
@@ -201,6 +201,79 @@ mod tests {
         let mut terminating = pod("p", "True", None);
         terminating.metadata.deletion_timestamp = Some(Time(k8s_openapi::jiff::Timestamp::now()));
         assert!(matches!(gate_step(&terminating), GateStep::Done(_)));
+    }
+
+    // ------------------------------------------------------------------
+    // Handover at the start of termination (ADR-0017 decision 6)
+    // ------------------------------------------------------------------
+
+    fn terminating(mut pod: Pod) -> Pod {
+        pod.metadata.deletion_timestamp = Some(Time(k8s_openapi::jiff::Timestamp::now()));
+        pod
+    }
+
+    /// An admitted pod that starts terminating closes its gate at once, so
+    /// its endpoint stops `serving` before `named` exits.
+    #[test]
+    fn a_terminating_admitted_pod_closes_its_gate() {
+        let leaving = terminating(pod("p", "True", Some(CONDITION_STATUS_TRUE)));
+        assert_eq!(gate_step(&leaving), GateStep::CloseForTermination);
+    }
+
+    /// The close does not depend on the containers: a pod whose containers
+    /// already stopped answering is closed too.
+    #[test]
+    fn a_terminating_admitted_pod_closes_its_gate_whatever_its_containers_say() {
+        let leaving = terminating(pod("p", "False", Some(CONDITION_STATUS_TRUE)));
+        assert_eq!(gate_step(&leaving), GateStep::CloseForTermination);
+    }
+
+    #[test]
+    fn a_terminating_pod_whose_gate_is_already_false_is_left_alone() {
+        let leaving = terminating(pod("p", "True", Some(CONDITION_STATUS_FALSE)));
+        assert!(matches!(gate_step(&leaving), GateStep::Done(_)));
+    }
+
+    #[test]
+    fn a_terminating_pod_without_the_gate_is_left_alone() {
+        let mut leaving = terminating(pod("p", "True", Some(CONDITION_STATUS_TRUE)));
+        if let Some(spec) = leaving.spec.as_mut() {
+            spec.readiness_gates = None;
+        }
+        assert!(matches!(gate_step(&leaving), GateStep::Done(_)));
+    }
+
+    /// The latch still holds for every pod that is not terminating.
+    #[test]
+    fn the_latch_holds_for_a_pod_that_is_not_terminating() {
+        let serving = pod("p", "True", Some(CONDITION_STATUS_TRUE));
+        assert!(matches!(gate_step(&serving), GateStep::Done(_)));
+    }
+
+    /// The close needs no instance: a pod whose labels were stripped still
+    /// leaves its Service at once.
+    #[test]
+    fn a_terminating_admitted_pod_without_an_instance_label_closes_its_gate() {
+        let mut leaving = terminating(pod("p", "True", Some(CONDITION_STATUS_TRUE)));
+        leaving.metadata.labels = None;
+        assert_eq!(gate_step(&leaving), GateStep::CloseForTermination);
+    }
+
+    #[test]
+    fn the_termination_condition_is_false_with_its_own_reason() {
+        let (status, reason, message) = termination_condition();
+        assert_eq!(status, CONDITION_STATUS_FALSE);
+        assert_eq!(reason, ZONES_LOADED_REASON_TERMINATING);
+        assert!(!message.is_empty());
+    }
+
+    /// The Pod filter passes the deletion, which is the event the close
+    /// fires on.
+    #[test]
+    fn the_pod_filter_passes_the_start_of_termination() {
+        let serving = pod("p", "True", Some(CONDITION_STATUS_TRUE));
+        let leaving = terminating(serving.clone());
+        assert_ne!(pod_gate_key(&serving), pod_gate_key(&leaving));
     }
 
     #[test]

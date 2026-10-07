@@ -1575,4 +1575,139 @@ mod tests {
             assert_eq!(gates[0]["conditionType"], ZONES_LOADED_CONDITION_TYPE);
         }
     }
+
+    // ADR-0018: only a change under `spec.template` rolls the pods and is
+    // staggered; a replica change is applied at once.
+    mod rollout_change_classification {
+        use crate::bind9_resources::build_deployment;
+        use crate::bind9instance::resources::{
+            build_deployment_patch_for_test as build_deployment_patch,
+            build_scale_patch_for_test as build_scale_patch,
+            deployment_change_for_test as deployment_change, DeploymentChange,
+        };
+        use crate::crd::{Bind9Instance, Bind9InstanceSpec, ServerRole};
+        use k8s_openapi::api::apps::v1::Deployment;
+        use kube::api::ObjectMeta;
+
+        const SCALED_REPLICAS: i32 = 3;
+
+        fn deployment() -> Deployment {
+            #[allow(deprecated)]
+            let inst = Bind9Instance {
+                metadata: ObjectMeta {
+                    name: Some("primary-0".into()),
+                    namespace: Some("dns".into()),
+                    ..Default::default()
+                },
+                spec: Bind9InstanceSpec {
+                    cluster_ref: "my-dns".into(),
+                    role: ServerRole::Primary,
+                    replicas: Some(1),
+                    version: Some("9.18".into()),
+                    image: None,
+                    config_map_refs: None,
+                    config: None,
+                    primary_servers: None,
+                    volumes: None,
+                    volume_mounts: None,
+                    rndc_secret_ref: None,
+                    rndc_key: None,
+                    storage: None,
+                    placement: None,
+                    bindcar_config: None,
+                },
+                status: None,
+            };
+            build_deployment("primary-0", "dns", &inst, None, None, "rndc-key")
+        }
+
+        fn with_replicas(mut d: Deployment, replicas: i32) -> Deployment {
+            if let Some(spec) = d.spec.as_mut() {
+                spec.replicas = Some(replicas);
+            }
+            d
+        }
+
+        fn with_config_hash(mut d: Deployment, hash: &str) -> Deployment {
+            crate::bind9_resources::stamp_config_hash(&mut d, hash);
+            d
+        }
+
+        #[test]
+        fn an_identical_deployment_is_no_change() {
+            assert_eq!(
+                deployment_change(&deployment(), &deployment()),
+                DeploymentChange::None
+            );
+        }
+
+        #[test]
+        fn a_replica_change_alone_is_a_scale() {
+            let desired = with_replicas(deployment(), SCALED_REPLICAS);
+            assert_eq!(
+                deployment_change(&deployment(), &desired),
+                DeploymentChange::Scale
+            );
+        }
+
+        #[test]
+        fn a_config_hash_change_is_a_template_change() {
+            let current = with_config_hash(deployment(), "old");
+            let desired = with_config_hash(deployment(), "new");
+            assert_eq!(
+                deployment_change(&current, &desired),
+                DeploymentChange::Template
+            );
+        }
+
+        #[test]
+        fn a_template_and_replica_change_together_is_a_template_change() {
+            let current = with_config_hash(deployment(), "old");
+            let desired = with_replicas(with_config_hash(deployment(), "new"), SCALED_REPLICAS);
+            assert_eq!(
+                deployment_change(&current, &desired),
+                DeploymentChange::Template
+            );
+        }
+
+        #[test]
+        fn a_missing_readiness_gate_is_a_template_change() {
+            let mut current = deployment();
+            if let Some(pod) = current.spec.as_mut().and_then(|s| s.template.spec.as_mut()) {
+                pod.readiness_gates = None;
+            }
+            assert_eq!(
+                deployment_change(&current, &deployment()),
+                DeploymentChange::Template
+            );
+        }
+
+        /// While a template change is queued, a replica change still goes
+        /// through, and its patch touches nothing that would roll the pods.
+        #[test]
+        fn the_scale_patch_carries_only_the_replicas() {
+            let desired = with_replicas(deployment(), SCALED_REPLICAS);
+            let patch = build_scale_patch(&desired);
+            assert_eq!(patch["spec"]["replicas"], SCALED_REPLICAS);
+            assert!(patch["spec"].get("template").is_none(), "{patch}");
+            assert_eq!(
+                patch["spec"].as_object().map(serde_json::Map::len),
+                Some(1),
+                "{patch}"
+            );
+        }
+
+        #[test]
+        fn the_full_patch_carries_the_template_and_the_replicas() {
+            let desired = with_config_hash(with_replicas(deployment(), SCALED_REPLICAS), "new");
+            let patch = build_deployment_patch(&desired);
+            assert_eq!(patch["spec"]["replicas"], SCALED_REPLICAS);
+            assert!(patch["spec"]["template"]["spec"]["containers"].is_array());
+            assert_eq!(
+                patch["spec"]["template"]["metadata"]["annotations"]
+                    [crate::bind9_resources::CONFIG_HASH_ANNOTATION],
+                "new"
+            );
+        }
+    }
 }

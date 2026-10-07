@@ -123,6 +123,14 @@ Creates:
   - Checks if `Deployment` resource exists
   - Recreates missing resources if detected
 
+**Staggered rollouts** (ADR-0018): a Deployment change under `spec.template`
+(it rolls the pods) is applied only while no instance sharing a zone or a
+cluster with this one is mid-rollout; otherwise the instance reports
+`Rollout=False, reason: RolloutQueued`, keeps its observed generations, and
+is woken by the blocking instance's Deployment or Pod events. Creation and
+replica changes are applied at once. See
+[`crates/bindy-controller-instance/src/rollout.rs`](https://github.com/firestoned/bindy/blob/main/crates/bindy-controller-instance/src/rollout.rs).
+
 **Implementation**: [`crates/bindy-controller-instance/src/bind9instance/mod.rs`](https://github.com/firestoned/bindy/blob/main/crates/bindy-controller-instance/src/bind9instance/mod.rs)
 
 **Drift Detection Logic**:

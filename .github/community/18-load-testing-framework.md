@@ -6,6 +6,8 @@
 >
 > **Rollout availability.** Preparing to roll v0.8.0-rc.4 showed that a replacement BIND9 pod went Ready, and into its Service, before its zones were loaded; [ADR-0017](../../docs/adr/0017-zones-loaded-readiness-gate.md) (2026-10-06) adds the zones-loaded readiness gate. A rollout scenario should assert it under load: query every zone continuously while every primary rolls, and expect no `REFUSED` and a `kubectl rollout status` that completes once the zones are on the new pods.
 >
+> **Rollout handover (2026-10-07).** Rolling v0.8.0-rc.5 on a real cluster showed the gate holding (no `REFUSED`) but every query to both primaries' MetalLB layer-2 IPs (`externalTrafficPolicy: Local`) timing out for 9 to 12 s: all instances rolled at once, and each old pod stayed `Ready` until its probe failed after `named` exited. [ADR-0017](../../docs/adr/0017-zones-loaded-readiness-gate.md) decision 6 now closes the gate at the start of termination, and [ADR-0018](../../docs/adr/0018-staggered-bind9-rollouts.md) rolls instances that share a zone or a cluster one at a time. The rollout scenario should therefore also measure, with a 1 s probe per nameserver IP: no interval in which every nameserver of a zone times out; per-instance gaps no longer than MetalLB's re-announcement with `Local` and none with `Cluster`; instances rolling in sequence (`Rollout=False/RolloutQueued` on the waiting ones). Not yet verified on a cluster.
+>
 > *Migrated 2026-09-10 from the external roadmap set. Status verified against `fix-idempotency` @ `648ff7a`.*
 
 ---

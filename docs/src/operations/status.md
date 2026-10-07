@@ -73,6 +73,17 @@ status:
   keep the last published configuration; see
   [Configuration Not Published](./common-issues.md#configuration-not-published-configurationinvalid)).
   A `Bind9Cluster` reports the same for its shared configuration
+- A `Rollout` condition appears while there is something to report about a
+  staggered rollout
+  ([ADR-0018](https://github.com/firestoned/bindy/blob/main/docs/adr/0018-staggered-bind9-rollouts.md)):
+  - `Rollout=False`, reason `RolloutQueued`: a pod-template change waits for
+    the instance named in the message (which shares a zone or a cluster with
+    this one) to finish rolling out. `Ready` is unaffected: the current pods
+    keep serving the previous configuration, and `observedGeneration` stays
+    at the last generation applied;
+  - `Rollout=True`, reason `RolloutPeerStalled`: the instance rolled out
+    without waiting for the named instance, whose rollout exceeded its
+    `progressDeadlineSeconds`
 - Additional status fields:
   - `replicas`: Total number of replicas
   - `readyReplicas`: Number of ready replicas

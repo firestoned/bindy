@@ -11,7 +11,7 @@
       "unique-id": "bindy-operator",
       "node-type": "service",
       "name": "Bindy Operator",
-      "description": "Rust controller-manager (ghcr.io/firestoned/bindy, args=[run]). Leader-elected Deployment that hosts every reconciler (ClusterBind9Provider, Bind9Cluster, Bind9Instance, DNSZone, and the 9 record reconcilers) and exposes Prometheus metrics on :8080. One binary built from a Cargo workspace (ADR-0009): a controller SDK holding the shared watch layer, BIND9 domain logic, and one crate per controller. All controllers subscribe to one shared watch cache; SIGTERM or leader-lease loss drains in-flight reconciles. Reconciliation is event-driven with no periodic resync (ADR-0016): a reconcile runs on a watch event, failures retry with per-object capped backoff, and only RNDC key rotation and DNSSEC KSK rollover schedule a wake at a known instant.",
+      "description": "Rust controller-manager (ghcr.io/firestoned/bindy, args=[run]). Leader-elected Deployment that hosts every reconciler (ClusterBind9Provider, Bind9Cluster, Bind9Instance, DNSZone, and the 9 record reconcilers) and exposes Prometheus metrics on :8080. One binary built from a Cargo workspace (ADR-0009): a controller SDK holding the shared watch layer, BIND9 domain logic, and one crate per controller. All controllers subscribe to one shared watch cache; SIGTERM or leader-lease loss drains in-flight reconciles. Reconciliation is event-driven with no periodic resync (ADR-0016): a reconcile runs on a watch event, failures retry with per-object capped backoff, and only RNDC key rotation and DNSSEC KSK rollover schedule a wake at a known instant. BIND9 pod-template rollouts are staggered across instances that share a zone or a cluster (ADR-0018), woken by Deployment and Pod events.",
       "development-language": "Rust"
     },
     {
@@ -194,7 +194,7 @@
     },
     {
       "unique-id": "instance-owns-pod",
-      "description": "creates / owns Deployment",
+      "description": "creates / owns Deployment; a pod-template change is applied only while no instance sharing a zone or a cluster with it is mid-rollout, one at a time in queue order (ADR-0018)",
       "relationship-type": {
         "connects": {
           "source": { "node": "crd-instance" },
@@ -214,7 +214,7 @@
     },
     {
       "unique-id": "operator-gates-pod-readiness",
-      "description": "watches BIND9 pods (label-selected) and patches the bindy.firestoned.io/zones-loaded condition on pods/status once every live zone and its records are loaded on the pod (ADR-0017)",
+      "description": "watches BIND9 pods (label-selected) and patches the bindy.firestoned.io/zones-loaded condition on pods/status once every live zone and its records are loaded on the pod, and back to False when the pod starts terminating so traffic moves before named exits (ADR-0017, amended 2026-10-07)",
       "protocol": "HTTPS",
       "relationship-type": {
         "connects": {
@@ -298,7 +298,7 @@
     },
     {
       "unique-id": "svc-routes-named",
-      "description": "routes :53 to named :5353 on Ready pods only; a pod is Ready once its zones-loaded readiness gate is True (ADR-0017)",
+      "description": "routes :53 to named :5353 on Ready pods only; a pod is Ready once its zones-loaded readiness gate is True, and stops being Ready as soon as it starts terminating (ADR-0017)",
       "relationship-type": {
         "connects": {
           "source": { "node": "bind9-svc" },

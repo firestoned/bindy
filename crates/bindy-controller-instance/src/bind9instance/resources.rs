@@ -15,6 +15,7 @@ use crate::bind9_resources::{
     build_service_account,
 };
 use crate::constants::{API_GROUP_VERSION, KIND_BIND9_INSTANCE};
+use crate::rollout::{InstanceId, RolloutDecision, RolloutGate, RolloutStatus};
 use anyhow::Context as _;
 use bindy_controller_sdk::resources::create_or_apply;
 
@@ -83,17 +84,34 @@ pub(super) fn resolve_full_rndc_config(
     resolved
 }
 
+/// What [`create_or_update_resources`] applied, for the status update.
+pub(super) struct AppliedResources {
+    /// The instance's `Bind9Cluster`, if it has one in its namespace
+    pub cluster: Option<Bind9Cluster>,
+    /// The instance's `ClusterBind9Provider`, if `clusterRef` names one
+    pub cluster_provider: Option<crate::crd::ClusterBind9Provider>,
+    /// The RNDC Secret, when auto-rotation is on (for the rotation status)
+    pub secret: Option<Secret>,
+    /// Whether a pod-template change is queued behind another rollout
+    /// (ADR-0018)
+    pub rollout: RolloutStatus,
+}
+
+/// Create or update every resource of a `Bind9Instance`: ServiceAccount,
+/// RNDC Secret, ConfigMap, Deployment (its pod-template changes staggered
+/// through `gate`, ADR-0018) and Service.
+///
+/// # Errors
+/// Returns an error if a user-supplied pod shape is rejected, the rendered
+/// configuration is invalid, or an API call fails.
 #[allow(clippy::too_many_lines)] // Function orchestrates multiple resource creation steps
 pub(super) async fn create_or_update_resources(
     client: &Client,
     namespace: &str,
     name: &str,
     instance: &Bind9Instance,
-) -> Result<(
-    Option<Bind9Cluster>,
-    Option<crate::crd::ClusterBind9Provider>,
-    Option<Secret>, // Added: return Secret for rotation status updates
-)> {
+    gate: &RolloutGate<'_>,
+) -> Result<AppliedResources> {
     debug!(
         namespace = %namespace,
         name = %name,
@@ -195,7 +213,7 @@ pub(super) async fn create_or_update_resources(
     // 4. Create/update Deployment (mounts the resolved RNDC Secret; its pod
     // template carries the config hash, so a config change rolls the pods)
     debug!("Step 4: Creating/updating Deployment");
-    create_or_update_deployment(
+    let rollout = create_or_update_deployment(
         client,
         namespace,
         name,
@@ -204,6 +222,7 @@ pub(super) async fn create_or_update_resources(
         cluster_provider.as_ref(),
         &secret_name,
         config_hash.as_deref(),
+        gate,
     )
     .await?;
 
@@ -220,7 +239,12 @@ pub(super) async fn create_or_update_resources(
     .await?;
 
     debug!("Successfully created/updated all resources");
-    Ok((cluster, cluster_provider, secret))
+    Ok(AppliedResources {
+        cluster,
+        cluster_provider,
+        secret,
+        rollout,
+    })
 }
 
 /// Create or update the `ServiceAccount` for BIND9 pods
@@ -1113,10 +1137,48 @@ fn build_init_containers_patch(desired: &Deployment) -> serde_json::Value {
     json!(list)
 }
 
-/// Check if a deployment needs updating by comparing current and desired state.
+/// What a Deployment update would change, which decides whether it is
+/// staggered (ADR-0018).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DeploymentChange {
+    /// Nothing to patch.
+    None,
+    /// Only `spec.replicas` differs: applied at once, rolls nothing.
+    Scale,
+    /// Something under `spec.template` differs: the patch rolls the pods,
+    /// so it waits for conflicting rollouts.
+    Template,
+}
+
+/// Classify the difference between the current and desired Deployment.
 ///
-/// Returns true if any of the following have changed:
-/// - Replicas count
+/// A pod-template difference wins over a replica difference: the patch that
+/// applies it rolls the pods either way.
+fn deployment_change(current: &Deployment, desired: &Deployment) -> DeploymentChange {
+    if pod_template_needs_update(current, desired) {
+        return DeploymentChange::Template;
+    }
+    let desired_replicas = desired.spec.as_ref().and_then(|s| s.replicas);
+    let current_replicas = current.spec.as_ref().and_then(|s| s.replicas);
+    if desired_replicas != current_replicas {
+        debug!(
+            "Replicas changed: current={:?}, desired={:?}",
+            current_replicas, desired_replicas
+        );
+        return DeploymentChange::Scale;
+    }
+    DeploymentChange::None
+}
+
+/// Check if a deployment needs updating by comparing current and desired
+/// state: [`deployment_change`] is anything but [`DeploymentChange::None`].
+#[cfg(test)]
+fn deployment_needs_update(current: &Deployment, desired: &Deployment) -> bool {
+    deployment_change(current, desired) != DeploymentChange::None
+}
+
+/// Whether the pod template bindy renders differs from the running one, in
+/// the fields bindy owns. Returns true if any of the following have changed:
 /// - API container image
 /// - API container environment variables
 /// - API container imagePullPolicy
@@ -1125,7 +1187,7 @@ fn build_init_containers_patch(desired: &Deployment) -> serde_json::Value {
 ///   ([`crate::bind9_resources::CONFIG_HASH_ANNOTATION`])
 /// - Volumes, init containers, topology spread constraints, the pod's
 ///   `readinessGates` (ADR-0017) and the pod template labels
-fn deployment_needs_update(current: &Deployment, desired: &Deployment) -> bool {
+fn pod_template_needs_update(current: &Deployment, desired: &Deployment) -> bool {
     // The BIND config the pods mount changed: roll them.
     if let Some(desired_hash) = config_hash_of(desired) {
         if config_hash_of(current) != Some(desired_hash) {
@@ -1144,18 +1206,6 @@ fn deployment_needs_update(current: &Deployment, desired: &Deployment) -> bool {
     // An init container added or removed (the DNSSEC key copy, ADR-0012).
     if init_container_names(current) != init_container_names(desired) {
         debug!("Pod init containers changed");
-        return true;
-    }
-
-    // Compare desired replicas with current replicas
-    let desired_replicas = desired.spec.as_ref().and_then(|s| s.replicas);
-    let current_replicas = current.spec.as_ref().and_then(|s| s.replicas);
-
-    if desired_replicas != current_replicas {
-        debug!(
-            "Replicas changed: current={:?}, desired={:?}",
-            current_replicas, desired_replicas
-        );
         return true;
     }
 
@@ -1301,64 +1351,13 @@ fn build_readiness_gates_patch(desired: &Deployment) -> serde_json::Value {
         .map_or(json!(null), |gates| json!(gates))
 }
 
-/// Create or update the Deployment for BIND9
+/// The strategic merge patch that brings a running Deployment to `deployment`
+/// (the desired one): replicas, both containers' bindy-owned fields, init
+/// containers, readiness gates, volumes, scheduling fields, labels and the
+/// config hash. Pure: no I/O.
 ///
-/// `rndc_secret_name` is the resolved RNDC `Secret` name returned by
-/// `create_or_update_rndc_secret_with_config` (a `secretRef` / inline secret
-/// name, or the auto-generated `{name}-rndc-key` default) and is threaded
-/// into the Deployment's rndc-key volume and bindcar env secretKeyRefs.
-#[allow(clippy::too_many_arguments)]
-async fn create_or_update_deployment(
-    client: &Client,
-    namespace: &str,
-    name: &str,
-    instance: &Bind9Instance,
-    cluster: Option<&Bind9Cluster>,
-    cluster_provider: Option<&crate::crd::ClusterBind9Provider>,
-    rndc_secret_name: &str,
-    config_hash: Option<&str>,
-) -> Result<()> {
-    let mut deployment = build_deployment(
-        name,
-        namespace,
-        instance,
-        cluster,
-        cluster_provider,
-        rndc_secret_name,
-    );
-    if let Some(hash) = config_hash {
-        crate::bind9_resources::stamp_config_hash(&mut deployment, hash);
-    }
-    let api: Api<Deployment> = Api::namespaced(client.clone(), namespace);
-
-    // Check if deployment exists - if not, create it and return early
-    if api.get(name).await.is_err() {
-        info!("Creating Deployment {}/{}", namespace, name);
-        api.create(&PostParams::default(), &deployment).await?;
-        return Ok(());
-    }
-
-    // Deployment exists - check if it needs updating before patching
-    debug!(
-        "Checking if Deployment {}/{} needs updating",
-        namespace, name
-    );
-
-    // Get the current deployment from the cluster
-    let current_deployment = api.get(name).await?;
-
-    // Compare current and desired state using helper function
-    if !deployment_needs_update(&current_deployment, &deployment) {
-        debug!(
-            "Deployment {}/{} is up to date, skipping patch",
-            namespace, name
-        );
-        return Ok(());
-    }
-
-    // Deployment needs updating - use strategic merge patch
-    info!("Patching Deployment {}/{}", namespace, name);
-
+/// `spec.selector` is never patched: it is immutable.
+fn build_deployment_patch(deployment: &Deployment) -> serde_json::Value {
     let api_container = deployment
         .spec
         .as_ref()
@@ -1374,7 +1373,7 @@ async fn create_or_update_deployment(
 
     // bind9: name for ordering (strategic merge needs it) and its volume
     // mounts, so a key volume added after creation reaches the container.
-    let (volumes_patch, bind9_mounts_patch) = build_volumes_patch(&deployment);
+    let (volumes_patch, bind9_mounts_patch) = build_volumes_patch(deployment);
     let mut bind9_patch = json!({ "name": crate::constants::CONTAINER_NAME_BIND9 });
     if !bind9_mounts_patch.is_null() {
         bind9_patch["volumeMounts"] = bind9_mounts_patch;
@@ -1437,10 +1436,10 @@ async fn create_or_update_deployment(
     });
 
     // Init containers, replaced whole: bindy renders every one the pod has.
-    patch["spec"]["template"]["spec"]["initContainers"] = build_init_containers_patch(&deployment);
+    patch["spec"]["template"]["spec"]["initContainers"] = build_init_containers_patch(deployment);
 
     // The zones-loaded readiness gate (ADR-0017), replaced whole.
-    patch["spec"]["template"]["spec"]["readinessGates"] = build_readiness_gates_patch(&deployment);
+    patch["spec"]["template"]["spec"]["readinessGates"] = build_readiness_gates_patch(deployment);
 
     // The pod's volumes, in the same Pod spec fragment as the scheduling fields.
     if !volumes_patch.is_null() {
@@ -1449,7 +1448,7 @@ async fn create_or_update_deployment(
 
     // Merge the scheduling fields into the same Pod spec fragment.
     if let Some(pod_spec) = patch["spec"]["template"]["spec"].as_object_mut() {
-        if let Some(placement) = build_placement_patch(&deployment).as_object() {
+        if let Some(placement) = build_placement_patch(deployment).as_object() {
             for (key, value) in placement {
                 pod_spec.insert(key.clone(), value.clone());
             }
@@ -1470,15 +1469,144 @@ async fn create_or_update_deployment(
     }
 
     // The config hash rolls the pods when the BIND config they mount changed.
-    if let Some(hash) = config_hash_of(&deployment) {
+    if let Some(hash) = config_hash_of(deployment) {
         patch["spec"]["template"]["metadata"]["annotations"] =
             json!({ crate::bind9_resources::CONFIG_HASH_ANNOTATION: hash });
     }
 
-    api.patch(name, &PatchParams::default(), &Patch::Strategic(&patch))
-        .await?;
+    patch
+}
 
-    Ok(())
+/// The patch that applies only `spec.replicas` from `deployment`: what goes
+/// through while a pod-template change is queued (ADR-0018). Pure: no I/O.
+fn build_scale_patch(deployment: &Deployment) -> serde_json::Value {
+    json!({
+        "spec": {
+            "replicas": deployment.spec.as_ref().and_then(|s| s.replicas),
+        }
+    })
+}
+
+/// Create or update the Deployment for BIND9
+///
+/// `rndc_secret_name` is the resolved RNDC `Secret` name returned by
+/// `create_or_update_rndc_secret_with_config` (a `secretRef` / inline secret
+/// name, or the auto-generated `{name}-rndc-key` default) and is threaded
+/// into the Deployment's rndc-key volume and bindcar env secretKeyRefs.
+///
+/// Creation and replica changes are applied at once. A change under
+/// `spec.template` rolls the pods, so it is applied only when the
+/// [`RolloutGate`] allows it (ADR-0018); otherwise only a replica change, if
+/// any, is patched and the instance reports the rollout it waits for.
+///
+/// # Returns
+/// The [`RolloutStatus`] to report in the instance's status.
+///
+/// # Errors
+/// Returns an error if the Deployment cannot be read, created or patched.
+#[allow(clippy::too_many_arguments)]
+async fn create_or_update_deployment(
+    client: &Client,
+    namespace: &str,
+    name: &str,
+    instance: &Bind9Instance,
+    cluster: Option<&Bind9Cluster>,
+    cluster_provider: Option<&crate::crd::ClusterBind9Provider>,
+    rndc_secret_name: &str,
+    config_hash: Option<&str>,
+    gate: &RolloutGate<'_>,
+) -> Result<RolloutStatus> {
+    let mut deployment = build_deployment(
+        name,
+        namespace,
+        instance,
+        cluster,
+        cluster_provider,
+        rndc_secret_name,
+    );
+    if let Some(hash) = config_hash {
+        crate::bind9_resources::stamp_config_hash(&mut deployment, hash);
+    }
+    let api: Api<Deployment> = Api::namespaced(client.clone(), namespace);
+    let me = InstanceId::new(namespace, name);
+
+    // Creation is never staggered: a new Deployment takes no pod out of
+    // service.
+    let Some(current_deployment) = api.get_opt(name).await? else {
+        info!("Creating Deployment {}/{}", namespace, name);
+        api.create(&PostParams::default(), &deployment).await?;
+        gate.queue.leave(&me);
+        return Ok(RolloutStatus::None);
+    };
+
+    let change = deployment_change(&current_deployment, &deployment);
+    if change == DeploymentChange::None {
+        debug!(
+            "Deployment {}/{} is up to date, skipping patch",
+            namespace, name
+        );
+        gate.queue.leave(&me);
+        return Ok(RolloutStatus::None);
+    }
+
+    if change == DeploymentChange::Scale {
+        info!("Scaling Deployment {}/{}", namespace, name);
+        gate.queue.leave(&me);
+        api.patch(
+            name,
+            &PatchParams::default(),
+            &Patch::Strategic(&build_scale_patch(&deployment)),
+        )
+        .await?;
+        return Ok(RolloutStatus::None);
+    }
+
+    // A pod-template change: wait for conflicting rollouts (ADR-0018).
+    let current_generation = current_deployment.metadata.generation.unwrap_or_default();
+    let decision = gate.decide(instance, current_generation);
+    let status = RolloutStatus::from_decision(&decision);
+    if let RolloutDecision::Wait { blocker, .. } = &decision {
+        info!(
+            "Deployment {}/{} has a pod template change queued behind Bind9Instance {}",
+            namespace, name, blocker
+        );
+        let desired_replicas = deployment.spec.as_ref().and_then(|s| s.replicas);
+        let current_replicas = current_deployment.spec.as_ref().and_then(|s| s.replicas);
+        if desired_replicas != current_replicas {
+            api.patch(
+                name,
+                &PatchParams::default(),
+                &Patch::Strategic(&build_scale_patch(&deployment)),
+            )
+            .await?;
+        }
+        return Ok(status);
+    }
+
+    info!(
+        "Patching Deployment {}/{} (rolls the pods)",
+        namespace, name
+    );
+    let patched = match api
+        .patch(
+            name,
+            &PatchParams::default(),
+            &Patch::Strategic(&build_deployment_patch(&deployment)),
+        )
+        .await
+    {
+        Ok(patched) => patched,
+        Err(e) => {
+            gate.queue.release(&me);
+            return Err(e.into());
+        }
+    };
+    // A patch that changed nothing (the drift check saw a difference the API
+    // server's defaulting erases) rolls nothing: do not hold the others.
+    if patched.metadata.generation.unwrap_or_default() <= current_generation {
+        gate.queue.release(&me);
+    }
+    Ok(status)
 }
 
 /// Create or update the Service for BIND9
@@ -1648,6 +1776,24 @@ pub(super) fn build_volumes_patch_for_test(
 #[cfg(test)]
 pub(super) fn deployment_needs_update_for_test(current: &Deployment, desired: &Deployment) -> bool {
     deployment_needs_update(current, desired)
+}
+
+#[cfg(test)]
+pub(super) fn deployment_change_for_test(
+    current: &Deployment,
+    desired: &Deployment,
+) -> DeploymentChange {
+    deployment_change(current, desired)
+}
+
+#[cfg(test)]
+pub(super) fn build_deployment_patch_for_test(desired: &Deployment) -> serde_json::Value {
+    build_deployment_patch(desired)
+}
+
+#[cfg(test)]
+pub(super) fn build_scale_patch_for_test(desired: &Deployment) -> serde_json::Value {
+    build_scale_patch(desired)
 }
 
 #[cfg(test)]

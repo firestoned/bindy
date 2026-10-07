@@ -187,4 +187,68 @@ mod tests {
             Some(5)
         ));
     }
+
+    // ------------------------------------------------------------------
+    // ADR-0018: a queued pod-template change does not advance the observed
+    // generations, so the next reconcile still applies it.
+    // ------------------------------------------------------------------
+
+    mod queued_rollouts {
+        use crate::bind9instance::status_helpers::{observed_generations, ObservedGenerations};
+        use crate::crd::{Bind9Instance, Bind9InstanceStatus};
+        use crate::rollout::RolloutStatus;
+
+        const OLD_GENERATION: i64 = 3;
+        const NEW_GENERATION: i64 = 4;
+        const OLD_PARENT: i64 = 10;
+        const NEW_PARENT: i64 = 11;
+
+        fn instance() -> Bind9Instance {
+            let mut inst: Bind9Instance = serde_json::from_value(serde_json::json!({
+                "apiVersion": "bindy.firestoned.io/v1beta1",
+                "kind": "Bind9Instance",
+                "metadata": {"name": "a", "namespace": "dns", "generation": NEW_GENERATION},
+                "spec": {"clusterRef": "prod", "role": "primary"}
+            }))
+            .expect("valid Bind9Instance");
+            inst.status = Some(Bind9InstanceStatus {
+                observed_generation: Some(OLD_GENERATION),
+                observed_parent_generation: Some(OLD_PARENT),
+                ..Default::default()
+            });
+            inst
+        }
+
+        #[test]
+        fn an_applied_change_advances_both_generations() {
+            assert_eq!(
+                observed_generations(&instance(), Some(NEW_PARENT), &RolloutStatus::None),
+                ObservedGenerations {
+                    instance: Some(NEW_GENERATION),
+                    parent: Some(NEW_PARENT),
+                }
+            );
+        }
+
+        #[test]
+        fn a_queued_change_keeps_the_previous_generations() {
+            let queued = RolloutStatus::Queued("waits for dns/b".to_string());
+            assert_eq!(
+                observed_generations(&instance(), Some(NEW_PARENT), &queued),
+                ObservedGenerations {
+                    instance: Some(OLD_GENERATION),
+                    parent: Some(OLD_PARENT),
+                }
+            );
+        }
+
+        #[test]
+        fn rolling_past_a_stalled_peer_counts_as_applied() {
+            let past = RolloutStatus::ProceededPastStalled("dns/b".to_string());
+            assert_eq!(
+                observed_generations(&instance(), Some(NEW_PARENT), &past).instance,
+                Some(NEW_GENERATION)
+            );
+        }
+    }
 }

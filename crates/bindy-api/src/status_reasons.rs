@@ -256,6 +256,22 @@ pub const CONDITION_TYPE_BIND9_INSTANCE_PREFIX: &str = "Bind9Instance";
 /// Format: `Pod-{index}` (e.g., "Pod-0", "Pod-1")
 pub const CONDITION_TYPE_POD_PREFIX: &str = "Pod";
 
+/// Condition type of a `Bind9Instance` whose pod-template change is staggered
+/// behind another instance's rollout (ADR-0018). Present only while there is
+/// something to report.
+pub const CONDITION_TYPE_ROLLOUT: &str = "Rollout";
+
+/// `Rollout=False`: the instance has a pod-template change to roll out and
+/// waits for another instance that shares a zone or a cluster with it. The
+/// message names that instance; the instance's pods keep serving the previous
+/// configuration and its `Ready` condition is unaffected (ADR-0018).
+pub const REASON_ROLLOUT_QUEUED: &str = "RolloutQueued";
+
+/// `Rollout=True`: the instance rolled out without waiting for a conflicting
+/// instance whose own rollout exceeded its `progressDeadlineSeconds`
+/// (ADR-0018). The message names that instance.
+pub const REASON_ROLLOUT_PEER_STALLED: &str = "RolloutPeerStalled";
+
 // ============================================================================
 // Helper Functions
 // ============================================================================
