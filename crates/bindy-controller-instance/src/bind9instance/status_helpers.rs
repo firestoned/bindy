@@ -8,7 +8,46 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::types::*;
+use crate::rollout::RolloutStatus;
 use bindy_controller_sdk::pagination::list_all_paginated;
+
+/// The generations a status write records as observed.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ObservedGenerations {
+    /// Written as `status.observedGeneration`
+    pub instance: Option<i64>,
+    /// Written as `status.observedParentGeneration`
+    pub parent: Option<i64>,
+}
+
+/// The generations to record after a reconcile. Pure: no I/O.
+///
+/// A queued pod-template change (ADR-0018) was not applied, so the instance
+/// keeps the generations it last observed: the next reconcile then sees the
+/// spec or parent change as still pending and applies it. Otherwise the
+/// instance's current generation and `parent_generation` are recorded.
+///
+/// # Arguments
+/// * `instance` - The instance being reconciled
+/// * `parent_generation` - The parent cluster's generation seen this reconcile
+/// * `rollout` - What the Deployment step reported
+pub(crate) fn observed_generations(
+    instance: &Bind9Instance,
+    parent_generation: Option<i64>,
+    rollout: &RolloutStatus,
+) -> ObservedGenerations {
+    if let RolloutStatus::Queued(_) = rollout {
+        let status = instance.status.as_ref();
+        return ObservedGenerations {
+            instance: status.and_then(|s| s.observed_generation),
+            parent: status.and_then(|s| s.observed_parent_generation),
+        };
+    }
+    ObservedGenerations {
+        instance: instance.metadata.generation,
+        parent: parent_generation,
+    }
+}
 
 /// Update instance status from deployment pod health.
 ///
@@ -22,8 +61,9 @@ use bindy_controller_sdk::pagination::list_all_paginated;
 /// * `name` - Instance name
 /// * `instance` - The `Bind9Instance` resource
 /// * `cluster_ref` - Optional cluster reference to include in status
-/// * `observed_parent_generation` - Generation of the referenced parent cluster
-///   (`Bind9Cluster`/`ClusterBind9Provider`) observed during this reconciliation
+/// * `observed` - The generations to record ([`observed_generations`])
+/// * `rollout` - The `Rollout` condition to add, if any (ADR-0018); it does
+///   not change the `Ready` condition, which reports the pods
 ///
 /// # Errors
 ///
@@ -35,7 +75,8 @@ pub(super) async fn update_status_from_deployment(
     name: &str,
     instance: &Bind9Instance,
     cluster_ref: Option<ClusterReference>,
-    observed_parent_generation: Option<i64>,
+    observed: ObservedGenerations,
+    rollout: Option<Condition>,
 ) -> Result<()> {
     let deploy_api: Api<Deployment> = Api::namespaced(client.clone(), namespace);
     let pod_api: Api<Pod> = Api::namespaced(client.clone(), namespace);
@@ -134,19 +175,14 @@ pub(super) async fn update_status_from_deployment(
                 last_transition_time: Some(Utc::now().to_rfc3339()),
             };
 
-            // Combine encompassing condition + pod-level conditions
+            // Combine encompassing condition + pod-level conditions, then the
+            // rollout condition when a change is queued (ADR-0018)
             let mut all_conditions = vec![encompassing_condition];
             all_conditions.extend(pod_conditions);
+            all_conditions.extend(rollout);
 
             // Update status with all conditions
-            update_status(
-                client,
-                instance,
-                all_conditions,
-                cluster_ref,
-                observed_parent_generation,
-            )
-            .await?;
+            update_status(client, instance, all_conditions, cluster_ref, observed).await?;
         }
         Err(e) => {
             warn!(
@@ -166,7 +202,7 @@ pub(super) async fn update_status_from_deployment(
                 instance,
                 vec![unknown_condition],
                 cluster_ref,
-                observed_parent_generation,
+                observed,
             )
             .await?;
         }
@@ -257,8 +293,7 @@ pub fn instance_status_changed(
 /// * `instance` - The instance to update
 /// * `conditions` - Vector of status conditions to set
 /// * `cluster_ref` - Optional cluster reference
-/// * `observed_parent_generation` - Generation of the referenced parent cluster
-///   (`Bind9Cluster`/`ClusterBind9Provider`) observed during this reconciliation
+/// * `observed` - The instance and parent generations to record as observed
 ///
 /// # Errors
 ///
@@ -268,7 +303,7 @@ pub(super) async fn update_status(
     instance: &Bind9Instance,
     conditions: Vec<Condition>,
     cluster_ref: Option<ClusterReference>,
-    observed_parent_generation: Option<i64>,
+    observed: ObservedGenerations,
 ) -> Result<()> {
     let api: Api<Bind9Instance> =
         Api::namespaced(client.clone(), &instance.namespace().unwrap_or_default());
@@ -289,8 +324,8 @@ pub(super) async fn update_status(
         &conditions,
         cluster_ref.as_ref(),
         &zones,
-        instance.metadata.generation,
-        observed_parent_generation,
+        observed.instance,
+        observed.parent,
     );
 
     // Only update if status has changed
@@ -305,8 +340,8 @@ pub(super) async fn update_status(
 
     let new_status = Bind9InstanceStatus {
         conditions,
-        observed_generation: instance.metadata.generation,
-        observed_parent_generation,
+        observed_generation: observed.instance,
+        observed_parent_generation: observed.parent,
         service_address: None, // Will be populated when service is ready
         cluster_ref,
         zones,

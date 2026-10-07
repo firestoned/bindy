@@ -145,11 +145,18 @@ pub const READINESS_FAILURE_THRESHOLD: i32 = 3;
 /// How long the bind9 container's preStop hook waits before letting `named`
 /// receive SIGTERM.
 ///
-/// Kubernetes removes a terminating Pod from the Service endpoints and signals
-/// the container **in parallel**, so without this delay `named` can exit while
-/// kube-proxy is still forwarding queries to it — the client sees a timeout
-/// rather than an answer from another primary. The hook simply outlives the
-/// endpoint propagation.
+/// Kubernetes marks a terminating Pod's endpoint `terminating` and signals
+/// the container **in parallel**, and the endpoint stays `serving` until the
+/// Pod's `Ready` condition turns `False`. The operator closes the
+/// zones-loaded gate at the start of termination (ADR-0017 decision 6), so
+/// `Ready` turns `False` at once and kube-proxy and the load balancer move
+/// traffic away; the drain keeps `named` answering meanwhile.
+///
+/// The value covers, from the start of termination: the kubelet and
+/// EndpointSlice update (under a second), kube-proxy's sync (about a second),
+/// a MetalLB layer-2 re-announcement and its gratuitous ARP ("a few seconds"),
+/// and one stub-resolver retry interval (5 s by default) for a query already
+/// in flight to this pod.
 pub const BIND9_PRESTOP_DRAIN_SECS: u32 = 10;
 
 /// Grace period for a terminating BIND9 Pod.
@@ -196,6 +203,12 @@ pub const ZONES_LOADED_REASON_LOADING: &str = "ZonesLoading";
 /// Gate reason: loading at least one zone onto the pod failed; retried with
 /// backoff.
 pub const ZONES_LOADED_REASON_FAILED: &str = "ZonesLoadFailed";
+
+/// Gate reason: the pod is terminating, so the operator closed its gate at
+/// the start of its termination; its `Ready` condition turns `False` at once
+/// and traffic moves to the remaining Ready pods while `named` drains
+/// (ADR-0017 decision 6).
+pub const ZONES_LOADED_REASON_TERMINATING: &str = "PodTerminating";
 
 /// Gate reason: the pod's `Bind9Instance` is not in the operator's cache yet.
 pub const ZONES_LOADED_REASON_INSTANCE_UNKNOWN: &str = "InstanceUnknown";

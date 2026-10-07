@@ -266,6 +266,52 @@ BIND9 pod,
 - A zone that cannot be loaded blocks a new pod only while another pod of
   the instance still serves it; see
   [Troubleshooting](../operations/troubleshooting.md#a-bind9-pod-stays-not-ready-zones-loaded-readiness-gate).
+- **The old pod hands over at the start of its termination.** When a BIND9
+  pod is deleted, the operator sets its gate back to `False`
+  (`PodTerminating`) at once, so the pod stops being Ready and traffic moves
+  to the remaining Ready pods while `named` keeps answering stragglers for
+  the 10 s preStop drain. Without this, the old pod stayed Ready (and its
+  endpoint `serving`) until its readiness probe failed after `named` had
+  exited, up to 15 s of queries sent to a dead process.
+
+### Staggered Rollouts Across Instances
+
+A change of a cluster's shared configuration, an image change at the cluster
+level, or a bindy upgrade that changes the rendered configuration or the pod
+template would roll every instance at the same moment. bindy rolls them
+**one at a time** instead
+([ADR-0018](https://github.com/firestoned/bindy/blob/main/docs/adr/0018-staggered-bind9-rollouts.md)):
+an instance applies a pod-template change only while no instance that
+serves a zone in common with it, or belongs to the same `Bind9Cluster` /
+`ClusterBind9Provider`, is mid-rollout. The others wait with
+`Rollout=False, reason: RolloutQueued` and keep serving. Replica changes and
+new instances are never delayed, and a rollout stuck past its Deployment's
+`progressDeadlineSeconds` (600 s by default) stops blocking the others.
+
+### LoadBalancer Services: `externalTrafficPolicy` and MetalLB Layer 2
+
+How fast traffic leaves a terminating pod depends on the Service in front
+of it (set per role in the `Bind9Cluster` `spec.primary.service` /
+`spec.secondary.service`).
+
+| | `externalTrafficPolicy: Cluster` (default) | `externalTrafficPolicy: Local` |
+|---|---|---|
+| Who receives traffic | Any node; kube-proxy forwards to any Ready pod | Only a node with a Ready local pod; kube-proxy sends to that node's pods only |
+| Client source IP | Rewritten (SNAT) | Preserved |
+| Handover when a pod terminates | No gap: once the old pod is not Ready, every node forwards to the new one | MetalLB moves the announcement to the new pod's node; until clients take the gratuitous ARP ("a few seconds", longer for clients with buggy ARP handling), packets to the old node are dropped |
+
+With `Local`, a handover that takes the last Ready pod off the announcing
+node therefore still has a short gap that is MetalLB's own reaction time.
+Staggered rollouts keep the zone's other nameservers answering during it.
+To shrink or remove the gap:
+
+- use `externalTrafficPolicy: Cluster` where the client source IP is not
+  needed (for example when no ACL or rate limit keys on it): this removes
+  the gap;
+- or run more than one replica per instance, spread over nodes: only the
+  replacement of the pod on the announcing node moves the announcement, and
+  the instance keeps answering through its other pods inside the cluster.
+  This makes the gap rarer, it does not remove it.
 
 ### Pod Disruption Budgets
 

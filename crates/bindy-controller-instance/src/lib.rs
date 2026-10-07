@@ -19,6 +19,7 @@ pub(crate) use bindy_api::{constants, crd, labels, status_reasons};
 pub(crate) use bindy_bind9::{bind9, bind9_resources, context, placement, safe_volume};
 
 mod bind9instance;
+mod rollout;
 mod watch;
 
 /// Run the `Bind9Instance` controller, one per namespace target, until the

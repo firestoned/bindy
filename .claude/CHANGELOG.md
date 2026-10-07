@@ -1,3 +1,34 @@
+## [2026-10-07 14:00] - Rollouts hand over at termination and are staggered across instances (ADR-0017 amendment, ADR-0018)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0018-staggered-bind9-rollouts.md`.
+- `crates/bindy-controller-instance/src/rollout.rs`: staggered rollouts. Pure decisions `conflict_set` (instances sharing a `DNSZone` in `status.bind9Instances`, or the same `Bind9Cluster` / `ClusterBind9Provider`), `peer_rollout` (mid-rollout, stalled or idle, from the Deployment and Pod stores), `peer_states`, `decide_rollout` (first come, first served; a rolling or claimed peer blocks; `ProgressDeadlineExceeded` does not), `waiters_to_wake`, `deployment_rollout_key`, `pod_rollout_key`, `rollout_condition`, `rollout_queued`; the process-wide `RolloutQueue` (waiting list with sequence numbers, claims that close the race between concurrent reconciles, a wake channel) and `RolloutGate`.
+- `crates/bindy-api/src/constants.rs`: `ZONES_LOADED_REASON_TERMINATING` (`PodTerminating`); `status_reasons.rs`: `CONDITION_TYPE_ROLLOUT` (`Rollout`), `REASON_ROLLOUT_QUEUED`, `REASON_ROLLOUT_PEER_STALLED`.
+- Tests (57 new): instance `rollout_tests.rs` (39, new file), `resources_tests.rs` (7), `status_helpers_tests.rs` (3); zone `zones_gate_tests.rs` (8).
+
+### Changed
+- `crates/bindy-controller-zone/src/zones_gate.rs`: a gated pod that gets a `deletionTimestamp` with its gate `True` is set `False` (`PodTerminating`) in that Pod event, with no wait (`GateStep::CloseForTermination`, `termination_condition`); a failed patch retries with the controller's backoff, a pod already gone (404) is done. The one exception to the one-way latch.
+- `crates/bindy-controller-instance/src/bind9instance/resources.rs`: `deployment_change` classifies a Deployment update as `None`, `Scale` or `Template`; `create_or_update_deployment` applies creation and replica changes at once and a pod-template change only when the `RolloutGate` allows it (otherwise only the replica change, if any); a failed or no-op patch releases the claim. The patch body moved to `build_deployment_patch`; `build_scale_patch` added. `create_or_update_resources` returns `AppliedResources`.
+- `crates/bindy-controller-instance/src/bind9instance/mod.rs` and `status_helpers.rs`: a queued change adds `Rollout=False/RolloutQueued` (message names the blocker), keeps the previous observed generations (`observed_generations`, `ObservedGenerations`) and disables the reconcile short-cut until applied; `Ready` still reports the pods. A deleted instance leaves the queue.
+- `crates/bindy-controller-instance/src/watch.rs`: one `RolloutQueue` shared by every namespace target; a Deployment mapper and a Pod mapper (filtered with `changed_only`) wake the instances queued behind the changed instance (`rollout_waiters`); the queue's wake channel is merged into the controller's watches. No timer.
+- `crates/bindy-api/src/constants.rs`: `BIND9_PRESTOP_DRAIN_SECS` rustdoc explains the 10 s budget after the handover (value unchanged).
+- `docs/adr/0017-zones-loaded-readiness-gate.md`: amended 2026-10-07 (decision 6, with the rc.5 evidence, the sources relied on, `externalTrafficPolicy` Local versus Cluster with MetalLB layer 2, and the preStop drain justification; consequences).
+- `calm/bindy-control-plane.architecture.json`: `bindy-operator`, `instance-owns-pod`, `operator-gates-pod-readiness` and `svc-routes-named` descriptions (`make calm-validate` clean, `docs/src/architecture/calm-control-plane.md` regenerated).
+- Docs: `advanced/ha.md` (termination handover, staggered rollouts, LoadBalancer `externalTrafficPolicy` and MetalLB layer 2), `operations/troubleshooting.md` (`PodTerminating`; an instance waiting with `RolloutQueued`), `operations/status.md` (`Rollout` condition), `operations/migration-guide.md`, `concepts/architecture.md` (watch table, gate, staggered rollouts, drift table), `architecture/reconciler-hierarchy.md`.
+- `docs/src/security/threat-model.md` v1.18: full pass against ADR-0001 ... ADR-0018; D6 broadened to availability during rollouts; mitigations M-50 (handover at termination) and M-51 (staggered rollouts); accepted risk 16 (residual MetalLB layer-2 gap with `Local`, bounded delay from a stalled peer, in-memory ordering); Components 1 and 2, Boundaries 3 and 4, Scenario 1 and the controls summary updated.
+- `.github/community/18-load-testing-framework.md`, `ROADMAPS.md` row 18: the rollout scenario also measures the handover and the staggering.
+
+### Why
+Rolling v0.8.0-rc.5 on a real cluster (2026-10-07): three instances of a live zone (two primaries behind MetalLB layer-2 `LoadBalancer` Services with `externalTrafficPolicy: Local`, one secondary) rolled at the same instant because the rendered configuration changed. The zones-loaded gate held (no `REFUSED`), but each old pod stayed `Ready`, and its endpoint `serving`, from the end of its preStop drain until its readiness probe failed; MetalLB kept announcing from the old node and kube-proxy there fell back to the dead serving-terminating endpoint. Every query to both primaries timed out for 9 to 12 s.
+
+### Impact
+- [ ] Breaking change (no CRD, flag or RBAC change; behaviour changes documented in the migration guide)
+- [x] Requires cluster rollout (operator binary only; the pod template is unchanged, so BIND9 pods do not roll for this upgrade)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-06 18:00] - BIND9 pods are Ready only once their zones are loaded (ADR-0017)
 
 **Author:** Erick Bourgeois

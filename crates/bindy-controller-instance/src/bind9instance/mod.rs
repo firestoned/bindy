@@ -28,11 +28,14 @@ pub mod zones;
 // Internal imports
 use cluster_helpers::{build_cluster_reference, fetch_cluster_info};
 use resources::{create_or_update_resources, delete_resources};
-use status_helpers::{update_status, update_status_from_deployment};
+use status_helpers::{
+    observed_generations, update_status, update_status_from_deployment, ObservedGenerations,
+};
 #[allow(clippy::wildcard_imports)]
 use types::*;
 use zones::reconcile_instance_zones as reconcile_zones_internal;
 
+use crate::rollout::{rollout_condition, rollout_queued, InstanceId, RolloutGate, RolloutQueue};
 use bindy_controller_sdk::finalizers::{ensure_finalizer, handle_deletion};
 
 /// Re-check delay for a rotation that is already due.
@@ -252,6 +255,8 @@ async fn cleanup_bind9instance(resource: &Bind9Instance, client: &Client) -> Res
 ///
 /// * `ctx` - Operator context with Kubernetes client and reflector stores
 /// * `instance` - The `Bind9Instance` resource to reconcile
+/// * `rollouts` - The process-wide queue that staggers pod-template changes
+///   across instances sharing a zone or a cluster (ADR-0018)
 ///
 /// # Returns
 ///
@@ -270,7 +275,7 @@ async fn cleanup_bind9instance(resource: &Bind9Instance, client: &Client) -> Res
 /// use std::sync::Arc;
 ///
 /// async fn handle_instance(ctx: Arc<Context>, instance: Bind9Instance) -> anyhow::Result<()> {
-///     let _next_wake = reconcile_bind9instance(ctx, instance).await?;
+///     let _next_wake = reconcile_bind9instance(ctx, instance, &rollouts).await?;
 ///     Ok(())
 /// }
 /// ```
@@ -279,9 +284,10 @@ async fn cleanup_bind9instance(resource: &Bind9Instance, client: &Client) -> Res
 ///
 /// Returns an error if Kubernetes API operations fail or resource creation/update fails.
 #[allow(clippy::too_many_lines)]
-pub async fn reconcile_bind9instance(
+pub(crate) async fn reconcile_bind9instance(
     ctx: Arc<Context>,
     instance: Bind9Instance,
+    rollouts: &RolloutQueue,
 ) -> Result<Option<std::time::Duration>> {
     let client = ctx.client.clone();
     let namespace = instance.namespace().unwrap_or_default();
@@ -297,6 +303,9 @@ pub async fn reconcile_bind9instance(
 
     // Check if the instance is being deleted
     if instance.metadata.deletion_timestamp.is_some() {
+        // A deleted instance waits for nothing and must not hold a place in
+        // the rollout queue (ADR-0018).
+        rollouts.leave(&InstanceId::of(&instance));
         handle_deletion(&client, &instance, FINALIZER_BIND9_INSTANCE, || {
             cleanup_bind9instance(&instance, &client)
         })
@@ -516,12 +525,17 @@ pub async fn reconcile_bind9instance(
     // Zone selection is now reversed: DNSZone.spec.bind9_instances_from selects instances
     // This logic was removed as part of the architectural change to reverse selector direction
 
+    // A pod-template change queued behind another rollout (ADR-0018) must be
+    // applied when the instance is woken, whatever woke it.
+    let rollout_pending = rollout_queued(&instance);
+
     if !should_reconcile
         && all_resources_exist
         && deployment_labels_match
         && !rotation_needed
         && !parent_config_changed
         && !config_drifted
+        && !rollout_pending
     {
         debug!(
             "Spec unchanged (generation={:?}), all resources exist, deployment labels match, no rotation needed, and parent config unchanged - skipping resource reconciliation",
@@ -536,7 +550,11 @@ pub async fn reconcile_bind9instance(
             &name,
             &instance,
             cluster_ref,
-            parent_generation,
+            ObservedGenerations {
+                instance: instance.metadata.generation,
+                parent: parent_generation,
+            },
+            None,
         )
         .await?;
 
@@ -594,8 +612,17 @@ pub async fn reconcile_bind9instance(
 
     // Create or update resources
     let mut next_wake = rotation_wake;
-    match create_or_update_resources(&client, &namespace, &name, &instance).await {
-        Ok((cluster, cluster_provider, secret)) => {
+    let gate = RolloutGate {
+        stores: &ctx.stores,
+        queue: rollouts,
+    };
+    match create_or_update_resources(&client, &namespace, &name, &instance, &gate).await {
+        Ok(resources::AppliedResources {
+            cluster,
+            cluster_provider,
+            secret,
+            rollout,
+        }) => {
             info!(
                 "Successfully created/updated resources for {}/{}",
                 namespace, name
@@ -616,14 +643,17 @@ pub async fn reconcile_bind9instance(
                         .and_then(|cp| cp.metadata.generation)
                 });
 
-            // Update status based on actual deployment state
+            // Update status based on actual deployment state. A queued
+            // pod-template change keeps the previous observed generations
+            // and adds the Rollout condition (ADR-0018).
             update_status_from_deployment(
                 &client,
                 &namespace,
                 &name,
                 &instance,
                 cluster_ref,
-                observed_parent_generation,
+                observed_generations(&instance, observed_parent_generation, &rollout),
+                rollout_condition(&rollout),
             )
             .await?;
 
@@ -685,7 +715,10 @@ pub async fn reconcile_bind9instance(
                 &instance,
                 vec![error_condition],
                 None,
-                observed_parent_generation,
+                ObservedGenerations {
+                    instance: instance.metadata.generation,
+                    parent: observed_parent_generation,
+                },
             )
             .await?;
 

@@ -445,11 +445,11 @@ subscribes to the same watch and reads the same cache.
 | `ClusterBind9Provider` (cluster-scoped, always one watch) | yes | its controller, `Bind9Instance` |
 | `Bind9Cluster` | yes | its controller, `ClusterBind9Provider` (owns), `Bind9Instance` |
 | `Bind9Instance` | yes | its controller, `Bind9Cluster` (owns), `DNSZone` |
-| `Deployment` (only those owned by a `Bind9Instance`) | yes | `Bind9Instance` (owns) |
+| `Deployment` (only those owned by a `Bind9Instance`) | yes | `Bind9Instance` (owns; and a rollout mapper that wakes instances queued behind a conflicting rollout, ADR-0018) |
 | `DNSZone` | yes | its controller, `Bind9Instance`, every record controller |
 | The 9 record kinds | yes | their controller, `DNSZone` |
 | `Endpoints` of bindy's Services (label `app.kubernetes.io/part-of=bindy`, filtered by the API server) | yes | `DNSZone` (all namespaces) |
-| BIND9 `Pod`s (labels `app.kubernetes.io/part-of=bindy,app.kubernetes.io/component=dns-server`, filtered by the API server) | yes | zones-loaded gate (ADR-0017); every BIND9 write, to reach pods the gate still holds out of their Service |
+| BIND9 `Pod`s (labels `app.kubernetes.io/part-of=bindy,app.kubernetes.io/component=dns-server`, filtered by the API server) | yes | zones-loaded gate (ADR-0017); every BIND9 write, to reach pods the gate still holds out of their Service; staggered rollouts, to wake instances queued behind a pod turning Ready (ADR-0018) |
 | Owned `Secret`, `ConfigMap`, `ServiceAccount`, `Service` | no, an ordinary watch | `Bind9Instance` (owns) |
 
 Kinds in the last row are watched by one controller only and never cached;
@@ -548,6 +548,13 @@ sequenceDiagram
   included.
 - **One-way latch:** once `True` the gate is never re-evaluated for the pod;
   a later zone reaches it through the `DNSZone` controller.
+- **Except at termination (amended 2026-10-07):** a pod that gets a
+  `deletionTimestamp` with its gate `True` is set `False`
+  (`PodTerminating`) in the same Pod event, so it stops being `Ready` and
+  its endpoint stops `serving` at once. kube-proxy and the load balancer move
+  traffic to the remaining Ready pods while `named` answers stragglers for
+  the preStop drain, instead of when the readiness probe fails after `named`
+  exited.
 - **Never deadlocks on one zone:** a zone that fails to load blocks the pod
   only while another Ready pod of the instance still serves it.
 
@@ -563,6 +570,51 @@ selected instances, the zone name, deletion), so the timestamps record
 reconciles write into a zone's status do not fan out into instance
 reconciles. (Before ADR-0009 the mapper
 spawned a task that patched the instances outside the controller.)
+
+### Staggered Rollouts
+
+A pod-template change (anything under the Deployment's `spec.template`) is
+applied only while no instance in the instance's conflict set is
+mid-rollout
+([ADR-0018](https://github.com/firestoned/bindy/blob/main/docs/adr/0018-staggered-bind9-rollouts.md),
+`crates/bindy-controller-instance/src/rollout.rs`). The conflict set is
+every instance that serves a zone in common (`DNSZone`
+`status.bind9Instances`) or belongs to the same `Bind9Cluster` /
+`ClusterBind9Provider`. Creation and replica changes are never staggered.
+
+```mermaid
+sequenceDiagram
+    participant A as Instance A reconcile
+    participant Q as Rollout queue (in process)
+    participant B as Instance B reconcile
+    participant K as Kubernetes
+
+    A->>Q: try_start (peers idle in the stores)
+    Q-->>A: Proceed, claim A
+    B->>Q: try_start
+    Q-->>B: Wait (A claimed): status Rollout=False RolloutQueued
+    A->>K: patch Deployment A (rolls the pods)
+    K-->>B: Deployment A events (rolling ... NewReplicaSetAvailable)
+    B->>Q: try_start (A idle)
+    Q-->>B: Proceed, claim B
+    B->>K: patch Deployment B
+```
+
+- **Mid-rollout** is read from the Deployment and Pod stores: an unobserved
+  generation, a surge pod, fewer updated/ready/available replicas than
+  wanted, or a pod not Ready during the rollout. `ProgressDeadlineExceeded`
+  does not block; neither does an instance degraded after its rollout
+  completed.
+- **Ordering:** first come, first served, with claims that close the race
+  between two reconciles reading the same idle store. Waiting only ever
+  follows strictly earlier queue positions or a rollout Kubernetes is
+  driving, so no two instances wait for each other.
+- **Wakes (no timer):** a Deployment mapper and a Pod mapper wake the
+  waiting instances in the changed instance's conflict set; the queue wakes
+  its waiters when a claim is released or a waiter leaves without rolling.
+- **Status:** a waiting instance keeps its `Ready` condition and its
+  observed generations, and carries `Rollout=False, reason: RolloutQueued`
+  naming the instance it waits for.
 
 ### Record Operator Watches
 
@@ -765,7 +817,8 @@ What the operator repairs, and what triggers it:
 
 | Drift | Repaired by |
 |---|---|
-| A BIND9 pod replaced (rollout, eviction, deletion, rescheduling: zone data lost) | The zones-loaded gate: every live zone and its records are loaded onto the new pod before it is Ready (ADR-0017); the zone's `Endpoints` watch then finds them present |
+| A BIND9 pod replaced (rollout, eviction, deletion, rescheduling: zone data lost) | The zones-loaded gate: every live zone and its records are loaded onto the new pod before it is Ready (ADR-0017); the zone's `Endpoints` watch then finds them present. The old pod leaves its Service at the start of its termination (ADR-0017 decision 6) |
+| Several instances of a zone or cluster due to roll at once | Staggered: one at a time per conflict set, woken by Deployment and Pod events (ADR-0018) |
 | A BIND9 container restarted inside the same pod | Nothing to repair: `named`'s working directory and the zone files are `emptyDir` volumes that live as long as the pod |
 | An owned Deployment, Service, Secret, ServiceAccount or instance ConfigMap edited or deleted | The instance controller's owned-object watches |
 | A cluster's shared ConfigMap edited or deleted | The instance controller's ConfigMap watch, mapped to the cluster's instances |

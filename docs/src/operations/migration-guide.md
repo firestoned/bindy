@@ -2,6 +2,38 @@
 
 This document collects the breaking-change migrations for Bindy, newest first.
 
+## Rollouts hand over at termination and are staggered across instances (ADR-0017 amendment, ADR-0018)
+
+No CRD, flag or RBAC change (the `pods/status` grant of ADR-0017 covers the
+new write). Two behaviour changes:
+
+- **A terminating BIND9 pod is not Ready from its first second.** The
+  operator sets its `bindy.firestoned.io/zones-loaded` condition to `False`
+  (reason `PodTerminating`) as soon as the pod is deleted, so traffic moves
+  to the remaining Ready pods before `named` exits
+  ([ADR-0017](https://github.com/firestoned/bindy/blob/main/docs/adr/0017-zones-loaded-readiness-gate.md),
+  decision 6). Expect `kubectl get pods` to show the old pod not Ready
+  during its 10 s drain. Alerts that count not-Ready BIND9 pods should
+  ignore terminating ones.
+- **Instances that share a zone or a cluster roll one at a time.** A change
+  that would roll several instances (a shared cluster ConfigMap change, an
+  image change at the cluster or provider level, a bindy upgrade that changes
+  the rendered configuration or the pod template) now rolls them in turn
+  ([ADR-0018](https://github.com/firestoned/bindy/blob/main/docs/adr/0018-staggered-bind9-rollouts.md)).
+  A cluster of N instances takes about N times one instance's rollout
+  (roughly 20 to 30 s each with one replica). Waiting instances show
+  `Rollout=False, reason: RolloutQueued` and keep serving; their
+  `status.observedGeneration` stays at the last generation applied until
+  their turn. Creating instances, changing replicas and RNDC key rotation are
+  not delayed. Upgrading the operator to this version is itself such a
+  change only if it alters the rendered pod template; the new operator
+  staggers it.
+
+If you run MetalLB in layer-2 mode with `externalTrafficPolicy: Local`,
+read [LoadBalancer Services](../advanced/ha.md#loadbalancer-services-externaltrafficpolicy-and-metallb-layer-2):
+each handover of a one-replica instance keeps a gap of MetalLB's
+re-announcement time.
+
 ## BIND9 pods are Ready only once their zones are loaded (ADR-0017)
 
 Every BIND9 pod now carries the readiness gate

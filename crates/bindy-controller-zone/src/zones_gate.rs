@@ -25,6 +25,11 @@
 //! The gate is a one-way latch per pod: once `True` it is never evaluated
 //! again for that pod. A zone created later reaches the running pod through
 //! the `DNSZone` controller, as it always did; only a new pod starts gated.
+//! The one exception is termination (ADR-0017 decision 6): a pod that gets a
+//! `deletionTimestamp` with its gate `True` is set `False` (`PodTerminating`)
+//! at once, so it stops being `Ready` and its traffic moves to the remaining
+//! Ready pods while `named` drains, instead of when its readiness probe fails
+//! after `named` exited.
 //!
 //! A zone is *live* when its status lists at least one instance as
 //! `Configured`: a zone nobody serves yet cannot regress by admitting the pod,
@@ -38,6 +43,7 @@ use crate::constants::{
     CONDITION_STATUS_FALSE, CONDITION_STATUS_TRUE, ZONES_LOADED_CONDITION_TYPE,
     ZONES_LOADED_REASON_FAILED, ZONES_LOADED_REASON_INSTANCE_UNKNOWN, ZONES_LOADED_REASON_LOADED,
     ZONES_LOADED_REASON_LOADING, ZONES_LOADED_REASON_NO_ZONES, ZONES_LOADED_REASON_PARTIAL,
+    ZONES_LOADED_REASON_TERMINATING,
 };
 use crate::crd::{Bind9Instance, DNSZone, InstanceStatus, ServerRole};
 use crate::labels::K8S_INSTANCE;
@@ -81,6 +87,12 @@ pub(crate) enum GateStep {
     /// Nothing to do, ever (no gate, gate already `True`, terminating, or not
     /// one of bindy's instance pods). The reason is for the debug log.
     Done(&'static str),
+    /// The pod is terminating and its gate is `True`: set it `False` now, so
+    /// the pod stops being `Ready` (and its endpoint stops `serving`) at the
+    /// start of its termination rather than when its readiness probe fails
+    /// after `named` exited (ADR-0017 decision 6). The one exception to the
+    /// one-way latch.
+    CloseForTermination,
     /// The pod's containers are not ready yet: it cannot take writes. Its
     /// next Pod event (containers turning ready) wakes the controller.
     WaitForContainers,
@@ -125,6 +137,11 @@ fn gate_is_open(pod: &Pod) -> bool {
 
 /// Decide what to do with a pod. Pure: no I/O.
 ///
+/// A terminating pod whose gate is `True` is closed
+/// ([`GateStep::CloseForTermination`]); any other terminating pod is left
+/// alone. A pod that is not terminating is evaluated until its gate is
+/// `True`, and never again after (the one-way latch).
+///
 /// # Arguments
 /// * `pod` - The pod from the BIND9 Pod store
 ///
@@ -134,11 +151,14 @@ pub(crate) fn gate_step(pod: &Pod) -> GateStep {
     if !has_gate(pod) {
         return GateStep::Done("pod has no zones-loaded readiness gate");
     }
+    if pod.metadata.deletion_timestamp.is_some() {
+        if gate_is_open(pod) {
+            return GateStep::CloseForTermination;
+        }
+        return GateStep::Done("pod is terminating and its gate is not open");
+    }
     if gate_is_open(pod) {
         return GateStep::Done("zones already loaded");
-    }
-    if pod.metadata.deletion_timestamp.is_some() {
-        return GateStep::Done("pod is terminating");
     }
     let Some(instance_name) = pod
         .metadata
@@ -257,6 +277,16 @@ pub(crate) fn gate_patch(
             }]
         }
     })
+}
+
+/// The gate condition (`status`, `reason`, `message`) written on a pod that
+/// started terminating (ADR-0017 decision 6). Pure: no I/O.
+pub(crate) fn termination_condition() -> (&'static str, &'static str, &'static str) {
+    (
+        CONDITION_STATUS_FALSE,
+        ZONES_LOADED_REASON_TERMINATING,
+        "Pod is terminating: removed from its Service at once so traffic moves to the remaining Ready pods while named drains",
+    )
 }
 
 /// Cut a condition message to [`MAX_GATE_MESSAGE_CHARS`] characters.
@@ -469,6 +499,16 @@ async fn served_by_sibling(
     false
 }
 
+/// HTTP status of a missing object.
+const HTTP_NOT_FOUND: u16 = 404;
+
+/// Whether `error` is the API server reporting the object as gone.
+fn is_not_found(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<kube::Error>()
+        .is_some_and(|e| matches!(e, kube::Error::Api(status) if status.code == HTTP_NOT_FOUND))
+}
+
 /// Write the gate condition unless the pod already carries exactly it.
 async fn set_gate(
     ctx: &Context,
@@ -604,6 +644,30 @@ async fn reconcile_pod(pod: Arc<Pod>, ctx: Arc<Context>) -> anyhow::Result<Actio
         GateStep::Done(why) => {
             debug!("Zones-loaded gate: pod {} skipped: {why}", pod.name_any());
             return Ok(Action::await_change());
+        }
+        GateStep::CloseForTermination => {
+            // No wait in front of the patch: every second the gate stays open
+            // is a second the endpoint stays `serving` for a pod about to stop
+            // answering. A failed patch errors out and is retried with the
+            // controller's backoff; a pod already gone needs nothing.
+            let (status, reason, message) = termination_condition();
+            match set_gate(&ctx, &pod, status, reason, message).await {
+                Ok(()) => {
+                    info!(
+                        "Zones-loaded gate: pod {} is terminating, closed its gate so traffic moves before named exits",
+                        pod.name_any()
+                    );
+                    return Ok(converged_action(pod.as_ref()));
+                }
+                Err(e) if is_not_found(&e) => {
+                    debug!(
+                        "Zones-loaded gate: terminating pod {} is already gone",
+                        pod.name_any()
+                    );
+                    return Ok(converged_action(pod.as_ref()));
+                }
+                Err(e) => return Err(e),
+            }
         }
         GateStep::WaitForContainers => {
             debug!(
