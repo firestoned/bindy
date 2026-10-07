@@ -266,13 +266,16 @@ BIND9 pod,
 - A zone that cannot be loaded blocks a new pod only while another pod of
   the instance still serves it; see
   [Troubleshooting](../operations/troubleshooting.md#a-bind9-pod-stays-not-ready-zones-loaded-readiness-gate).
-- **The old pod hands over at the start of its termination.** When a BIND9
-  pod is deleted, the operator sets its gate back to `False`
-  (`PodTerminating`) at once, so the pod stops being Ready and traffic moves
-  to the remaining Ready pods while `named` keeps answering stragglers for
-  the 10 s preStop drain. Without this, the old pod stayed Ready (and its
-  endpoint `serving`) until its readiness probe failed after `named` had
-  exited, up to 15 s of queries sent to a dead process.
+- **The old pod's gate closes at the start of its termination.** When a
+  BIND9 pod is deleted, the operator sets its gate back to `False`
+  (`PodTerminating`) at once. The pod's `Ready` (and its endpoint's
+  `serving`) follow only when the kubelet next syncs the pod's status,
+  measured at about 18 s on v0.8.0-rc.6, so the flip does not by itself
+  move traffic. What keeps the handover short is that the new pod is Ready
+  before the old one is deleted and that instances roll one at a time
+  (below): on rc.6 a staggered rollout of three instances lost 2 of 136
+  probe queries, against 9 to 12 s of outage on both `LoadBalancer` IPs when
+  rc.5 rolled them all at once.
 
 ### Staggered Rollouts Across Instances
 

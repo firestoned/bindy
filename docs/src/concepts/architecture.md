@@ -550,11 +550,10 @@ sequenceDiagram
   a later zone reaches it through the `DNSZone` controller.
 - **Except at termination (amended 2026-10-07):** a pod that gets a
   `deletionTimestamp` with its gate `True` is set `False`
-  (`PodTerminating`) in the same Pod event, so it stops being `Ready` and
-  its endpoint stops `serving` at once. kube-proxy and the load balancer move
-  traffic to the remaining Ready pods while `named` answers stragglers for
-  the preStop drain, instead of when the readiness probe fails after `named`
-  exited.
+  (`PodTerminating`) in the same Pod event. The pod's `Ready`, and its
+  endpoint's `serving`, follow when the kubelet next syncs the pod's status
+  (about 18 s on v0.8.0-rc.6), not at once; the handover is kept short by
+  the new pod being Ready first and by staggered rollouts (ADR-0018).
 - **Never deadlocks on one zone:** a zone that fails to load blocks the pod
   only while another Ready pod of the instance still serves it.
 

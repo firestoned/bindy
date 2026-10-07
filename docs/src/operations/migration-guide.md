@@ -7,14 +7,15 @@ This document collects the breaking-change migrations for Bindy, newest first.
 No CRD, flag or RBAC change (the `pods/status` grant of ADR-0017 covers the
 new write). Two behaviour changes:
 
-- **A terminating BIND9 pod is not Ready from its first second.** The
+- **A terminating BIND9 pod's gate closes from its first second.** The
   operator sets its `bindy.firestoned.io/zones-loaded` condition to `False`
-  (reason `PodTerminating`) as soon as the pod is deleted, so traffic moves
-  to the remaining Ready pods before `named` exits
+  (reason `PodTerminating`) as soon as the pod is deleted
   ([ADR-0017](https://github.com/firestoned/bindy/blob/main/docs/adr/0017-zones-loaded-readiness-gate.md),
-  decision 6). Expect `kubectl get pods` to show the old pod not Ready
-  during its 10 s drain. Alerts that count not-Ready BIND9 pods should
-  ignore terminating ones.
+  decision 6). The pod's `Ready` follows when the kubelet next syncs its
+  status (about 18 s on v0.8.0-rc.6), not at once, so this does not move
+  traffic earlier by itself. Expect `kubectl get pods` to show the old pod
+  not Ready for the end of its termination. Alerts that count not-Ready
+  BIND9 pods should ignore terminating ones.
 - **Instances that share a zone or a cluster roll one at a time.** A change
   that would roll several instances (a shared cluster ConfigMap change, an
   image change at the cluster or provider level, a bindy upgrade that changes

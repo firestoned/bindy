@@ -1,0 +1,53 @@
+{
+  "apiVersion": "bindy.firestoned.io/v1beta1",
+  "kind": "Bind9Instance",
+  "metadata": {
+    "annotations": {
+      "bindy.firestoned.io/instance-index": "0"
+    },
+    "finalizers": [
+      "bindy.firestoned.io/bind9instance-finalizer"
+    ],
+    "generation": 2,
+    "labels": {
+      "app.kubernetes.io/part-of": "bindy",
+      "bindy.firestoned.io/cluster": "example-dns",
+      "bindy.firestoned.io/managed-by": "Bind9Cluster",
+      "bindy.firestoned.io/role": "primary"
+    },
+    "name": "example-dns-primary-0",
+    "namespace": "dns-system",
+    "ownerReferences": [
+      {
+        "apiVersion": "bindy.firestoned.io/v1beta1",
+        "blockOwnerDeletion": true,
+        "controller": true,
+        "kind": "Bind9Cluster",
+        "name": "example-dns",
+        "uid": "00000000-0000-4000-8000-000000000002"
+      }
+    ]
+  },
+  "spec": {
+    "bindcarConfig": {
+      "envVars": [
+        {
+          "name": "BINDY_ROLLOUT_TEST",
+          "value": "1"
+        }
+      ]
+    },
+    "clusterRef": "example-dns",
+    "config": null,
+    "configMapRefs": null,
+    "image": null,
+    "primaryServers": null,
+    "replicas": 1,
+    "rndcSecretRef": null,
+    "role": "primary",
+    "storage": null,
+    "version": "9.18",
+    "volumeMounts": null,
+    "volumes": null
+  }
+}

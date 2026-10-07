@@ -1,3 +1,33 @@
+## [2026-10-07 18:00] - Fix the rollout queue's no-op patch hot loop; correct the termination handover claim (ADR-0018 decision 8, ADR-0017 decision 6)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/bindy-controller-instance/src/bind9instance/template_drift.rs`: pure semantic comparison helpers for the pod-template fields bindy owns, each documenting the API-server defaulting it absorbs: `resources_equivalent` (absent `resources` equals the stored `{}`; empty `requests` / `limits` / `claims` equal absent; quantities compared by value), `quantities_equivalent` (`0.5` = `500m`, `1000m` = `1`, `1024Mi` = `1Gi`, `e` notation; unparseable or sub-nano values compare as text), `env_equivalent` (`value: ""` equals absent, `optional: false` on `secretKeyRef` / `configMapKeyRef` equals absent, `fieldRef.apiVersion: v1` equals absent; order still matters), `pull_policy_equivalent` (absent `imagePullPolicy` equals the API server's default for the image: `Always` for `:latest` or untagged, `IfNotPresent` otherwise), `list_equivalent` and `map_equivalent` (absent equals empty).
+- `crates/bindy-controller-instance/src/rollout.rs`: `RolloutQueue::begin_template_change` (a patch already known to change nothing at this Deployment generation returns `TemplateStart::KnownNoop` and leaves the waiting list), `RolloutQueue::finish_template_patch` (`PatchOutcome::Rolled` keeps the claim; `PatchOutcome::NoOp` drops the claim and the queue place, records the known no-op, wakes the waiters once), `RolloutQueue::forget` (deletion and creation drop the known no-op).
+- `crates/bindy-controller-instance/src/bind9instance/testdata/live_{deployment,instance,cluster,configmap}.json`: a sanitized capture of a live rc.6 Deployment as the API server returned it, with the instance, cluster and ConfigMap it was built from. Names, namespace, cluster, DNSSEC Secret name, uids and every address replaced (RFC 5737 documentation ranges); `managedFields`, `resourceVersion`, `creationTimestamp`, `status`, `kubectl.kubernetes.io/restartedAt`, `last-applied-configuration`, `reconcile-at` and the MetalLB pool annotation dropped; the config hash recomputed for the sanitized ConfigMap. The API-server-defaulted pod template shape is kept as captured.
+- Tests (30 new): instance `template_drift_tests.rs` (20, new file), `rollout_tests.rs` (8, including a round-based simulation of concurrent reconciles with status-write retriggers that proves a perpetual false difference settles after one no-op patch per instance, and that hits its budget with the known-no-op rule disabled), `resources_tests.rs` (2: the live fixture compares as `DeploymentChange::None`, RED before the fix, and the fixture ConfigMap is what bindy renders).
+
+### Changed
+- `crates/bindy-controller-instance/src/bind9instance/resources.rs`: `pod_template_needs_update` replaced by `template_difference`, which returns the first differing owned field (for logs) and compares through `template_drift`; `bindcar_difference`, `bindcar_container`, `pod_template_labels`, `replica_change` and `patch_fingerprint` added. `create_or_update_deployment` asks `RolloutGate::begin` with the patch fingerprint; a known no-op is treated as up to date (only a replica change is applied); a template patch that bumps no generation is logged once at `WARN` naming the field and reports no `Rollout` condition. The "queued behind" line is `INFO` only when an instance joins the queue, `DEBUG` on later wakes.
+- `crates/bindy-controller-instance/src/rollout.rs`: `RolloutGate::decide` became `RolloutGate::begin`; `RolloutQueue::release` is for failed patches only.
+- `crates/bindy-controller-instance/src/bind9instance/mod.rs`: a deleted instance `forget`s its queue state.
+- `docs/adr/0017-zones-loaded-readiness-gate.md`: decision 6 corrected (amended bullet): the gate condition flips at once but the pod's `Ready` follows on the kubelet's next status sync (about 18 s on rc.6), so the flip does not shorten the handover; rc.6 evidence (2 of 136 probe queries lost over a staggered rollout); preStop drain rationale, sources and consequences reworded.
+- `docs/adr/0018-staggered-bind9-rollouts.md`: amended 2026-10-07, decision 8 (semantic drift check, known no-op patches), decision 4 and 5 wording, a consequence.
+- `calm/bindy-control-plane.architecture.json`: `operator-gates-pod-readiness` and `svc-routes-named` descriptions corrected (`make calm-validate` clean, `docs/src/architecture/calm-control-plane.md` regenerated).
+- `docs/src/security/threat-model.md` v1.19: full pass, stamp "Last full pass 2026-10-07, against ADR-0001 ... ADR-0018"; M-50 corrected, M-51 and the D6 mitigations record the no-op rule, accepted risk 16 gains the rc.6 measurement; no new threat.
+- Docs: `operations/troubleshooting.md` (new: an instance stays `RolloutQueued` after every rollout finished; `PodTerminating` row corrected), `advanced/ha.md`, `concepts/architecture.md`, `operations/migration-guide.md` (termination wording corrected).
+- `.github/community/18-load-testing-framework.md`, `ROADMAPS.md` row 18: the rollout scenario verified by hand on rc.6, plus the no-op patch and stale `RolloutQueued` assertions.
+
+### Why
+On a live v0.8.0-rc.6 cluster, once three instances waited in the rollout queue at the same time, `pod_template_needs_update` compared the bindcar container's `resources` with `!=`: the API server returns `resources: {}` (`Some(ResourceRequirements { all None })`) while bindy renders `None`. Every reconcile classified a template change, took its turn, sent a PATCH that bumped no generation, released and woke the others, forever: about two instance reconciles and two no-op Deployment PATCHes a second, about 40 `INFO` lines a minute, instances stuck `RolloutQueued` after every rollout had finished. Proven by running bindy's own `build_deployment` and `deployment_change` over the live objects: only `resources` differed. The same run measured the termination handover, which showed ADR-0017's claim that the gate makes a terminating pod un-Ready at once was wrong.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (operator binary only; the rendered pod template is unchanged, so BIND9 pods do not roll)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-07 14:00] - Rollouts hand over at termination and are staggered across instances (ADR-0017 amendment, ADR-0018)
 
 **Author:** Erick Bourgeois

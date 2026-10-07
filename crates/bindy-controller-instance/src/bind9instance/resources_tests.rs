@@ -1710,4 +1710,99 @@ mod tests {
             );
         }
     }
+
+    // Regression for the v0.8.0-rc.6 rollout hot loop: a Deployment exactly
+    // as the API server returned it (defaulted, `resources: {}` on every
+    // container) must compare equal to what bindy renders from the same
+    // instance and cluster. The fixtures are a sanitized capture of a live
+    // object (names, namespace, Secret names and addresses replaced).
+    mod live_api_server_shape {
+        use crate::bind9_resources::{build_deployment, configmap_data_hash, stamp_config_hash};
+        use crate::bind9instance::resources::{
+            config_drifted, deployment_change_for_test as deployment_change,
+            desired_configmap_for_instance, DeploymentChange,
+        };
+        use crate::crd::{Bind9Cluster, Bind9Instance};
+        use k8s_openapi::api::apps::v1::Deployment;
+        use k8s_openapi::api::core::v1::ConfigMap;
+        use kube::ResourceExt;
+
+        const LIVE_DEPLOYMENT: &str = include_str!("testdata/live_deployment.json");
+        const LIVE_INSTANCE: &str = include_str!("testdata/live_instance.json");
+        const LIVE_CLUSTER: &str = include_str!("testdata/live_cluster.json");
+        const LIVE_CONFIGMAP: &str = include_str!("testdata/live_configmap.json");
+
+        /// The RNDC Secret name bindy resolves for an instance with no
+        /// `rndcKey` / `rndcSecretRef`: `{name}-rndc-key`.
+        fn default_rndc_secret_name(instance: &Bind9Instance) -> String {
+            format!("{}-rndc-key", instance.name_any())
+        }
+
+        struct Live {
+            deployment: Deployment,
+            instance: Bind9Instance,
+            cluster: Bind9Cluster,
+            configmap: ConfigMap,
+        }
+
+        fn live() -> Live {
+            Live {
+                deployment: serde_json::from_str(LIVE_DEPLOYMENT).expect("live Deployment"),
+                instance: serde_json::from_str(LIVE_INSTANCE).expect("live Bind9Instance"),
+                cluster: serde_json::from_str(LIVE_CLUSTER).expect("live Bind9Cluster"),
+                configmap: serde_json::from_str(LIVE_CONFIGMAP).expect("live ConfigMap"),
+            }
+        }
+
+        /// The ConfigMap bindy renders for the live instance.
+        fn rendered_configmap(live: &Live) -> Option<ConfigMap> {
+            let name = live.instance.name_any();
+            let namespace = live.instance.namespace().expect("namespaced");
+            desired_configmap_for_instance(&name, &namespace, &live.instance, Some(&live.cluster))
+                .expect("renders")
+        }
+
+        /// The Deployment bindy renders for the live instance, stamped with
+        /// the hash of the ConfigMap it renders, exactly as
+        /// `create_or_update_deployment` builds it.
+        fn desired(live: &Live) -> Deployment {
+            let configmap = rendered_configmap(live)
+                .expect("cluster-managed instances render the cluster ConfigMap");
+            let mut deployment = build_deployment(
+                &live.instance.name_any(),
+                &live.instance.namespace().expect("namespaced"),
+                &live.instance,
+                Some(&live.cluster),
+                None,
+                &default_rndc_secret_name(&live.instance),
+            );
+            stamp_config_hash(&mut deployment, &configmap_data_hash(&configmap));
+            deployment
+        }
+
+        /// The fixtures describe one consistent state: the ConfigMap is what
+        /// bindy renders and the pods carry its hash, so the test below
+        /// isolates the pod-template comparison.
+        #[test]
+        fn the_fixture_config_is_what_bindy_renders() {
+            let live = live();
+            assert!(!config_drifted(
+                Some(&live.configmap),
+                Some(&live.deployment),
+                rendered_configmap(&live).as_ref()
+            ));
+        }
+
+        /// The rc.6 bug: `resources: {}` on the live bindcar container never
+        /// equalled the `None` bindy renders, so every reconcile classified a
+        /// pod-template change and the rollout queue spun.
+        #[test]
+        fn a_live_deployment_bindy_rendered_is_up_to_date() {
+            let live = live();
+            assert_eq!(
+                deployment_change(&live.deployment, &desired(&live)),
+                DeploymentChange::None
+            );
+        }
+    }
 }

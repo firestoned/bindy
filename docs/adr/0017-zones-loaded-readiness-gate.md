@@ -4,6 +4,7 @@
 - **Date:** 2026-10-06
 - **Deciders:** Erick Bourgeois
 - **Amended:** 2026-10-07 (Decision 6: a terminating pod's gate is closed at the start of its termination, the one exception to the one-way latch; found rolling v0.8.0-rc.5)
+- **Amended:** 2026-10-07 (Decision 6 corrected against v0.8.0-rc.6: the gate condition flips at once, but the pod's `Ready` follows only on the kubelet's next status sync, about 18 s later; the flip does not shorten the handover, the new pod being Ready first and ADR-0018's staggering do)
 - **Related:** Builds on [ADR-0016](0016-event-driven-reconciliation.md) (every wake is a watch event or a backoff retry), [ADR-0015](0015-bounded-api-cost-of-dns-writes.md) (`InstanceResolver`, endpoints from the store, record replay), [ADR-0009](0009-workspace-crate-split-and-shared-watch-layer.md) §3 (one shared watch per kind) and [ADR-0013](0013-validate-and-render-bind9-config-with-hornet.md) (a config change rolls every pod)
 
 ## Context
@@ -187,18 +188,30 @@ Two facts constrain the fix:
    mode. It keeps read-only access to `pods`: it cannot change a pod's spec,
    labels or delete it.
 
-6. **A terminating pod hands over at the start of its termination**
-   (amended 2026-10-07). When a pod that carries the gate, with the
-   condition `True`, gets a `deletionTimestamp`, the gate controller sets
-   the condition `False` (`reason: PodTerminating`) at once
-   (`gate_step` returns `CloseForTermination`). The pod's `Ready`
-   condition then turns `False` without waiting for a probe, its
-   EndpointSlice entry becomes `serving: false, terminating: true`, and
-   kube-proxy and the load balancer move traffic to the remaining Ready
-   pods while `named` keeps answering whatever still reaches it for the
-   preStop drain. A pod without the gate, a pod whose gate is already
-   `False` or was never set, and a pod that is not terminating are left
-   alone.
+6. **A terminating pod's gate is closed at the start of its termination**
+   (amended 2026-10-07, corrected the same day against v0.8.0-rc.6). When a
+   pod that carries the gate, with the condition `True`, gets a
+   `deletionTimestamp`, the gate controller sets the condition `False`
+   (`reason: PodTerminating`) at once (`gate_step` returns
+   `CloseForTermination`). A pod without the gate, a pod whose gate is
+   already `False` or was never set, and a pod that is not terminating are
+   left alone.
+
+   *What the flip does, and what it does not.* The condition itself is
+   `False` from the first second, for anything that reads it. The pod's
+   `Ready` condition is not: the kubelet recomputes it on its own pod
+   status sync (or the next probe result), not on the gate patch. On rc.6
+   the gate went `False` / `PodTerminating` at the deletion event and the
+   pod's `Ready` turned `False` about 18 s later, after the 10 s preStop
+   drain and after `named` had exited. The EndpointSlice `serving` flag
+   follows `Ready`, so the flip does not move traffic earlier and does not
+   shorten the handover. It is kept: it is harmless (the pod is leaving its
+   Service anyway) and immediate for anything that reads the condition.
+   What made the rc.6 handovers smooth is that the new pod
+   was Ready before the old one was deleted (`maxSurge` 1 /
+   `maxUnavailable` 0 and the zones-loaded gate), MetalLB moved the
+   announcement to the new pod's node, and ADR-0018 kept the zone's other
+   nameservers up while each one handed over.
 
    *Evidence (v0.8.0-rc.5, 2026-10-07).* One zone on three instances (two
    primaries behind MetalLB layer-2 `LoadBalancer` Services with
@@ -215,12 +228,22 @@ Two facts constrain the fix:
    serving-terminating one (ProxyTerminatingEndpoints) whose `named` had
    exited. Every query to both load balancer IPs timed out for 9 to 12 s.
 
+   *Evidence (v0.8.0-rc.6, 2026-10-07).* The same cluster, a configuration
+   change rolled with ADR-0018's staggering, one instance at a time. The
+   gate condition went `False` (`PodTerminating`) at each old pod's
+   deletion; the pod's `Ready` turned `False` about 18 s later. A DNS probe
+   against both `LoadBalancer` IPs lost 2 of 136 queries over the whole
+   rollout, isolated single timeouts, one at each primary's handover,
+   against 9 to 12 s of total outage on both IPs during rc.5's simultaneous
+   rollout.
+
    *Why the latch exception is safe.* The latch exists so a serving pod is
    never pulled out of its Service by a later zone (decision 2). A
    terminating pod is leaving its Service anyway, and Kubernetes already
    counts it as not `ready`; the only thing the latch preserved was
-   `serving: true` for the drain, and that is what kept traffic on a pod
-   about to stop answering. The rule is narrow: it fires only on
+   `serving: true` for the drain (which, as rc.6 showed, the pod keeps
+   until the kubelet's next status sync anyway). The rule is narrow: it
+   fires only on
    `deletionTimestamp`, only from `True` to `False`, and a terminating pod is
    never evaluated for admission again.
 
@@ -237,9 +260,9 @@ Two facts constrain the fix:
    - Kubernetes, [Pod readiness](https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#pod-readiness-gate):
      a pod with readiness gates is Ready only when every container is ready
      *and* every gate condition is `True`; operators write the condition with
-     a `PATCH` of the status. The kubelet re-evaluates `Ready` when the
-     gate condition changes (its reconcile of pod readiness, triggered by the
-     pod update).
+     a `PATCH` of the status. The kubelet folds the gate into `Ready` when it
+     next syncs the pod's status; rc.6 measured that at about 18 s after the
+     gate flip on a terminating pod, so `Ready` is not immediate.
    - Kubernetes, [EndpointSlice conditions](https://kubernetes.io/docs/concepts/services-networking/endpoint-slices/#conditions):
      `serving` "maps to the Pod's `Ready` condition"; `terminating` is set
      "when the Pod is first deleted"; `ready` is "`serving` and not
@@ -265,27 +288,29 @@ Two facts constrain the fix:
 
    *`externalTrafficPolicy: Local` versus `Cluster`.* With `Cluster`, every
    node forwards to every ready endpoint, so traffic moves to the new pod as
-   soon as the old one is not `serving`: no gap. With `Local`, the flip makes
-   the old node ineligible and MetalLB moves the announcement to the new
-   pod's node; between the flip and clients learning the new MAC (a gratuitous
-   ARP, normally within a few seconds, MetalLB's own reaction time), packets
-   that still reach the old node find no serving local endpoint and are
-   dropped. That residual gap is a property of layer-2 failover with `Local`,
-   not of bindy; the fix turns a 9 to 12 s outage into one bounded by
-   MetalLB's re-announcement. `externalTrafficPolicy: Cluster`, where the
+   soon as the old one is not `serving`: no gap. With `Local`, MetalLB moves
+   the announcement to the new pod's node once that node has a usable
+   endpoint and the old one stops being eligible; between that move and
+   clients learning the new MAC (a gratuitous ARP, normally within a few
+   seconds, MetalLB's own reaction time), packets that still reach the old
+   node can be dropped. That residual gap is a property of layer-2 failover
+   with `Local`, not of bindy; on rc.6 it cost one query timeout per primary
+   handover. `externalTrafficPolicy: Cluster`, where the
    client source IP is not needed, removes it; more than one replica per
    instance, spread over nodes, makes it rarer (only replacing the pod on the
    announcing node moves the announcement) without removing it.
 
-   *The preStop drain stays at 10 s* (`BIND9_PRESTOP_DRAIN_SECS`). It now
-   covers, from the start of termination: the kubelet re-evaluating `Ready`
-   and the EndpointSlice update (well under a second), kube-proxy's sync
-   (about a second), MetalLB re-announcing and the gratuitous ARP reaching
-   clients ("a few seconds"), and one full stub-resolver retry interval
-   (5 s by default in glibc's `resolv.conf`) for a query already in flight to
-   the old pod. 10 s is the smallest round value above the sum; a longer
-   drain only delays the rollout, since the old pod no longer receives new
-   traffic once the flip propagates. The termination grace period
+   *The preStop drain stays at 10 s* (`BIND9_PRESTOP_DRAIN_SECS`). It was
+   sized as the sum of the kubelet re-evaluating `Ready` (assumed well under
+   a second), kube-proxy's sync (about a second), MetalLB re-announcing and
+   the gratuitous ARP reaching clients ("a few seconds"), and one full
+   stub-resolver retry interval (5 s by default in glibc's `resolv.conf`).
+   rc.6 showed the first term is wrong (`Ready` lags the flip by about
+   18 s), so the drain does not cover the old pod's whole time as a
+   `serving` endpoint. It is kept because the measured client impact with
+   the new pod Ready first and staggering in place was two isolated
+   timeouts in a full rollout; a longer drain would only delay each
+   rollout. The termination grace period
    (`BIND9_TERMINATION_GRACE_PERIOD_SECS`, 45 s) is unchanged.
 
 ## Consequences
@@ -331,14 +356,15 @@ Two facts constrain the fix:
   deprecated in favour of EndpointSlice (v1.33). EndpointSlice would not
   remove the Pod watch, because its `serving` condition includes the gate;
   moving to it is separate work.
-- **A terminating pod is not Ready from its first second** (decision 6).
-  `kubectl get pods` shows the old pod `0/2` during its drain, with the gate
-  condition `False` / `PodTerminating`. Traffic moves before `named` exits,
-  so the readiness probe's failure threshold no longer decides how long a
-  dead endpoint keeps receiving queries. With `externalTrafficPolicy: Local`
-  and one replica, MetalLB's layer-2 re-announcement (a few seconds) is the
-  remaining gap at each handover; ADR-0018 keeps two nameservers of a zone
-  from taking that gap at the same time.
+- **A terminating pod's gate reads `False` from its first second**
+  (decision 6). The pod's `Ready` follows on the kubelet's next status sync
+  (about 18 s on rc.6), so `kubectl get pods` shows the old pod `2/2` for
+  part of its drain. The flip does not move traffic earlier. The handover is
+  kept short by the new pod being Ready before the old one is deleted and,
+  with `externalTrafficPolicy: Local` and one replica, MetalLB's layer-2
+  re-announcement is the remaining gap; ADR-0018 keeps two nameservers of a
+  zone from taking that gap at the same time (rc.6: 2 of 136 probe queries
+  lost over a full staggered rollout).
 - **Not done here.** Nothing else in bindy reads pod readiness as "has
   zones": the `Bind9Instance` status reports pod `Ready`, which now also
   means "zones loaded", and zone placement and selection never looked at pod
