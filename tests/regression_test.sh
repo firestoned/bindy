@@ -355,7 +355,7 @@ EOF
         "$(jp "$dep" "${bind9}.securityContext.seccompProfile.type}")" "RuntimeDefault"
 
     # bindcar sidecar: image, RO rootfs, seccomp, no cap adds, env contract
-    assert_prefix "operand: api image is bindcar v0.7" \
+    assert_prefix "operand: api image is ${EXPECTED_BINDCAR_IMAGE_PREFIX##*:}" \
         "$(jp "$dep" "${api}.image}")" "$EXPECTED_BINDCAR_IMAGE_PREFIX"
     assert_eq "operand: api readOnlyRootFilesystem" \
         "$(jp "$dep" "${api}.securityContext.readOnlyRootFilesystem}")" "true"

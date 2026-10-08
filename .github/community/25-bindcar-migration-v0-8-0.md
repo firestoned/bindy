@@ -1,17 +1,18 @@
 # bindcar `v0.7.4` → `v0.8.0` — bindy Integration & Upgrade Guide
 
-> **Status:** 🔶 Code complete (re-audited 2026-09-28) — **only live-cluster
-> verification remains** (`make tls-transport-test` / `make e2e-tls` +
-> `make regression-test`; no cluster in this environment). Everything else is
-> done: §21 CRD surface + sidecar wiring + operator client, §23 types-only
-> dependency, §24 rate-limit review, the metric rename, the reserved-env
-> reconciler guard, **and** the admission policy — which shipped as VAP
-> **19/20** (`19-bindy-bindcar-env-policy.yaml` +
-> `20-bindy-bindcar-env-binding.yaml`, with accept/reject fixtures under
-> `deploy/admission-policies/tests/`), not the "15/16" this doc planned:
-> numbers 15/16 were taken by the image-provenance policy in the meantime.
-> Until the live TLS verification runs, audit finding P2-4 is remediated in
-> code but not *verified* end to end. Superseded for new work by
+> **Status:** ✅ Complete (2026-10-08). Live verification ran on a fresh kind
+> cluster against `ghcr.io/firestoned/bindy:sha-8ccf613` (main):
+> `make tls-transport-test` verified audit finding **P2-4 end to end**
+> (cert-manager v1.21.2 issued the sidecar certificate, the sidecar serves
+> HTTPS and refuses plaintext on the same port, the operator pushed a zone over
+> a CA-verified connection with no plaintext calls, and an instance with TLS
+> but no CA bundle was refused rather than downgraded), and
+> `make regression-test` passed 55/55 (admission policies including VAP 19/20,
+> operand pod shape, liveness). Code was complete since 2026-09-28: §21 CRD
+> surface + sidecar wiring + operator client, §23 types-only dependency, §24
+> rate-limit review, the metric rename, the reserved-env reconciler guard and
+> the admission policy, shipped as VAP **19/20** (numbers 15/16 were taken by
+> the image-provenance policy). Superseded for new work by
 > [26](26-bindcar-migration-v0-8-1.md) (bindcar v0.8.1).
 >
 > Originally: actionable, the live guide in the series, superseding
@@ -233,10 +234,11 @@ as this series records — but the reserved-name list must now include the
 - [x] `Bind9Manager` plumbing: per-instance TLS config, lazily built and cached
       CA-pinned client, scheme qualification on every endpoint. Fails closed if
       the CA bundle cannot be read.
-- [ ] End-to-end verification against a live cluster with cert-manager (not run
-      here — no cluster available in this environment).
+- [x] End-to-end verification against a live cluster with cert-manager:
+      `make tls-transport-test`, 2026-10-08, P2-4 verified (see Status).
 - [x] `cargo-quality` — fmt, clippy `-D warnings` and 1,461 tests all pass.
-- [ ] `make regression-test` against a live cluster (not run here).
+- [x] `make regression-test` against a live cluster: 55 passed, 0 failed
+      (2026-10-08).
 
 ## Commit range covered
 

@@ -1,3 +1,48 @@
+## [2026-10-08 12:40] - Roadmaps 25 and 20 closed: bindcar v0.8.0 verified live, hickory revisit done
+
+**Author:** Erick Bourgeois
+
+### Verified
+- Roadmap 25 (bindcar v0.8.0) live run on a fresh kind cluster against
+  `ghcr.io/firestoned/bindy:sha-8ccf613` (main).
+- `make tls-transport-test` verified audit finding P2-4 end to end. In
+  that run:
+  - cert-manager v1.21.2 issued the sidecar certificate;
+  - the sidecar served HTTPS and refused plaintext on the same port;
+  - the operator pushed a zone over a CA-verified connection and made no
+    plaintext calls;
+  - an instance with TLS enabled but no CA bundle was refused, not
+    downgraded.
+- `make regression-test` passed 55/55.
+
+### Changed
+- `Cargo.toml`: `hickory-net` and `hickory-proto` requirements raised
+  from `"0.26"` to `"0.26.3"`, so a lockfile regeneration cannot fall
+  below the release that carries the 0.26.2 security fixes. `Cargo.lock`
+  was already at 0.26.3, so nothing changes in the lockfile.
+- `tests/regression_test.sh`: the bindcar image assertion's label is now
+  derived from `EXPECTED_BINDCAR_IMAGE_PREFIX`. It had said "v0.7" while
+  checking `v0.9`.
+- `.github/community/25-bindcar-migration-v0-8-0.md`: ✅, with the
+  verification ticked and recorded.
+- `.github/community/20-hickory-client-migration-target.md`: ✅. It
+  records the outcome of the revisit:
+  - the decision is to stay on `hickory-net`;
+  - the evidence covers versions, advisories, `domain` 0.12.3 and
+    maintenance health;
+  - the next revisit is when hickory 0.27.0 ships.
+- `ROADMAPS.md`: rows 20 and 25 set to ✅.
+
+### Why
+Roadmap 25 needed only a live run. Roadmap 20 was a scheduled Q3 2026
+re-evaluation.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (plus a dependency floor with no lockfile change)
+
 ## [2026-10-07 18:00] - Fix the rollout queue's no-op patch hot loop; correct the termination handover claim (ADR-0018 decision 8, ADR-0017 decision 6)
 
 **Author:** Erick Bourgeois
