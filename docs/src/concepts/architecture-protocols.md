@@ -408,6 +408,40 @@ sequenceDiagram
 - Reduces bandwidth and load
 - Faster than full AXFR
 
+### Transfer Peers Follow the Pods (ADR-0019)
+
+BIND9 pods keep their zones on an `emptyDir` and get a new IP every time
+they are replaced, so the operator keeps each zone's peer lists in step with
+the pods rather than writing them once:
+
+| On | Statement | Names |
+|---|---|---|
+| every primary | `allow-transfer` | the IPs of the zone's secondary pods (running, not terminating) |
+| every primary | `also-notify` | the ClusterIP of each secondary instance's Service, port 53 |
+| every secondary | `primaries` | the IPs of the zone's primary pods admitted by the zones-loaded gate, port 5353 |
+
+The peers last pushed are recorded in `DNSZone.status.transferPeers`. When a
+pod is replaced, the zone's next reconcile (woken by the instance's
+`Endpoints` change) sees the difference and rewrites every primary's
+`allow-transfer` / `also-notify` in place, then replaces every secondary zone
+whose primaries moved (bindcar 0.9.0 cannot change a secondary's `primaries`
+in place) and asks it to retransfer. A new secondary pod is allowed by the
+primaries before the gate loads its zones. A zone configured on a secondary
+but not loaded there makes the `DNSZone` `Degraded` with reason
+`SecondaryNotLoaded`.
+
+What a primary of the zone `example.com` carries, with one secondary pod
+`10.244.3.4` behind a Service with ClusterIP `10.96.41.12`:
+
+```
+zone "example.com" {
+    type primary;
+    allow-transfer { 10.244.3.4/32; };
+    also-notify { 10.96.41.12; };
+    allow-update { key "<instance-rndc-key>"; };
+};
+```
+
 ### TSIG Authentication for Zone Transfers
 
 Zone transfers are authenticated with **TSIG (Transaction Signature)** using HMAC-SHA256.

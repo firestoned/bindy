@@ -4,6 +4,7 @@
 - **Date:** 2026-10-07
 - **Deciders:** Erick Bourgeois
 - **Amended:** 2026-10-07 (Decision 8: a pod-template patch that bumps no generation is not a rollout; the drift check compares semantically; found on v0.8.0-rc.6 as a reconcile hot loop)
+- **Amended:** 2026-10-07 (Decision 8 note: the known no-op rule also hid a patch defect. The bindcar `env` list was strategic-merged by name, so a variable removed from `bindcarConfig` was never removed from the pods; the patch changed nothing, was remembered as a no-op and repeated once per operator start. The env list is now replaced whole (`$patch: replace`), so a removal is a real template change and rolls the pods; found by the chaos e2e suite)
 - **Related:** Builds on [ADR-0017](0017-zones-loaded-readiness-gate.md) (a new pod is Ready only with its zones; decision 6, the handover at termination), [ADR-0016](0016-event-driven-reconciliation.md) (every wake is a watch event or a backoff retry), [ADR-0013](0013-validate-and-render-bind9-config-with-hornet.md) (a change of the rendered configuration rolls every pod) and [ADR-0009](0009-workspace-crate-split-and-shared-watch-layer.md) §3 and §5 (shared watches, pure mappers)
 
 ## Context

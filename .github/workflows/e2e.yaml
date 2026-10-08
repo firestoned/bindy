@@ -36,6 +36,13 @@
 #                      which unit tests cannot supply: they can assert how the
 #                      client is built, not that a real certificate was issued,
 #                      served and verified.
+#   e2e-chaos          a 2-primary + 1-secondary cluster on a three-node kind
+#                      cluster (deploy/kind-config-chaos.yaml) taken through 15
+#                      chaos steps (operator, pod and container kills, drift,
+#                      staggered rollouts, record and zone churn, rescheduling)
+#                      twice, checking every pod's zones, records, serials and
+#                      transfer peers, status truthfulness, operator quiet and
+#                      a continuous DNS prober after every step.
 #
 # Before this split the whole gate was a single `make ci-e2e` job: ~40 minutes
 # of serial work that reported one red X with no indication of which suite
@@ -64,7 +71,7 @@ on:
       # Scout is only fully observable against a real API server: whether a
       # Gateway API kind is served, whether the disabled path stays quiet, and
       # whether a stale-cleanup label selector actually matches the records it
-      # is meant to (#474) — none of which a unit test or wiremock can assert.
+      # is meant to (#474), none of which a unit test or wiremock can assert.
       - 'crates/bindy-scout/src/scout.rs'
       - 'crates/bindy-scout/tests/scout_integration.rs'
       - 'tests/zone_spread_test.sh'
@@ -127,7 +134,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     strategy:
-      # One suite breaking should not hide the state of the other eight — that
+      # One suite breaking should not hide the state of the other eight; that
       # is the whole point of splitting them up.
       fail-fast: false
       matrix:
@@ -157,7 +164,7 @@ jobs:
             cluster: kind-bindy-e2e-scout
             needs_rust: false
           - target: e2e-regression
-            name: Regression — admission policies + pod shape (kind)
+            name: Regression, admission policies + pod shape (kind)
             cluster: kind-bindy-regression
             needs_rust: false
           - target: e2e-zone-spread
@@ -167,6 +174,10 @@ jobs:
           - target: e2e-tls
             name: TLS transport (kind, cert-manager)
             cluster: kind-bindy-tls
+            needs_rust: false
+          - target: e2e-chaos
+            name: Chaos (kind, 3 nodes)
+            cluster: kind-bindy-e2e-chaos
             needs_rust: false
     steps:
       - name: Checkout code

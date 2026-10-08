@@ -38,6 +38,65 @@ mod tests {
     }
 
     #[test]
+    fn renewal_grace_renews_every_retry_period() {
+        // kube-lease-manager renews `grace` seconds before expiry. bindy used
+        // to pass the retry period (2 s) as the grace, so the leader renewed
+        // 13 s into a 15 s lease and any renewal slower than 2 s lost the
+        // lease: on a loaded kind cluster the leader restarted (exit 1) during
+        // the chaos suite. The grace must leave the renewal the whole lease
+        // minus one retry period, as client-go does.
+        let c = config(&[]);
+        assert_eq!(
+            c.renewal_grace(),
+            DEFAULT_LEASE_DURATION_SECS - DEFAULT_LEASE_RETRY_PERIOD_SECS
+        );
+    }
+
+    #[test]
+    fn renewal_grace_stays_inside_the_lease() {
+        // kube-lease-manager panics unless 0 < grace < duration.
+        let tight = config(&[
+            ("BINDY_LEASE_DURATION_SECONDS", "5"),
+            ("BINDY_LEASE_RETRY_PERIOD_SECONDS", "9"),
+        ]);
+        assert!(tight.renewal_grace() > 0 && tight.renewal_grace() < tight.lease_duration);
+
+        let zero_retry = config(&[
+            ("BINDY_LEASE_DURATION_SECONDS", "15"),
+            ("BINDY_LEASE_RETRY_PERIOD_SECONDS", "0"),
+        ]);
+        assert!(zero_retry.renewal_grace() > 0);
+        assert!(zero_retry.renewal_grace() < zero_retry.lease_duration);
+    }
+
+    #[test]
+    fn lease_request_timeout_fits_inside_the_renewal_window() {
+        // One stalled renewal used to hold the shared client's 30 s deadline,
+        // past the 15 s lease: the lease expired, another replica took over,
+        // and the old leader kept running controllers until the call
+        // returned (two leaders for about 15 s, then exit 1). A renewal must
+        // fail fast enough to be retried before the lease expires.
+        let c = config(&[]);
+        let timeout = c.lease_request_timeout();
+        assert_eq!(
+            timeout,
+            Duration::from_secs(
+                DEFAULT_LEASE_RENEW_DEADLINE_SECS - DEFAULT_LEASE_RETRY_PERIOD_SECS
+            )
+        );
+        assert!(timeout < Duration::from_secs(c.renewal_grace()));
+    }
+
+    #[test]
+    fn lease_request_timeout_is_never_zero() {
+        let c = config(&[
+            ("BINDY_LEASE_RENEW_DEADLINE_SECONDS", "2"),
+            ("BINDY_LEASE_RETRY_PERIOD_SECONDS", "5"),
+        ]);
+        assert!(c.lease_request_timeout() >= Duration::from_secs(1));
+    }
+
+    #[test]
     fn every_setting_can_be_overridden() {
         let c = config(&[
             ("BINDY_ENABLE_LEADER_ELECTION", "false"),

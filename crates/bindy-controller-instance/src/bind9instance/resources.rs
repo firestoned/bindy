@@ -270,14 +270,14 @@ const RNDC_SECRET_REQUIRED_KEYS: [&str; 3] = ["key-name", "algorithm", "secret"]
 /// [`evaluate_existing_rndc_secret`].
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum RndcSecretAction {
-    /// Secret is valid and up to date — keep it as-is.
+    /// Secret is valid and up to date: keep it as-is.
     Keep,
     /// Secret is valid but rotation is enabled and rotation annotations are
-    /// missing — patch them onto the Secret without regenerating the key.
+    /// missing: patch them onto the Secret without regenerating the key.
     AddRotationAnnotations,
-    /// Rotation is due — rotate the key in place.
+    /// Rotation is due: rotate the key in place.
     Rotate,
-    /// Secret is malformed or has drifted from the desired configuration —
+    /// Secret is malformed or has drifted from the desired configuration;
     /// delete it and recreate it (the reason explains why).
     Recreate(String),
 }
@@ -407,7 +407,7 @@ async fn create_or_update_rndc_secret_with_config(
     // Check the existing Secret (if any) and decide what to do with it. The
     // decision logic is a pure function so that the malformed/rotation/drift
     // ordering is unit-testable; only `Recreate` falls through to the
-    // creation path below — every other action returns early.
+    // creation path below; every other action returns early.
     match secret_api.get(&secret_name).await {
         Ok(existing_secret) => match evaluate_existing_rndc_secret(&existing_secret, config)? {
             RndcSecretAction::Keep => {
@@ -1396,9 +1396,14 @@ fn build_deployment_patch(deployment: &Deployment) -> serde_json::Value {
             api_patch["image"] = json!(image);
         }
 
-        // Only include env if it exists (from bindcarConfig)
+        // The env list is bindy's alone: replaced whole, so a variable removed
+        // from bindcarConfig leaves the pods. A strategic merge of `env`
+        // merges by name and kept removed entries forever, which the drift
+        // check then reported as a difference on every operator start.
         if let Some(ref env) = api.env {
-            api_patch["env"] = json!(env);
+            let mut items = vec![json!({"$patch": "replace"})];
+            items.extend(env.iter().map(|var| json!(var)));
+            api_patch["env"] = serde_json::Value::Array(items);
         }
 
         // Only include imagePullPolicy if it exists (from bindcarConfig)
@@ -1811,7 +1816,7 @@ pub(super) async fn delete_resources(client: &Client, namespace: &str, name: &st
 ///
 /// Same rationale as `validate_user_pod_shape_for_test` below: these decide
 /// whether a live Deployment gets a scheduling change and how that change is
-/// expressed as a patch, so they need direct coverage — but they are not part
+/// expressed as a patch, so they need direct coverage, but they are not part
 /// of the production API surface.
 #[cfg(test)]
 pub(super) fn build_init_containers_patch_for_test(desired: &Deployment) -> serde_json::Value {
@@ -1897,8 +1902,8 @@ fn validate_user_pod_shape(
     // H2: DNSSEC keys mounted via `spec.dnssec.signing.keysFrom.secretRef`
     // are merged into the Pod outside the `spec.volumes` allow-list, so a
     // tenant could otherwise mount any Secret in the namespace (e.g. another
-    // tenant's RNDC key). Validate the resolved signing config — the same one
-    // `build_dnssec_key_volumes` mounts — against the user-secret prefix.
+    // tenant's RNDC key). Validate the resolved signing config (the same one
+    // `build_dnssec_key_volumes` mounts) against the user-secret prefix.
     let instance_config = instance.spec.config.as_ref();
     let cluster_global = cluster.and_then(|c| c.spec.common.global.as_ref());
     let provider_global = cluster_provider.and_then(|p| p.spec.common.global.as_ref());
@@ -1925,7 +1930,7 @@ fn validate_user_pod_shape(
     }
 
     // Placement carries topology spreading only, so unlike volumes it is not a
-    // privilege-escalation surface — these are correctness checks. The CRD
+    // privilege-escalation surface; these are correctness checks. The CRD
     // schema rejects most bad input at admission; this catches the rest, and
     // anything reaching a cluster still running an older CRD revision.
     // Validating every level, not just the winning one, means a user is told

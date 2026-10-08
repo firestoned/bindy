@@ -92,7 +92,7 @@ use std::collections::{BTreeMap, HashMap};
 /// ```rust,ignore
 /// use bindy_api::crd::DNSRecordKind;
 ///
-/// // Parse from string (fallible — unknown kinds return Err instead of panicking)
+/// // Parse from string (fallible: unknown kinds return Err instead of panicking)
 /// let kind = DNSRecordKind::try_from("ARecord").unwrap();
 /// assert_eq!(kind, DNSRecordKind::A);
 ///
@@ -868,6 +868,52 @@ pub struct DNSZoneStatus {
     /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dnssec: Option<DNSSECStatus>,
+
+    /// The zone-transfer peers last pushed to every server of this zone
+    /// (ADR-0019).
+    ///
+    /// Written by the `DNSZone` controller only after every primary accepted
+    /// the `allow-transfer` / `also-notify` lists and every secondary the
+    /// `primaries` list. A reconcile whose desired peers differ from these
+    /// pushes the new lists; one whose peers are unchanged makes no peer
+    /// call. Absent on a zone not yet reconciled by a version that records
+    /// it, which makes the first such reconcile push to every server.
+    ///
+    /// # Example
+    ///
+    /// ```yaml
+    /// transferPeers:
+    ///   primaries: ["10.244.1.7", "10.244.2.9"]
+    ///   secondaries: ["10.244.3.4"]
+    ///   notify: ["10.96.41.12"]
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer_peers: Option<ZoneTransferPeers>,
+}
+
+/// The peers a zone's servers name for zone transfers (ADR-0019).
+///
+/// Every list is sorted and holds no duplicates, so two values compare equal
+/// exactly when they name the same peers. Every list is always serialized,
+/// even empty: the zone status is sent as a JSON merge patch, which leaves an
+/// omitted key untouched.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ZoneTransferPeers {
+    /// IPs of the primary pods a secondary transfers the zone from: the
+    /// zone's primary instances' pods that are running, not terminating and
+    /// admitted by the zones-loaded gate.
+    #[serde(default)]
+    pub primaries: Vec<String>,
+    /// IPs of the secondary pods a primary allows to transfer the zone
+    /// (`allow-transfer`): the zone's secondary instances' pods that are
+    /// running and not terminating.
+    #[serde(default)]
+    pub secondaries: Vec<String>,
+    /// Addresses a primary sends NOTIFY to (`also-notify`): the ClusterIP of
+    /// each secondary instance's Service, reached on port 53.
+    #[serde(default)]
+    pub notify: Vec<String>,
 }
 
 /// Secondary Zone configuration
@@ -1233,7 +1279,7 @@ pub struct DNSZoneSpec {
     ///
     /// The name is restricted to a safe identifier set (`[A-Za-z0-9_-]`, starting
     /// alphanumeric, max 63 chars) because it is interpolated into a quoted BIND9
-    /// configuration literal — `"`, `;`, `{`, `}` would allow config injection (B-6).
+    /// configuration literal; `"`, `;`, `{`, `}` would allow config injection (B-6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(regex(pattern = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$"))]
     pub dnssec_policy: Option<String>,
@@ -2416,7 +2462,7 @@ pub struct RateLimitConfig {
     ///
     /// Rendered as BIND9's `rate-limit { responses-per-second N; }`. When unset,
     /// a conservative default of `15` is applied (RRL is on by default). Set to
-    /// `0` to disable RRL entirely — no `rate-limit` block is emitted.
+    /// `0` to disable RRL entirely; no `rate-limit` block is emitted.
     #[serde(default)]
     pub responses_per_second: Option<u32>,
 }
@@ -2521,7 +2567,7 @@ pub struct DNSSECSigningConfig {
     ///
     /// The name is restricted to a safe identifier set (`[A-Za-z0-9_-]`, starting
     /// alphanumeric, max 63 chars) because it is interpolated into a quoted BIND9
-    /// configuration literal — `"`, `;`, `{`, `}` would allow config injection (B-6).
+    /// configuration literal; `"`, `;`, `{`, `}` would allow config injection (B-6).
     #[serde(default)]
     #[schemars(regex(pattern = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$"))]
     pub policy: Option<String>,
@@ -2538,7 +2584,7 @@ pub struct DNSSECSigningConfig {
     /// Default: `"ECDSAP256SHA256"`
     ///
     /// Restricted to an alphanumeric token because it is interpolated unquoted
-    /// into the BIND9 `dnssec-policy { ... }` block — `;`, `{`, `}`, `"`, or
+    /// into the BIND9 `dnssec-policy { ... }` block; `;`, `{`, `}`, `"`, or
     /// whitespace would allow config injection (B-6b).
     #[serde(default)]
     #[schemars(regex(pattern = r"^[A-Za-z0-9]{1,32}$"))]
@@ -2555,7 +2601,7 @@ pub struct DNSSECSigningConfig {
     ///
     /// Restricted to an alphanumeric token (e.g. `365d`, `8760h`, `P1Y`,
     /// `unlimited`) because it is interpolated unquoted into the BIND9
-    /// `dnssec-policy { ... }` block — metacharacters would allow config
+    /// `dnssec-policy { ... }` block; metacharacters would allow config
     /// injection (B-6b).
     #[serde(default)]
     #[schemars(regex(pattern = r"^[A-Za-z0-9]{1,32}$"))]
@@ -2571,7 +2617,7 @@ pub struct DNSSECSigningConfig {
     /// Default: `"90d"` (3 months)
     ///
     /// Restricted to an alphanumeric token (e.g. `90d`, `2160h`, `P3M`) because
-    /// it is interpolated unquoted into the BIND9 `dnssec-policy { ... }` block —
+    /// it is interpolated unquoted into the BIND9 `dnssec-policy { ... }` block;
     /// metacharacters would allow config injection (B-6b).
     #[serde(default)]
     #[schemars(regex(pattern = r"^[A-Za-z0-9]{1,32}$"))]
@@ -2898,7 +2944,7 @@ pub enum NodeInclusionPolicy {
 /// controller creates three separate `Bind9Instance` resources, each backed by
 /// its own single-Pod Deployment. A spread constraint whose label selector
 /// matches only its own Deployment's Pods would therefore balance a set of
-/// size one — which is always trivially balanced, and spreads nothing.
+/// size one, which is always trivially balanced, and spreads nothing.
 ///
 /// `scope` selects the label selector the operator generates, and so decides
 /// which Pods the scheduler counts per domain.
@@ -2923,7 +2969,7 @@ pub enum SpreadScope {
     /// Balance every Pod of the cluster, primaries and secondaries together.
     ///
     /// Selects on `bindy.firestoned.io/cluster` alone. Useful when total DNS
-    /// footprint per zone matters more than per-role balance — for example
+    /// footprint per zone matters more than per-role balance, for example
     /// when primaries and secondaries are sized alike and you simply want an
     /// even spread of nameservers per zone. Set it on both `primary.placement`
     /// and `secondary.placement` so every Pod carries the same constraint.
@@ -2934,7 +2980,7 @@ pub enum SpreadScope {
 ///
 /// Each rule becomes exactly one entry in the Pod's
 /// `spec.topologySpreadConstraints`, with the `labelSelector` generated from
-/// [`SpreadScope`] rather than written by hand — users have no way to know the
+/// [`SpreadScope`] rather than written by hand: users have no way to know the
 /// operator's internal Pod labels, and getting the selector wrong silently
 /// produces a constraint that does nothing.
 ///
@@ -2942,7 +2988,7 @@ pub enum SpreadScope {
 ///
 /// ```yaml
 /// spread:
-///   # Spread primaries across zones first — hard requirement.
+///   # Spread primaries across zones first: hard requirement.
 ///   - topologyKey: topology.kubernetes.io/zone
 ///     maxSkew: 1
 ///     whenUnsatisfiable: DoNotSchedule
@@ -3003,7 +3049,7 @@ pub struct SpreadRule {
 
     /// Maximum permitted difference in Pod count between any two domains.
     ///
-    /// Default: `1` (the tightest useful value — every domain is filled before
+    /// Default: `1` (the tightest useful value: every domain is filled before
     /// any domain doubles up).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1, max = 100))]
@@ -3013,7 +3059,7 @@ pub struct SpreadRule {
     ///
     /// Default: `ScheduleAnyway` (soft). The operator defaults to soft
     /// deliberately: a hard constraint turns a single-zone cluster, or a zone
-    /// outage, into `Pending` DNS Pods — trading an availability problem for a
+    /// outage, into `Pending` DNS Pods, trading an availability problem for a
     /// total outage. Set `DoNotSchedule` only when you know the cluster has at
     /// least as many domains as you have replicas.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3065,8 +3111,8 @@ pub struct SpreadRule {
 ///
 /// `placement` can be set at two levels, resolved highest-priority first:
 ///
-/// 1. `Bind9Instance.spec.placement` — one specific DNS server
-/// 2. `spec.primary.placement` / `spec.secondary.placement` — one role, on the
+/// 1. `Bind9Instance.spec.placement`: one specific DNS server
+/// 2. `spec.primary.placement` / `spec.secondary.placement`: one role, on the
 ///    owning `Bind9Cluster` or `ClusterBind9Provider`
 ///
 /// Resolution is whole-block: the more specific level wins outright rather
@@ -3080,7 +3126,7 @@ pub struct SpreadRule {
 /// are not accepted here. Embedding the full Kubernetes `Affinity` and
 /// `Toleration` schemas inflated the generated CRDs by roughly 450KB and would
 /// have handed a namespace tenant the scheduling primitives needed to place an
-/// operator-credentialed Pod onto a control-plane node — a large validation and
+/// operator-credentialed Pod onto a control-plane node: a large validation and
 /// security surface for a feature whose job is zone spreading. See
 /// `docs/adr/0003-pod-placement-and-zone-spreading.md`.
 ///
@@ -3100,13 +3146,13 @@ pub struct PlacementConfig {
     ///
     /// Three distinct states:
     ///
-    /// - **absent** — for a **primary** role with two or more servers, the
+    /// - **absent**: for a **primary** role with two or more servers, the
     ///   operator applies its default: one soft (`ScheduleAnyway`) rule over
     ///   `topology.kubernetes.io/zone` with `maxSkew: 1`. Secondaries and
     ///   single-server roles get no constraint unless you ask for one.
-    /// - **empty list** (`spread: []`) — explicitly no spread constraints.
+    /// - **empty list** (`spread: []`): explicitly no spread constraints.
     ///   Use this to opt a multi-primary cluster out of the default.
-    /// - **non-empty list** — exactly these rules, and no default. This is how
+    /// - **non-empty list**: exactly these rules, and no default. This is how
     ///   secondaries opt *in*.
     ///
     /// At most 8 rules; each becomes one `topologySpreadConstraint`, and every
@@ -3809,7 +3855,7 @@ pub struct Bind9InstanceSpec {
     /// role-level block rather than merging with it.
     ///
     /// For a standalone `Bind9Instance` with `spec.replicas` of 2 or more,
-    /// the default spread scope is `Instance` — the instance's own replicas
+    /// the default spread scope is `Instance`: the instance's own replicas
     /// are balanced across zones. For a cluster-managed instance (one Pod
     /// each) the default scope is `Role`, balancing this Pod against its
     /// sibling instances of the same role.
@@ -4216,7 +4262,7 @@ pub struct CaBundleKeyRef {
 /// That encrypts the ServiceAccount token in transit and requires the peer to
 /// hold a key signed by a CA you control. It does **not** bind the certificate
 /// to a particular address: **any** certificate issued by that CA is accepted
-/// from any pod. Use a CA dedicated to issuing sidecar certificates — not a
+/// from any pod. Use a CA dedicated to issuing sidecar certificates, not a
 /// general-purpose cluster issuer.
 ///
 /// Set [`server_name`](Self::server_name) to restore full hostname

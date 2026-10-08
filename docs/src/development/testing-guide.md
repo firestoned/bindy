@@ -217,6 +217,14 @@ Testing all DNS record types...
 ✅ All integration tests passed!
 ```
 
+## Chaos Suite
+
+`make e2e-chaos` breaks a two-primary, one-secondary topology on kind fifteen
+ways (operator, pod, container and rollout failures) and checks after every
+step that each BIND9 pod serves the exact expected records, that the zone
+transfer peers name exactly the current pods, that every status is truthful,
+and that the operator goes quiet. See [Chaos Testing](chaos-testing.md).
+
 ## Makefile Targets
 
 ### Test Targets
@@ -243,7 +251,7 @@ make kind-cleanup         # Delete cluster
 
 #### Multi-Cluster Scout Testing
 
-A second Kind cluster (`bindy-scout`) can be created to test Scout in multi-cluster mode — Scout running on the child cluster, writing `ARecord` CRs back to the Queen Bee cluster.
+A second Kind cluster (`bindy-scout`) can be created to test Scout in multi-cluster mode: Scout running on the child cluster, writing `ARecord` CRs back to the Queen Bee cluster.
 
 ```bash
 # Create and install Scout on the child cluster

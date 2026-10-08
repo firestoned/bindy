@@ -27,8 +27,8 @@ CALM="npx --yes @finos/calm-cli@${CALM_CLI_VERSION}"
 # model basename (without .architecture.json) -> human title for the page.
 title_for() {
     case "$1" in
-        bindy-control-plane) echo "Control Plane — Reconcilers, CRDs & Operands" ;;
-        bindy-multi-cluster) echo "Multi-Cluster — Queen Bee & Scout Fan-in" ;;
+        bindy-control-plane) echo "Control Plane: Reconcilers, CRDs & Operands" ;;
+        bindy-multi-cluster) echo "Multi-Cluster: Queen Bee & Scout Fan-in" ;;
         *) echo "$1" ;;
     esac
 }
@@ -69,7 +69,7 @@ for model in "${CALM_DIR}"/*.architecture.json; do
 
     {
         echo "<!--"
-        echo "  GENERATED FILE — DO NOT EDIT."
+        echo "  GENERATED FILE: DO NOT EDIT."
         echo "  Source: calm/${base}.architecture.json"
         echo "  Regenerate with: make calm-docs"
         echo "-->"

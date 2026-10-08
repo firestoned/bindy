@@ -668,6 +668,16 @@ where
         }
     };
 
+    // A zone being deleted takes all of its data off every server; its own
+    // finalizer is retried until that is confirmed (ADR-0015 amended).
+    if dnszone.metadata.deletion_timestamp.is_some() {
+        info!(
+            "DNSZone {}/{} is being deleted; its deletion removes {} record {}/{} with the zone",
+            zone_ref.namespace, zone_ref.name, record_type, namespace, name
+        );
+        return Ok(());
+    }
+
     // Get instances from DNSZone
     let instance_refs =
         match bindy_bind9::instances::get_instances_from_zone(&dnszone, &stores.bind9_instances) {
@@ -727,8 +737,11 @@ where
         })
         .unwrap_or_else(|| name.clone());
 
-    // Delete record from all primaries (best-effort: finalizer removal must
-    // not be blocked by unreachable endpoints)
+    // Delete record from all primaries. An instance whose data is gone does
+    // not block the finalizer; a pod that still holds the zone but cannot be
+    // reached right now (a container restarting) does, and the deletion is
+    // retried with backoff (ADR-0015 amended: removing the finalizer then
+    // left the record served from the pod's surviving emptyDir).
     let resolver = bindy_bind9::instances::InstanceResolver::for_kube(client, stores);
     delete_record_from_primaries(
         client,
@@ -738,7 +751,7 @@ where
         &zone_ref.zone_name,
         &record_name_str,
         record_type_hickory,
-        false, // fail_on_error: allow Kubernetes deletion to proceed
+        false, // fail_on_error: tolerate endpoints whose pod no longer holds the zone
     )
     .await?;
 

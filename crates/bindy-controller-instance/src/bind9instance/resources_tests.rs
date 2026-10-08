@@ -287,7 +287,7 @@ mod tests {
     }
 
     // ----------------------------------------------------------------
-    // evaluate_existing_rndc_secret — pure decision-logic tests
+    // evaluate_existing_rndc_secret: pure decision-logic tests
     //
     // Regression coverage for the malformed-Secret bug: after deleting a
     // malformed Secret, control previously continued into the rotation /
@@ -420,7 +420,7 @@ mod tests {
     }
 
     // ----------------------------------------------------------------
-    // F-001: validate_user_pod_shape — pure-function tests
+    // F-001: validate_user_pod_shape: pure-function tests
     // ----------------------------------------------------------------
 
     use crate::bind9instance::resources::validate_user_pod_shape_for_test;
@@ -599,7 +599,7 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // validate_user_pod_shape — placement
+    // validate_user_pod_shape: placement
     // ------------------------------------------------------------------
     //
     // Placement is validated at EVERY level, not just the winning one, so a
@@ -689,7 +689,7 @@ mod tests {
         #[test]
         fn rejects_a_bad_role_level_block_even_when_the_instance_overrides_it() {
             // The instance sets its own (valid) placement, so the cluster block
-            // never reaches a Pod — but it is still wrong and the user should
+            // never reaches a Pod, but it is still wrong and the user should
             // hear about it now rather than after an unrelated edit.
             let inst = instance(Some(PlacementConfig {
                 spread: Some(vec![rule("topology.kubernetes.io/zone")]),
@@ -1631,6 +1631,34 @@ mod tests {
         fn with_config_hash(mut d: Deployment, hash: &str) -> Deployment {
             crate::bind9_resources::stamp_config_hash(&mut d, hash);
             d
+        }
+
+        #[test]
+        fn the_bindcar_env_patch_replaces_the_whole_list() {
+            // Chaos suite: an env var removed from the cluster's bindcarConfig
+            // stayed on every pod. A strategic merge of `env` merges entries by
+            // name, so a removed entry survives; the drift check then saw a
+            // difference on every operator start and sent a patch that changed
+            // nothing. The env list is bindy's alone and must be replaced
+            // whole, like the volumes and init containers.
+            let patch = build_deployment_patch(&deployment());
+            let containers = patch["spec"]["template"]["spec"]["containers"]
+                .as_array()
+                .expect("containers patch is a list");
+            let api = containers
+                .iter()
+                .find(|c| c["name"] == crate::constants::CONTAINER_NAME_BINDCAR)
+                .expect("the bindcar container is patched");
+            let env = api["env"].as_array().expect("env patch is a list");
+            assert_eq!(
+                env.first(),
+                Some(&serde_json::json!({"$patch": "replace"})),
+                "env must be replaced whole: {env:?}"
+            );
+            assert!(
+                env.iter().skip(1).all(|e| e.get("name").is_some()),
+                "every other entry is an env var: {env:?}"
+            );
         }
 
         #[test]

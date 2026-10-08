@@ -675,6 +675,84 @@ impl Bind9Manager {
         zone_ops::zone_exists(&client, self.get_token().as_deref(), zone_name, server).await
     }
 
+    /// Whether a zone is on a server and loaded (ADR-0019); see
+    /// [`zone_ops::zone_presence`]. The DNS probe goes to the same pod's DNS
+    /// port.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a failure that is not absent, loaded or not
+    /// loaded.
+    pub async fn zone_presence(
+        &self,
+        zone_name: &str,
+        server: &str,
+    ) -> Result<zone_ops::ZonePresence> {
+        let client = self.resolve_client().await?;
+        let dns_server = zone_ops::dns_query_endpoint(server);
+        let server = &self.qualify_server(server);
+        zone_ops::zone_presence(
+            &client,
+            self.get_token().as_deref(),
+            zone_name,
+            server,
+            &dns_server,
+        )
+        .await
+    }
+
+    /// Rewrite a primary zone's `allow-transfer` and `also-notify` in place
+    /// (ADR-0019); see [`zone_ops::update_primary_transfer_peers`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if even the `allow-transfer` rewrite fails.
+    pub async fn update_primary_transfer_peers(
+        &self,
+        zone_name: &str,
+        server: &str,
+        allow_transfer: &[String],
+        also_notify: &[String],
+    ) -> Result<zone_ops::PeerUpdate> {
+        let client = self.resolve_client().await?;
+        let server = &self.qualify_server(server);
+        zone_ops::update_primary_transfer_peers(
+            &client,
+            self.get_token().as_deref(),
+            zone_name,
+            server,
+            allow_transfer,
+            also_notify,
+        )
+        .await
+    }
+
+    /// Replace a secondary zone so its `primaries` are exactly
+    /// `primary_ips` (ADR-0019); see [`zone_ops::replace_secondary_zone`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the delete or the create fails.
+    pub async fn replace_secondary_zone(
+        &self,
+        zone_name: &str,
+        server: &str,
+        key_data: &RndcKeyData,
+        primary_ips: &[String],
+    ) -> Result<()> {
+        let client = self.resolve_client().await?;
+        let server = &self.qualify_server(server);
+        zone_ops::replace_secondary_zone(
+            &client,
+            self.get_token().as_deref(),
+            zone_name,
+            server,
+            key_data,
+            primary_ips,
+        )
+        .await
+    }
+
     /// Get server status via HTTP API.
     ///
     /// # Errors
@@ -702,7 +780,8 @@ impl Bind9Manager {
     /// * `soa_record` - Optional SOA record data (required for primary zones, ignored for secondary)
     /// * `name_servers` - Optional list of ALL authoritative nameserver hostnames (for primary zones)
     /// * `name_server_ips` - Optional map of nameserver hostnames to IP addresses (for primary zones)
-    /// * `secondary_ips` - Optional list of secondary server IPs for also-notify and allow-transfer (for primary zones)
+    /// * `secondary_ips` - Optional list of secondary pod IPs for allow-transfer (for primary zones)
+    /// * `notify_targets` - Optional also-notify targets on port 53 (for primary zones, ADR-0019)
     /// * `primary_ips` - Optional list of primary server IPs to transfer from (for secondary zones)
     ///
     /// # Returns
@@ -723,6 +802,7 @@ impl Bind9Manager {
         name_servers: Option<&[String]>,
         name_server_ips: Option<&HashMap<String, String>>,
         secondary_ips: Option<&[String]>,
+        notify_targets: Option<&[String]>,
         primary_ips: Option<&[String]>,
         dnssec_policy: Option<&str>,
     ) -> Result<bool> {
@@ -740,6 +820,7 @@ impl Bind9Manager {
             name_servers,
             name_server_ips,
             secondary_ips,
+            notify_targets,
             primary_ips,
             dnssec_policy,
         )
@@ -764,7 +845,8 @@ impl Bind9Manager {
     /// * `soa_record` - SOA record data
     /// * `name_servers` - Optional list of ALL authoritative nameserver hostnames
     /// * `name_server_ips` - Optional map of nameserver hostnames to IP addresses for glue records
-    /// * `secondary_ips` - Optional list of secondary server IPs for also-notify and allow-transfer
+    /// * `secondary_ips` - Optional list of secondary pod IPs for allow-transfer
+    /// * `notify_targets` - Optional also-notify targets on port 53 (ADR-0019)
     ///
     /// # Returns
     ///
@@ -787,6 +869,7 @@ impl Bind9Manager {
         name_servers: Option<&[String]>,
         name_server_ips: Option<&HashMap<String, String>>,
         secondary_ips: Option<&[String]>,
+        notify_targets: Option<&[String]>,
         dnssec_policy: Option<&str>,
     ) -> Result<bool> {
         let client = self.resolve_client().await?;
@@ -801,6 +884,7 @@ impl Bind9Manager {
             name_servers,
             name_server_ips,
             secondary_ips,
+            notify_targets,
             dnssec_policy,
         )
         .await

@@ -43,6 +43,79 @@ re-evaluation.
 - [ ] Config change only
 - [x] Documentation only (plus a dependency floor with no lockfile change)
 
+## [2026-10-08 09:00] - A deleted record is never left served by a pod whose container restarted (ADR-0015 amended)
+
+**Author:** Erick Bourgeois
+
+### Documentation
+- `docs/src/operations/failure-behaviour.md` (new, Operations > Failure Behaviour and Resilience): what bindy does for each kind of failure, what clients see and for how long (measured by the chaos suite), the status reasons, recommendations and known limits, and the upgrade effects.
+
+### Test harness
+- `tests/lib/chaos.sh`: the record churn step no longer re-applies a record whose deletion is still pending (the apply patched the terminating object, which then vanished, leaving the expected state wrong); step 15 waits for such a deletion before setting up; a noisy quiet window now saves operator logs and per-kind reconcile counters (`tests/e2e/chaos_test.sh`).
+
+### Added
+- `crates/bindy-bind9/src/instances.rs`: `coverage_pod_ips` (the live, gate-admitted pods of a live instance: the pods that hold its zones), `InstanceLookup::coverage_pods` (default `None`; `KubeInstanceLookup` reads the Pod and `Bind9Instance` stores, new `with_instances`), `InstanceResolver::coverage_pods`.
+- `crates/bindy-controller-zone/src/dnszone/status_helpers.rs`: `REASON_RECORD_DELETION_PENDING`, `mark_record_deletions_pending`.
+- `crates/bindy-controller-zone/src/dnszone/discovery.rs`: `delete_deleted_record_dns`.
+- Chaos suite step 15 (`tests/lib/chaos.sh`): deletes one record while a primary's bindcar container is down and one while its `named` is down, each only after the pod reports `ContainersReady=False`, and requires both gone from every pod with truthful status. Helpers `wait_containers_not_ready`, `wait_until_converged`.
+- Tests (12 new): `instances_tests.rs` (9: coverage semantics for both policies, a failed operation on a live and a non-live pod, `coverage_pod_ips`), `transfer_peers_tests.rs` (3: `RecordDeletionPending`).
+
+### Changed
+- `crates/bindy-bind9/src/instances.rs`: `for_each_instance_endpoint_with_policy` fails whenever a pod that holds the zone was not reached or its operation failed; `SkipUnavailable` skips an instance only when no pod holds its data.
+- `crates/bindy-bind9/src/record_push.rs`: `delete_record_from_primaries` reports endpoint failures to that check (a pod that still holds the zone always fails the call; `fail_on_error=false` only tolerates endpoints whose pod no longer holds it).
+- `crates/bindy-controller-records/src/records/mod.rs`: the record finalizer allows deletion when the zone is being deleted; otherwise it is retried while a pod that holds the zone is unreachable.
+- `crates/bindy-controller-zone/src/dnszone.rs`: zone deletion (primaries and secondaries, now one shared path) reports failures and is retried while a pod that holds the zone is unreachable; a pending record deletion makes the zone `Degraded` (`RecordDeletionPending`).
+- `crates/bindy-controller-zone/src/dnszone/discovery.rs`: a record whose resource is gone is no longer dropped on trust; its data is deleted by the recorded name and the zone keeps tracking it until that succeeded everywhere.
+- `docs/adr/0015-bounded-api-cost-of-dns-writes.md` amended (decision 7); threat model: M-55, accepted risk 18, revision note; troubleshooting (`RecordDeletionPending`), status, migration guide, chaos-testing page (step 15).
+
+### Why
+An independent chaos run failed steps 11 and 12: a churn record deleted while chaos-primary-0's bindcar container was being killed stayed served by chaos-primary-0 (and the secondary, by transfer) forever, and every CR reported Ready. The record finalizer's `SkipUnavailable` skipped the primary because it had no writable endpoint, although its pod and emptyDir zone data survived the container restart; discovery then dropped the record assuming the finalizer had cleaned up. The same flaw sat in zone deletion, and record writes to a multi-replica instance skipped a restarting pod.
+
+### Impact
+- [ ] Breaking change (behaviour change in the migration guide)
+- [x] Requires cluster rollout (operator binary only)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-10-07 22:00] - Zone transfer peers follow the pods (ADR-0019); chaos e2e suite and the bugs it found
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0019-zone-transfer-peers-follow-pods.md` (Accepted).
+- `crates/bindy-api/src/crd.rs`: `DNSZoneStatus.transferPeers` (`ZoneTransferPeers { primaries, secondaries, notify }`, every list always serialized); `deploy/operator/crds/dnszones.crd.yaml` and `docs/src/reference/api.md` regenerated. `constants.rs`: `LEASE_CLIENT_QPS`, `LEASE_CLIENT_BURST`.
+- `crates/bindy-bind9/src/peers.rs`: pure peer computation from the BIND9 Pod store (`peer_pod_ips`, `pod_zones_admitted`, `desired_transfer_peers`, `peer_changes`, `PeerChanges`, `service_cluster_ip`).
+- `crates/bindy-bind9/src/bind9/zone_ops.rs`: `ZonePresence` (`Absent` / `Loaded` / `NotLoaded`), `zone_presence` (2 s status budget, then a SOA probe of `named` on a 5xx), `SoaProbe`, `classify_soa_response`, `probe_zone_soa`, `presence_after_server_error`, `update_primary_transfer_peers` / `PeerUpdate` (allow-transfer and also-notify rewritten in place, both always sent; fallback to allow-transfer only for zones whose port-qualified also-notify bindcar 0.9.0 cannot rewrite), `replace_secondary_zone` (delete, create with exactly the current primaries); `Bind9Manager` methods for each.
+- `crates/bindy-controller-zone/src/dnszone/transfer_peers.rs`: `zone_transfer_peers`, `secondary_notify_targets` (secondary Service ClusterIPs), `refresh_primary_peers`, `PeerPushResult`, and the `SecondaryNotLoaded` / `TransferPeersNotUpdated` / `NoTransferSource` conditions.
+- `crates/bindy-controller-sdk/src/leader.rs`: `renewal_grace`, `lease_request_timeout`.
+- `crates/bindy-controller-cluster/src/watch.rs`: `clusters_for_instance`, `providers_for_instance`.
+- Chaos e2e suite: `tests/e2e/chaos_test.sh`, `tests/lib/chaos.sh`, `deploy/kind-config-chaos.yaml` (1 control plane, 2 workers, no host ports), `make e2e-chaos` (in `E2E_SUITES`, `e2e-clean`), a matrix job in `.github/workflows/e2e.yaml`. 14 chaos steps in a fixed and a seeded random order; invariants on every pod's served records and serials, `rndc zonestatus` / `showzone` transfer peers, truthful statuses, a quiet operator, and per-Service DNS gaps from an in-cluster prober.
+- Tests (52 new; 6 comment-only placeholder tests of the deleted LIST lookups removed): `peers_tests.rs` (15), `zone_ops_tests.rs` (15, including a UDP DNS responder for the SERVFAIL path), `transfer_peers_tests.rs` (5), `status_tests.rs` (3), `crd_tests.rs` (3), `leader_tests.rs` (4), `resources_tests.rs` (1), cluster `watch_tests.rs` (6, new file).
+- Docs: `development/chaos-testing.md` (new, in the nav), `development/testing-guide.md`, `operations/troubleshooting.md` (`SecondaryNotLoaded`), `operations/status.md` (`transferPeers`, the new reasons), `operations/migration-guide.md`, `concepts/architecture-protocols.md` (transfer peers).
+
+### Changed
+- `crates/bindy-controller-zone/src/dnszone/bind9_config.rs`: every reconcile computes the zone's transfer peers from the Pod store, compares them with `status.transferPeers`, rewrites the primaries' ACLs before touching the secondaries when the secondaries (or their Services) moved, replaces secondary zones when the primaries moved, and records the peers only once every server took them.
+- `crates/bindy-controller-zone/src/dnszone.rs`: `add_dnszone` takes the peers (a created primary zone gets `allow-transfer` = secondary pod IPs and `also-notify` = secondary Service ClusterIPs); `add_dnszone_to_secondaries` reads each endpoint's presence, replaces existing zones when told to, counts an instance configured only when its zone is loaded, marks a not-loaded secondary `Failed` in `status.bind9Instances` and returns `SecondaryConfigOutcome`; an endpoint whose zone state cannot be read is a failed endpoint (no POST riding the two-minute retry to a dead pod).
+- `crates/bindy-controller-zone/src/zones_gate.rs` (ADR-0017 amended): a new secondary pod gets the primaries' ACLs rewritten first, transfers only from admitted primaries, and is held while a sibling serves and its transfer is pending; a sibling counts as serving only when its zone is loaded.
+- `crates/bindy-bind9/src/bind9/zone_ops.rs`: retry exhaustion keeps the `HttpError` in the chain (context, not a new error); `zone_exists` goes through `zone_presence`; `delete_zone` deletes a zone whose status check returned a 5xx; `add_primary_zone` / `add_zones` take `notify_targets`; `dns_query_endpoint` strips a scheme.
+- Removed the pod-LIST peer lookups `find_primary_ips_from_instances` (bindy-bind9) and `find_secondary_pod_ips_from_instances` (controller-zone), which kept terminating pods, and their placeholder tests.
+- `crates/bindy-controller-sdk/src/leader.rs`, `crates/bindy/src/main.rs`: the lease uses its own client (5 QPS, an 8 s request deadline) and renews one retry period after each renewal (grace = lease duration minus retry period) instead of 2 s before expiry.
+- `crates/bindy-controller-instance/src/bind9instance/resources.rs`: the bindcar `env` list in the Deployment patch is replaced whole (`$patch: replace`).
+- `crates/bindy-controller-cluster/src/watch.rs`: `Bind9Cluster` is woken by every instance that names it in `clusterRef` (owned or not); `ClusterBind9Provider` by every instance naming it.
+- `crates/bindy-controller-sdk/src/status.rs`: `set_transfer_peers`, `transfer_peers`, and `has_changes` covers them.
+- ADRs: 0016 amended (decision 2 table), 0017 amended (decision 2, by ADR-0019), 0018 amended (decision 8 note). CALM: `operator-manages-zones` description, new `named-zone-transfer` relationship (`make calm-validate` clean, `docs/src/architecture/calm-control-plane.md` regenerated).
+- `docs/src/security/threat-model.md` v1.20: full pass, stamp "against ADR-0001 ... ADR-0019"; M-52 (transfer peers), M-53 (lease client), M-54 (env replaced whole); I2, D3 and Boundary 4 updated; accepted risk 10 revised; new accepted risk 17.
+- `.github/community/18-load-testing-framework.md` (chaos milestone, status in progress), `ROADMAPS.md` row 18.
+
+### Why
+On a real cluster with v0.8.0-rc.7, after pod replacements a secondary held no copy of a zone: the primaries still allowed and notified the old secondary IP, the secondary listed stale primaries (a LIST that kept terminating pods appended them), nothing rewrote a zone that already existed, and the zone reported `Ready=True`. bindcar's masked 500 for an unloaded zone was retried for two minutes per reconcile. Release candidates kept passing unit tests and breaking on clusters, so the chaos suite was built first and run against rc.7 (25 of 29 step runs failed). Beyond Bug 1 it found: (1) the leader lease renewed 2 s before expiry on the shared rate-limited client with a 30 s deadline, so a slow renewal restarted the leader and two leaders ran for up to 30 s; (2) a bindcar env var removed from the cluster never left the pods (strategic merge by name) and was re-patched as a no-op on every operator start; (3) a `Bind9Cluster` was not woken by a standalone instance that references it, leaving it at "3/4 instances are ready"; (4) a zone reconcile POSTed to a pod that was gone for two minutes, holding a deletion finalizer and record tagging behind it.
+
+### Impact
+- [ ] Breaking change (CRD status field added; behaviour changes in the migration guide)
+- [x] Requires cluster rollout (apply the `DNSZone` CRD, then the operator; the first reconcile rewrites every primary's ACL and replaces every secondary zone once; roll the BIND9 pods once to move pre-ADR-0019 zones to the new `also-notify`)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-07 18:00] - Fix the rollout queue's no-op patch hot loop; correct the termination handover claim (ADR-0018 decision 8, ADR-0017 decision 6)
 
 **Author:** Erick Bourgeois
@@ -1415,19 +1488,19 @@ ADD rather than shipping a mechanism that silently fails authentication.
 
 ### Changed
 - `Cargo.toml`: `bindcar` floor raised to `0.8.1` (`default-features = false`
-  kept); lock resolves 0.8.1 from crates.io — API-identical to v0.8.2
+  kept); lock resolves 0.8.1 from crates.io: API-identical to v0.8.2
   (`git diff v0.8.1..v0.8.2` touches exactly Cargo.toml). Bump the lock to
   0.8.2 when its crates.io publish lands.
 - `src/constants.rs` + 12 other references (crd.rs doc example, examples/,
   deploy CRD yamls via regen-crds, tests/lib/dns_fixtures.sh, README, docs):
   `DEFAULT_BINDCAR_IMAGE` → `ghcr.io/firestoned/bindcar:v0.8.2`. v0.8.1
-  images are skipped deliberately — they self-report 0.8.0 (tag/version
+  images are skipped deliberately; they self-report 0.8.0 (tag/version
   divergence, resolved in v0.8.2).
 - `src/bind9/zone_ops.rs`: `parse_zone_status_dnssec()` (ZoneStatusResponse
   JSON → DnssecStatus, tolerant of older sidecars) and `next_ksk_rollover()`
-  (earliest event among non-removed key-signing keys — ZSK events excluded,
+  (earliest event among non-removed key-signing keys; ZSK events excluded,
   they do not change the DS at the parent).
-- `src/reconcilers/dnszone.rs`: `fetch_next_ksk_rollover()` — after DS
+- `src/reconcilers/dnszone.rs`: `fetch_next_ksk_rollover()`: after DS
   extraction reports a signed zone, the reconciler reads the sidecar's zone
   status (TLS-aware per-instance manager, bug-188 lesson) and populates
   `DNSZone.status.dnssec.nextKeyRollover`; best-effort, keeps the previous
@@ -1457,7 +1530,7 @@ closing ADR-0006's deferred field.
 
 ### Changed
 - `.github/community/25-bindcar-migration-v0-8-0.md` + `ROADMAPS.md`: the two
-  "open" §25 boxes were stale — the reserved-env admission policy shipped as
+  "open" §25 boxes were stale: the reserved-env admission policy shipped as
   VAP **19/20** (`bindy-bindcar-env-validation`, with accept/reject fixtures)
   under different numbers than the planned "15/16" (taken by image
   provenance). Doc corrected and boxes ticked; remaining work is
@@ -1475,7 +1548,7 @@ closing ADR-0006's deferred field.
 ### Why
 Roadmap 25 was flagged "current and actionable" but its checklist lagged the
 tree; bindcar v0.8.1 (just released) changes the migration target and
-unblocks the ADR-0006 deferred fields — behind a release fix.
+unblocks the ADR-0006 deferred fields, behind a release fix.
 
 ### Impact
 - [ ] Breaking change
@@ -1490,7 +1563,7 @@ unblocks the ADR-0006 deferred fields — behind a release fix.
 ### Changed
 - `src/bind9_resources.rs`: `resolve_dnssec_validation` now renders from the
   cluster-global `dnssec` block whether or not the instance has a `config`
-  block — previously a global `validation: false` with no instance config
+  block; previously a global `validation: false` with no instance config
   block emitted nothing, and named's default (`auto`, verified against the
   BIND 9.18 ARM) silently re-enabled the validation the user disabled.
 - `src/bind9_resources.rs`: `build_cluster_options_conf` gains the same
@@ -1524,7 +1597,7 @@ banking environment.
 **Author:** Erick Bourgeois
 
 ### Added
-- `docs/adr/0006-dnssec-ds-record-status-reporting.md`: ADR — operator queries
+- `docs/adr/0006-dnssec-ds-record-status-reporting.md`: ADR: operator queries
   DNSKEY over DNS and computes DS records locally (vs. a new bindcar endpoint
   or pod exec).
 - `src/bind9/zone_ops.rs`: `DsRecordInfo`, `dns_query_endpoint()` (bindcar
@@ -1532,7 +1605,7 @@ banking environment.
   (KSK filter: zone-key + SEP, never revoked; RFC 4034 key tag; SHA-256
   digest per RFC 8624), `extract_ds_records()` (DNSKEY query via hickory-net).
 - `src/reconcilers/dnszone.rs`: `build_dnssec_status()` decision logic and
-  `update_dnssec_status()` — after configuring a zone's primaries the
+  `update_dnssec_status()`: after configuring a zone's primaries the
   reconciler publishes `status.dnssec` (`signed`, `dsRecords`, `keyTag`,
   `algorithm`); `dnssecPolicy: "none"` clears it; a policy whose keys are
   still generating reports `signed: false`; query failures keep the previous
@@ -1586,7 +1659,7 @@ had no callers.
 - `src/metrics.rs`: `kube_api_requests_total`, `kube_api_request_duration_seconds`,
   `kube_api_rate_limit_hits_total`, `kube_api_retries_total`,
   `kube_api_pagination_pages` and their helper functions.
-- `Cargo.toml`: `tower` (limit, util) and `http` as direct dependencies —
+- `Cargo.toml`: `tower` (limit, util) and `http` as direct dependencies:
   both already in the tree via kube; needed for the middleware layer types.
 
 ### Changed
@@ -1598,7 +1671,7 @@ had no callers.
   `list_all_paginated` (sole exception: `scout.rs::kind_served`'s intentional
   `limit(1)` probe).
 - `src/reconcilers/bind9instance/cluster_helpers.rs`: cluster/provider fetches
-  wrapped in `retry_api_call` — transient 429/5xx no longer misread as
+  wrapped in `retry_api_call`: transient 429/5xx no longer misread as
   "cluster not found" (previously swallowed by `.ok()`).
 - `src/reconcilers/bind9instance/mod.rs`, `src/reconcilers/status.rs`:
   Bind9Instance rotation-status and DNSZone status patches retried with
@@ -1607,7 +1680,7 @@ had no callers.
   documented as low-cardinality. `src/reconcilers/pagination.rs`: page counts
   recorded per resource kind.
 - `src/main_tests.rs`: env-parsing tests superseded by `rate_limit_tests.rs`
-  (they also mutated process env — race-prone).
+  (they also mutated process env, which is race-prone).
 - `calm/bindy-control-plane.architecture.json`: `operator-watches-api`
   relationship notes the rate limiting; CALM docs regenerated.
 - Docs: `docs/src/operations/{env-vars,metrics}.md`, `docs/src/reference/cli.md`
@@ -1641,7 +1714,7 @@ the retry helper had zero call sites.
   registered earlier).
 
 ### Changed
-- `.claude/SKILL.md`: reduced to a one-row-per-skill index — the skill
+- `.claude/SKILL.md`: reduced to a one-row-per-skill index; the skill
   directories are canonical, eliminating the duplicated prose that would
   otherwise drift (and trimming the `@`-imported context by ~4k tokens).
 
@@ -1661,9 +1734,9 @@ Skill tool only discovers `.claude/skills/<name>/SKILL.md` directories.
 
 ### Changed
 - `src/bind9_resources.rs`: refactored `build_options_conf` and
-  `build_cluster_options_conf` onto shared flat per-directive resolvers —
-  `render_recursion`, `render_dnssec_validation`, `resolve_dnssec_validation`,
-  `render_acl_directive`, `render_allow_transfer` — removing the 3–4-level
+  `build_cluster_options_conf` onto shared flat per-directive resolvers
+  (`render_recursion`, `render_dnssec_validation`, `resolve_dnssec_validation`,
+  `render_acl_directive`, `render_allow_transfer`), removing the 3–4-level
   nested if-else precedence chains and both `#[allow(clippy::too_many_lines)]`
   attributes. Added `ALLOW_QUERY_DIRECTIVE` / `ALLOW_TRANSFER_DIRECTIVE` and
   `SOURCE_GLOBAL_ALLOW_QUERY` / `SOURCE_GLOBAL_ALLOW_TRANSFER` constants for
@@ -1678,7 +1751,7 @@ Skill tool only discovers `.claude/skills/<name>/SKILL.md` directories.
   chain in `calculate_cluster_status` into the early-return helper
   `cluster_ready_condition`.
 - `src/bind9_resources_tests.rs`: added pinning tests for the previously
-  untested precedence paths of `build_options_conf` — global-config fallback
+  untested precedence paths of `build_options_conf`: global-config fallback
   (recursion/allow-query/allow-transfer/dnssec, plus a placeholder-free
   assertion for the instance-level builder), role-specific `allow-transfer`
   overriding global, and the historical dnssec-validation asymmetry when the
@@ -1739,7 +1812,7 @@ gap). Both are candidates for a separate, deliberate behavior change.
 
 ### Why
 User decision (2026-09-27): bindy moves completely to the ADD way of developing
-already in force in banlieue — architecture is decided (ADR) and modeled (CALM)
+already in force in banlieue: architecture is decided (ADR) and modeled (CALM)
 before test-driven implementation, and the threat model is re-verified after.
 
 ### Impact
@@ -1756,8 +1829,8 @@ before test-driven implementation, and the threat model is re-verified after.
 - `tests/scout_integration.rs`: `cleanup()` called `delete_collection` and
   returned immediately, but the operator running in the e2e cluster holds a
   finalizer on every ARecord it has reconciled, so deletion is asynchronous.
-  The next test's list still saw the previous test's terminating records —
-  in CI (run 35884975991) `stale-oldsouth-alpha` leaked into
+  The next test's list still saw the previous test's terminating records.
+  In CI (run 35884975991) `stale-oldsouth-alpha` leaked into
   `stale_selector_still_matches_a_different_cluster_in_the_same_zone` and
   failed the canary assertion. `cleanup()` now polls until the namespace is
   actually empty (60s budget), stripping finalizers after 20s as an escape
@@ -1765,7 +1838,7 @@ before test-driven implementation, and the threat model is re-verified after.
   the operator can end up in a retry loop). Safe because a terminating object
   cannot gain new finalizers.
 - `tests/scout_integration.rs`: a panicking test skipped its trailing
-  `cleanup()`, permanently leaking planted records — the operator retried
+  `cleanup()`, permanently leaking planted records; the operator retried
   `live-north-alpha` for the rest of the CI run and polluted every later
   suite's operator-log dump. New `with_clean_slate` wrapper runs each stateful
   test body under `catch_unwind` so cleanup always runs, then re-raises the
@@ -1778,7 +1851,7 @@ before test-driven implementation, and the threat model is re-verified after.
   overlap suspected of causing the "Pod never became ready" failures that have
   been red on every main run since the suites landed (2026-09-20).
 - `tests/lib/dns_fixtures.sh`: `assert_operands_ready` printed only a bare
-  `kubectl get pods` on failure — useless for a Pod that is 2/2 Running by the
+  `kubectl get pods` on failure, useless for a Pod that is 2/2 Running by the
   time it prints. New `dump_operand_diagnostics` captures per-container
   ready/restart/state, Pod conditions, `kubectl describe` tail, and the
   namespace's recent events, so the next CI failure is diagnosable from its
@@ -1804,7 +1877,7 @@ it recurs.
 
 ### Fixed
 - `tests/e2e/scout_test.sh`: step 1 applied the Ingress as soon as
-  `kubectl rollout status` returned, which only proves the container started —
+  `kubectl rollout status` returned, which only proves the container started;
   Scout's Ingress watch comes up a moment later. In CI (run 35875589371) the
   Ingress landed ~0.8s after startup, the create event was never delivered, and
   Scout logged nothing at all for the full 90s timeout: no reconcile, and no
@@ -1814,7 +1887,7 @@ it recurs.
   `wait_for_scout_watching` polls for the `Scout controller running` log line
   before anything is applied, on the initial deploy and after the rename, and
   `wait_for_arecord_with_nudge` re-annotates the Ingress between polls so a lost
-  event self-heals — Scout is watch-driven and never re-lists on a timer, so
+  event self-heals: Scout is watch-driven and never re-lists on a timer, so
   without that a missed event wedges the suite permanently.
 - `tests/e2e/scout_test.sh`: step 3 asserted that `scout-north-…` was absent
   after the rename without checking it had ever existed. When step 1 timed out
@@ -1847,7 +1920,7 @@ the runner is slow enough to widen the window.
 - `tests/multi_tenancy_integration.rs`: `create_global_cluster` swallowed an
   HTTP 409 as "already exists, carry on". Three tests share the cluster-scoped
   name `test-global-cluster`, and `delete_global_cluster` returns as soon as the
-  DELETE is accepted — while the object lingers in `Terminating` until the
+  DELETE is accepted, while the object lingers in `Terminating` until the
   operator clears its `bind9cluster-finalizer`. Tests run serially in
   alphabetical order, so `test_bind9instance_references_global_cluster` deletes
   the provider immediately before `test_clusterbind9provider_creation` creates
@@ -1860,8 +1933,8 @@ the runner is slow enough to widen the window.
 
 ### Why
 Intermittent red on the `Multi-tenancy (kind)` e2e job (run 35854027308). The
-race is timing-dependent — the following test using the same name passed in the
-same run, once the tombstone had cleared — so it presented as flake rather than
+race is timing-dependent (the following test using the same name passed in the
+same run, once the tombstone had cleared), so it presented as flake rather than
 a consistent failure.
 
 ### Impact
@@ -1877,15 +1950,15 @@ a consistent failure.
 ### Changed
 - `.github/community/*.md`: renumbered all 26 roadmaps contiguously from `00` to
   `25`, dropping the `10`/`20`/`30`/`40`/`50` decade bands. The relative order is
-  unchanged — reference and analysis, architecture and refactoring, features,
-  Scout, security and compliance, testing/operations/dependencies — only the gaps
+  unchanged (reference and analysis, architecture and refactoring, features,
+  Scout, security and compliance, testing/operations/dependencies); only the gaps
   are gone. Old → new: 02→00, 10→01, 12→02, 13→03, 14→04, 15→05, 16→06, 20→07,
   21→08, 22→09, 23→10, 24→11, 30→12, 31→13, 32→14, 41→15, 42→16, 43→17, 50→18,
   51→19, 52→20, 53→21, 54→22, 55→23, 56→24, 57→25.
 - `.github/community/README.md`: replaced the band table with the contiguous
   numbering rule, rewrote the reserved-numbers section (privately tracked
   roadmaps carry no number until they move in), and fixed the "Adding a roadmap"
-  filename rule to lowercase-hyphenated — it previously said
+  filename rule to lowercase-hyphenated; it previously said
   `NN-SCREAMING-KEBAB-TITLE.md`, which no file in the directory has ever followed.
 - `ROADMAPS.md`: renumbered every index row and every in-prose cross-reference,
   and replaced "Tracked privately"'s reserved-number note with a numbering
@@ -1896,7 +1969,7 @@ a consistent failure.
   `docs/src/advanced/dnssec.md`,
   `docs/src/operations/dnszone-migration-troubleshooting.md`,
   `docs/src/development/TEST_SUMMARY.md`: updated the roadmap paths they cite.
-  Rust changes are doc-comment text only — no code.
+  Rust changes are doc-comment text only, no code.
 
 ### Why
 The global roadmap convention is a zero-padded two-digit prefix, contiguous from
@@ -1912,7 +1985,7 @@ fixing every reference in one change brings it back in line.
 - [x] Documentation only
 
 Any external link to a roadmap file by its old number (issues, PRs, bookmarks)
-now 404s — the files moved, they were not left behind as redirects.
+now 404s: the files moved, they were not left behind as redirects.
 
 ## [2026-09-23 10:40] - Scout: validate zones on reconcile, recover the cleanup zone from record labels
 
@@ -1921,7 +1994,7 @@ now 404s — the files moved, they were not left behind as redirects.
 ### Fixed
 - `src/scout.rs`: the four reconcile paths passed the resolved zone straight into
   `delete_stale_cluster_*_arecords` without checking it is a legal Kubernetes label
-  value, while the eight delete/opt-out paths did check — contradicting the contract
+  value, while the eight delete/opt-out paths did check, contradicting the contract
   `is_valid_zone_label_value` documents. A `DNSZone`'s `zoneName` is validated per DNS
   label but not in total, so an ordinary internal zone such as
   `payments-gateway.team-checkout.production.eu-west-1.example.internal` (68 chars)
@@ -1933,11 +2006,11 @@ now 404s — the files moved, they were not left behind as redirects.
   reject such a zone at the guard in all five reconcilers with a warning naming it.
 - `src/scout.rs`: opting out by stripping every `bindy.firestoned.io/*` annotation in
   one edit removed the zone along with the opt-in, so no zone resolved, stale-cluster
-  cleanup was skipped, and the finalizer was released regardless — orphaning any
+  cleanup was skipped, and the finalizer was released regardless, orphaning any
   `ARecord` from a previous cluster name permanently, with only a log line as evidence.
   `delete_arecords_for_{ingress,httproute,tlsroute,tcproute}` now return the `zone`
   labels of the records they deleted, and new `stale_cleanup_zones` unions those with
-  the annotation-resolved zone. The labels are authoritative — Scout wrote them — so
+  the annotation-resolved zone. The labels are authoritative (Scout wrote them), so
   they survive the annotation edit, and they also cover a `BINDY_SCOUT_DEFAULT_ZONE`
   changed after the records were written.
 
@@ -1954,7 +2027,7 @@ now 404s — the files moved, they were not left behind as redirects.
 - `tests/scout_integration.rs`: the stale-cleanup selectors evaluated by a **real**
   API server. The unit tests assert selector *text* and `wiremock` echoes back
   whatever it is handed, so nothing verified that a Kubernetes API server matches the
-  records Scout intends and no others — which is the gap #474 lived in. Covers the
+  records Scout intends and no others, which is the gap #474 lived in. Covers the
   cross-zone record surviving, the same-zone rename being collected, own/stale
   selectors staying disjoint, all four resource kinds agreeing, and an over-long zone
   being rejected by the server. Run by the `e2e-rust` suite.
@@ -1970,7 +2043,7 @@ now 404s — the files moved, they were not left behind as redirects.
 ### Why
 Follow-up to the review of #497. The zone validation added there was applied to the
 delete and opt-out paths but not the reconcile paths, and the opt-out path's permanent
-orphan was documented rather than fixed — the `zone` label on the records being deleted
+orphan was documented rather than fixed; the `zone` label on the records being deleted
 is a reliable source for it, so it did not have to stay a known limitation.
 
 ### Impact
@@ -1984,8 +2057,8 @@ is a reliable source for it, so it did not have to stay a known limitation.
 **Author:** Prabhjot Singh Bawa
 
 ### Fixed
-- `src/scout.rs`: Scout's stale -`ARecord` cleanup — which runs on every reconcile and
-  on Ingress/HTTPRoute/TLSRoute/TCPRoute deletion or opt-out — matched only on
+- `src/scout.rs`: Scout's stale -`ARecord` cleanup, which runs on every reconcile and
+  on Ingress/HTTPRoute/TLSRoute/TCPRoute deletion or opt-out, matched only on
   `source-cluster != current_cluster`, with no DNS-zone scoping. Two genuinely
   unrelated clusters that happen to share the same source namespace + resource name,
   but publish into different DNS zones, would each delete the other's live `ARecord`
@@ -1994,7 +2067,7 @@ is a reliable source for it, so it did not have to stay a known limitation.
   `stale_tcproute_arecord_label_selector` and their `delete_stale_cluster_*_arecords`
   callers now also require `zone=<current_zone>`, resolved the same way the
   create path resolves it (`resolve_zone()` from the object's annotations, falling
-  back to the operator's default zone) — including on the delete/opt-out cleanup
+  back to the operator's default zone), including on the delete/opt-out cleanup
   paths, where the zone is taken from the object being deleted. When no zone can be
   resolved on a delete/opt-out path, stale-cluster cleanup is now skipped with a
   warning rather than matching an unscoped (empty-zone) selector; the object's own
@@ -2002,7 +2075,7 @@ is a reliable source for it, so it did not have to stay a known limitation.
 - `src/scout_tests.rs`: added `wiremock`-backed tests asserting the zone clause
   actually reaches the outgoing `labelSelector` for all four
   `delete_stale_cluster_*_arecords` functions, and that the delete loop only removes
-  what the (server-side-filtered) list returns — the existing selector-string tests
+  what the (server-side-filtered) list returns; the existing selector-string tests
   proved the string was built correctly but never exercised the functions that use
   it.
 - `docs/src/guide/scout.md`: the "Changing the Cluster Name" section described the
@@ -2012,7 +2085,7 @@ is a reliable source for it, so it did not have to stay a known limitation.
 ### Why
 Stale-cluster cleanup existed to collect `ARecord`s a Scout left behind under a
 previous `--cluster-name`, but its only differentiator was
-`source-cluster != current_cluster` — true of *any* other cluster, not just a
+`source-cluster != current_cluster`, true of *any* other cluster, not just a
 renamed instance of this one. Two unrelated clusters sharing a namespace +
 resource name deleted each other's live DNS records in a loop.
 
@@ -2030,7 +2103,7 @@ resource name deleted each other's live DNS records in a loop.
 - `src/reconcilers/dnszone.rs`: zone NOTIFY used the shared startup
   `Bind9Manager`, which carries no per-instance TLS configuration, so
   `qualify_server` produced `http://` and the call was refused by a TLS-only
-  sidecar — then retried until the reconcile ran out of time.
+  sidecar, then retried until the reconcile ran out of time.
 - `src/reconcilers/dnszone.rs`: deleting a zone from a **secondary** instance
   had the same defect, leaving zone data orphaned on a TLS-enabled secondary.
 
@@ -2038,7 +2111,7 @@ resource name deleted each other's live DNS records in a loop.
 - `NotifyTarget` + `remember_first_notify_target()` in `src/reconcilers/dnszone.rs`:
   the NOTIFY endpoint now travels with the `Bind9Instance` that serves it, which
   is what lets the notify site resolve a manager via `zone_manager_for_instance`.
-- `src/reconcilers/dnszone_tests.rs`: `notify_target_tests` — records the first
+- `src/reconcilers/dnszone_tests.rs`: `notify_target_tests`: records the first
   endpoint, never overwrites it, and keeps the endpoint bound to its instance.
 
 ### Changed
@@ -2056,7 +2129,7 @@ resource name deleted each other's live DNS records in a loop.
   2000 lines with timestamps, plus the operand/sidecar logs.
 
 ### Why
-Caught by `make e2e-tls` on PR #498 — the first run in which that suite executed
+Caught by `make e2e-tls` on PR #498, the first run in which that suite executed
 end to end (the previous run died on the kind host-port collision before reaching
 any TLS assertion). The evidence was unambiguous:
 
@@ -2083,8 +2156,8 @@ reconcile.
 
 `cargo fmt`, `cargo clippy --all-targets --all-features` (clean) and
 `cargo test --all` (1435 passed, 0 failed) all pass. The `e2e-tls` suite could
-not be re-run locally — the dev machine ran out of disk and the Docker VM went
-read-only mid-run — so CI is the end-to-end verification.
+not be re-run locally (the dev machine ran out of disk and the Docker VM went
+read-only mid-run), so CI is the end-to-end verification.
 
 ## [2026-09-20 12:46] - VAP for reserved bindcar env names; readiness probe on the sidecar
 
@@ -2115,7 +2188,7 @@ are taken by image-provenance, so it landed as 19/20.
 
 **The probe**: the sidecar had none at all, so a wedged bindcar still counted as
 Ready and the operator would push zones into it. `/api/v1/ready` verifies the
-zone directory is usable and that rndc answers, which means `named` is alive —
+zone directory is usable and that rndc answers, which means `named` is alive,
 strictly more than the bind9 container's bare TCP connect.
 
 ### What the probe deliberately does NOT do
@@ -2123,7 +2196,7 @@ It does not require any zone to be loaded, so it does **not** close the
 Ready-but-empty window. That window cannot be closed this way: the operator
 reaches sidecars through the Service's *ready* endpoints
 (`reconcilers/dnszone/helpers.rs`), so a Pod that stayed unready until it had
-zones could never be given any — not ready, not an endpoint, nothing to push,
+zones could never be given any: not ready, not an endpoint, nothing to push,
 never ready. Closing it properly needs management traffic decoupled from DNS
 readiness (a separate Service with `publishNotReadyAddresses`, addressing Pods
 by IP, or an operator-set readiness gate). That is a design decision, not a
@@ -2134,7 +2207,7 @@ VAP fixtures run against a live kind API server: the accept case is admitted and
 all three reject cases are denied by `bindy-bindcar-env-validation` specifically
 (message quoted in the denial), not by some other validation.
 
-`tests/tls_transport_test.sh` green end to end after the probe change — the case
+`tests/tls_transport_test.sh` green end to end after the probe change, the case
 that matters, since an HTTP-scheme probe against a TLS-only sidecar would leave
 the Pod permanently unready. 1496 unit tests pass; fmt and clippy clean.
 
@@ -2151,11 +2224,11 @@ the Pod permanently unready. 1496 unit tests pass; fmt and clippy clean.
 ### Added
 - `tests/lib/common.sh`: shared colours, logging, `pass`/`fail` assertions, common
   argument parsing (`--image`, `--skip-deploy`) and the GitHub step-summary writer.
-- `tests/lib/cluster.sh`: `bindy_setup` — idempotent kind cluster creation, image
+- `tests/lib/cluster.sh`: `bindy_setup`: idempotent kind cluster creation, image
   build-or-load, and operator deploy. One bring-up path for every bash suite.
 - `tests/lib/dns_fixtures.sh`: the zone/record fixture (Bind9Cluster with 2
   primaries + standalone instance, forward and reverse DNSZone, all 9 record
-  types) plus every assertion over it — pre-clean, readiness, `dig`-in-Pod DNS
+  types) plus every assertion over it: pre-clean, readiness, `dig`-in-Pod DNS
   verification, resource census, teardown.
 - `tests/e2e/lifecycle_test.sh`, `idempotency_test.sh`, `restart_test.sh`,
   `rust_api_test.sh`, `multi_tenancy_test.sh`: one suite per file, each a
@@ -2178,7 +2251,7 @@ the Pod permanently unready. 1496 unit tests pass; fmt and clippy clean.
   without which none of the `e2e-*` targets were listed.
 - `tests/README.md`: documents the per-suite targets, the shared libraries and
   what each suite actually proves. Dropped the stale "MXRecord is never added to
-  BIND9" known-failure note — all 11 expected answers now verify on all 3 primaries.
+  BIND9" known-failure note; all 11 expected answers now verify on all 3 primaries.
 - `.gitignore`: `/dist/` (the `make e2e-image` tarball).
 
 ### Why
@@ -2191,11 +2264,11 @@ CI, and a developer can run the one that matters in isolation.
 Suite boundaries follow the failure modes, not the old phase numbering:
 `lifecycle` (does it come up and does BIND9 actually answer), `idempotency` (does
 re-applying change anything), `restart` (does it survive operator and operand
-restarts — the slowest, ~100s of replay per operand wipe, hence its own job).
+restarts, the slowest, ~100s of replay per operand wipe, hence its own job).
 
 `deploy/kind-config-e2e.yaml` exists because `deploy/kind-config.yaml` maps host
 ports 30053/30953. Two suites cannot both bind those, so the second
-`kind create` dies with `port is already allocated` — which is exactly what
+`kind create` dies with `port is already allocated`, which is exactly what
 happened the first time two suites were run concurrently. Same reasoning as
 `deploy/kind-config-tls.yaml`. The suites `dig` from inside the operand Pod, so
 they never needed a published port.
@@ -2233,7 +2306,7 @@ onto the host, and the second bind fails:
 docker: Bind for 0.0.0.0:30053 failed: port is already allocated
 ```
 
-That is why the e2e workflow went red on PR #498 while the suite passed locally —
+That is why the e2e workflow went red on PR #498 while the suite passed locally:
 locally there was no other cluster holding the ports. The zone-spread suite was
 unaffected because `kind-config-multizone.yaml` publishes none.
 
@@ -2270,7 +2343,7 @@ the identical condition.
   the identical spec hash is inside the cooldown, records a rejection on
   failure, and clears it on success.
 - `src/record_operator.rs`: the post-reconcile log now reads the status it just
-  wrote — `info!` only on `Ready`, otherwise a `warn!` naming the reason and
+  wrote: `info!` only on `Ready`, otherwise a `warn!` naming the reason and
   message. Deleting a record clears any rejection recorded for it.
 - `src/record_wrappers.rs`: `is_resource_ready` is now `matches!(ready_state(..),
   Ready)`. It previously inspected only `conditions.first()`, so a `Ready`
@@ -2280,7 +2353,7 @@ the identical condition.
 A record BIND9 permanently rejects was re-attempted on every watch event, not
 just on its own 30s requeue: a status patch on the owning zone or on any primary
 instance re-runs the record reconciler. Measured against a real operand, one bad
-MX drove a sustained delete/add storm — roughly three updates per second, about
+MX drove a sustained delete/add storm, roughly three updates per second, about
 300ms apart. There is no retry loop inside the DDNS path itself; every repeat was
 a fresh reconcile. Keying the cooldown on the spec hash keeps the user's fix
 instant: editing the record bypasses it.
@@ -2292,9 +2365,9 @@ contradicted the status on the same object.
 
 Verified on a kind cluster with an MXRecord whose exchange has no address record
 (permanently `Refused`). Attempts went from ~300ms apart to seven attempts at
-30.2s intervals — exactly `REQUEUE_WHEN_NOT_READY_SECS`, i.e. the timed requeue
-and nothing else — and the operator now logs `Reconciled MXRecord probe-bad-mx
-but it is not Ready — ReconcileFailed: ...`.
+30.2s intervals, exactly `REQUEUE_WHEN_NOT_READY_SECS`, i.e. the timed requeue
+and nothing else, and the operator now logs `Reconciled MXRecord probe-bad-mx
+but it is not Ready` (`ReconcileFailed: ...`).
 
 No DNS response-code classifier was added: the cooldown bounds every failure
 kind, permanent or transient, and a classifier would mean touching all nine
@@ -2328,7 +2401,7 @@ used a few lines above (`SKIPPING instance ... ({e:#})`).
 This immediately paid for itself: the first local run with it printed
 `... : DNS update failed with response code: Refused`, which identified the
 long-standing MX failure in the e2e suite (buglog bug-186). BIND 9.18 refuses a
-dynamic MX add whose exchange is inside the zone and has no A/AAAA record —
+dynamic MX add whose exchange is inside the zone and has no A/AAAA record:
 `tests/integration_test.sh` points `mailServer` at `mail.integration.test.` and
 never creates an address record for it. Confirmed by hand with `nsupdate`
 against the operand: an MX to a target with no address record is REFUSED, the
@@ -2353,7 +2426,7 @@ same MX to a target with an A record is accepted and served.
 - `src/reconcilers/dnszone.rs`: the primary, secondary and deletion loops now
   build a per-instance manager instead of cloning the process-wide one created in
   `src/main.rs:422`. That manager is constructed before any `Bind9Instance`
-  exists, so it has no TLS configuration and no kube client — it could only ever
+  exists, so it has no TLS configuration and no kube client; it could only ever
   speak plaintext.
 - `src/reconcilers/dnszone.rs`, `src/reconcilers/dnszone/bind9_config.rs`:
   dropped the now-unused `zone_manager` parameter from
@@ -2361,8 +2434,8 @@ same MX to a target with an A record is accepted and served.
   invites the same bug back.
 
 ### Why
-TLS was plumbed for **record** operations only. Zone operations — `addzone`,
-`freeze`, `thaw`, `notify`, the bulk of the API surface — still dialled
+TLS was plumbed for **record** operations only. Zone operations (`addzone`,
+`freeze`, `thaw`, `notify`, the bulk of the API surface) still dialled
 `http://`, with the ServiceAccount token attached:
 
 ```
@@ -2382,13 +2455,13 @@ end-to-end run against a real CA surfaced it.
 sidecar certificate. All five assertions pass, including the two that matter:
 BIND9 serves `www.tls.test` pushed over a CA-verified HTTPS connection, and the
 operator made no plaintext calls to the sidecar. Assertion 4 was RED on the same
-script before this change — same cert-manager, same fixtures, only the operator
+script before this change; same cert-manager, same fixtures, only the operator
 differed.
 
 1483 unit tests pass; `cargo fmt --check` and `clippy -D warnings` clean.
 
 ### Also fixed in the harness
-- A failed probe-image pull reported "sidecar did not answer over HTTPS" — a
+- A failed probe-image pull reported "sidecar did not answer over HTTPS", a
   false security failure. `probe_selftest()` now distinguishes it explicitly.
 - `kubectl run --rm -i` streams over an interactive attach and broke under
   kubectl/apiserver version skew. Replaced with create → poll → `logs`, reading
@@ -2423,7 +2496,7 @@ differed.
 - All 14 `zone_ops` call sites in `Bind9Manager` now resolve the client through
   `resolve_client()` and qualify the endpoint through `qualify_server()`. The
   endpoint gains an explicit scheme, which `build_api_url` then passes through
-  untouched — so no `zone_ops` signature changed.
+  untouched, so no `zone_ops` signature changed.
 - `src/reconcilers/records/mod.rs`: both manager call sites pass the kube
   client.
 
@@ -2434,8 +2507,8 @@ plaintext, which would have produced a broken deployment rather than a secure
 one.
 
 **`resolve_client` fails closed.** When TLS is enabled but the CA bundle cannot
-be read — no Kubernetes client, no `caBundle` configured, a missing object or
-key, or a bundle that does not parse — it returns an error instead of falling
+be read (no Kubernetes client, no `caBundle` configured, a missing object or
+key, or a bundle that does not parse), it returns an error instead of falling
 back to the plaintext client. A fallback would send the ServiceAccount token in
 the clear on a deployment whose operator believes TLS is on, which is the exact
 failure this work exists to prevent. Three of the seven tests cover that path.
@@ -2454,7 +2527,7 @@ Verified: `cargo fmt --check`, `cargo clippy --all-targets -D warnings`,
 `cargo test`.
 
 ### NOT verified
-No end-to-end run against a live cluster with cert-manager — no cluster is
+No end-to-end run against a live cluster with cert-manager: no cluster is
 available in this environment. The unit tests cover configuration resolution,
 scheme selection, fail-closed behaviour and certificate verification
 (including rejection of an untrusted CA), but nothing has yet completed a real
@@ -2464,12 +2537,12 @@ VAP 15/16 also remains outstanding as defence in depth behind the reconciler's
 reserved-env guard.
 
 ### Correction (2026-09-20)
-This entry's title — "the operator now dials sidecars over HTTPS" — was true of
+This entry's title ("the operator now dials sidecars over HTTPS") was true of
 **record** operations only. The per-instance TLS manager was wired into
 `src/reconcilers/records/mod.rs`; the DNSZone reconciler kept using the
 process-wide `Bind9Manager` created in `src/main.rs`, which carries no TLS
-configuration and no client for reading a CA bundle. Zone operations — `addzone`,
-`freeze`, `thaw`, `notify` — therefore still dialled `http://` with the
+configuration and no client for reading a CA bundle. Zone operations (`addzone`,
+`freeze`, `thaw`, `notify`) therefore still dialled `http://` with the
 ServiceAccount token attached, so audit finding P2-4 was not closed and, against
 a TLS-enabled sidecar, zone work failed outright.
 
@@ -2632,7 +2705,7 @@ warnings`, `cargo test` (1,461 passing, 0 failures), `make crds`.
 ### Why
 The chain took the whole block from the most specific level that set anything, so
 setting a single instance-level field silently discarded everything the cluster
-had configured — image, port, resources, serviceSpec and every environment
+had configured: image, port, resources, serviceSpec and every environment
 variable. Hit in practice: the integration fixture sets `logLevel: debug` on its
 standalone instance, so that instance ignored the cluster's `bindcarConfig`
 entirely and ran with a different sidecar configuration than its peers.
@@ -2686,7 +2759,7 @@ Measured on a kind cluster, deleting one operand Pod:
 
 The zone push takes **1 second**. The other 57 were spent waiting for a reconcile
 to be triggered at all. The Endpoints watch does not reliably pull the object
-forward when a retry is already scheduled — the pending requeue wins — so the
+forward when a retry is already scheduled (the pending requeue wins), so the
 fixed 30s requeue set the floor on recovery. Repeated wipes measured 32s, 33s,
 96s, 130s and 249s to recover: the spread is where in the requeue cycle the Pods
 happened to come back.
@@ -2729,7 +2802,7 @@ Two earlier hypotheses were wrong and are recorded so they are not re-chased:
 - `deploy/operator/rbac/role.yaml`, `deploy/operator/rbac/namespaced/role.yaml`,
   `deploy/install.yaml`, `deploy/operator/rbac/verify-rbac.sh`: added
   `policy/poddisruptionbudgets` with get/list/watch/create/update/patch. No
-  `delete` — ownerReferences handle collection.
+  `delete`; ownerReferences handle collection.
 
 ### Why
 Measured on a kind cluster: deleting every primary at once left the replacement
@@ -2748,7 +2821,7 @@ The readiness probe still does not reflect whether any zone is loaded, so a Pod
 is advertised as able to serve before it can. Closing that needs either a Pod
 readiness gate set by the operator (which makes data-plane readiness depend on
 the operator being alive) or teaching bindcar's `/api/v1/ready` the expected zone
-set. Deliberately deferred — it is a design decision, not a mechanical fix.
+set. Deliberately deferred: it is a design decision, not a mechanical fix.
 `error_policy` also remains a flat 30s requeue rather than event-driven recovery.
 
 ### Impact
@@ -2777,7 +2850,7 @@ set. Deliberately deferred — it is a design decision, not a mechanical fix.
   `set -euo pipefail` (a failing Rust test aborted the script instead), so the status
   was always 0. Captured with `|| TEST_EXIT=$?`.
 
-### Fixed (test fixtures — all pre-existing, all silent)
+### Fixed (test fixtures, all pre-existing, all silent)
 - DNSZones set only `spec.clusterRef`. `get_instances_from_zone()`
   (`src/reconcilers/dnszone/validation.rs:58`) selects instances *only* through
   `spec.bind9_instances_from` and fails the zone without it, so **every zone in this
@@ -2827,8 +2900,8 @@ operand Pod, all 13 RRs replayed identically on all three primaries in about 100
   requirement stays `rustls = { version = "0.23", ... }`).
 
 ### Why
-RUSTSEC-2026-0285 — "TLS 1.3 handshake messages incorrectly accepted across
-encryption level boundaries" — affects rustls `>=0.23.13, <0.23.45`
+RUSTSEC-2026-0285 ("TLS 1.3 handshake messages incorrectly accepted across
+encryption level boundaries") affects rustls `>=0.23.13, <0.23.45`
 (CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N, `crypto-failure`). The advisory
 landed in the RustSec DB and broke the `cargo-audit` step of the Security
 Vulnerability Scan job on every branch, not just the PR it first surfaced on
@@ -2836,7 +2909,7 @@ Vulnerability Scan job on every branch, not just the PR it first surfaced on
 `kube-client`, `reqwest`, `hyper-rustls`, `tokio-rustls` and
 `rustls-platform-verifier`; the single lockfile bump covers all of them.
 
-No source changes were required — bindy only calls
+No source changes were required: bindy only calls
 `rustls::crypto::ring::default_provider()` (`src/main.rs:244`, plus the provider
 installs in `bind9/mod_tests.rs` and `bind9/zone_ops_tests.rs`), which is
 unchanged in this patch release. Verified with `cargo fmt --check`,
@@ -2867,7 +2940,7 @@ unchanged in this patch release. Verified with `cargo fmt --check`,
 
 ### Why
 Roadmap filenames must be all lowercase. Historical entries below this one keep the
-old uppercase paths on purpose — they record what the files were called at the time.
+old uppercase paths on purpose; they record what the files were called at the time.
 
 ### Impact
 - [ ] Breaking change
@@ -2883,15 +2956,15 @@ old uppercase paths on purpose — they record what the files were called at the
 - **Namespace-scoped operator mode (P1-2).** `BINDY_WATCH_NAMESPACES` is now wired
   through the whole control plane. When set, every reflector and controller is built
   with `Api::namespaced` per namespace and the operator needs only a Role/RoleBinding
-  in each — closing audit findings **C2** (cluster-wide `deployments create/update/
+  in each, closing audit findings **C2** (cluster-wide `deployments create/update/
   patch`, a privilege-escalation path via `serviceAccountName`) and **H3**
   (cluster-wide `secrets get/list/watch`). Unset remains cluster-wide and unchanged.
-  - `src/context.rs`: new `MultiStore<K>` — one reflector `Store` shard per watched
+  - `src/context.rs`: new `MultiStore<K>`: one reflector `Store` shard per watched
     namespace. **This sharding is load-bearing.** A single `Store` cannot be fed by
     several namespace watches merged with `select_all`: `watcher::Event::InitDone`
     makes the store *replace* its contents with the finishing watch's buffer
     (`kube_runtime::reflector::store` does `mem::swap`), so a merged design would
-    silently leave the store holding only the last namespace to sync — and again on
+    silently leave the store holding only the last namespace to sync, and again on
     every watch reconnect. Cluster-wide mode is a single shard with a pass-through.
   - `src/main.rs`: `spawn_sharded_reflector` (one watcher per namespace, predicate-
     filtered) and `spawn_cluster_reflector` for cluster-scoped kinds; per-namespace
@@ -2900,7 +2973,7 @@ old uppercase paths on purpose — they record what the files were called at the
   - `src/namespace_scope.rs`: `scoped_namespaced_api` helper.
   - `deploy/operator/rbac/namespaced/`: slim ClusterRole (`clusterbind9providers`
     only), per-namespace Role, bindings, and an install README.
-- **VAP 17/18 — ConfigMap integrity (P2-2).** Operator-generated ConfigMaps
+- **VAP 17/18: ConfigMap integrity (P2-2).** Operator-generated ConfigMaps
   (`app.kubernetes.io/part-of: bindy`) may only be modified by the operator SA.
 - `Makefile`: `pin-release-images` resolves the pushed image's multi-arch digest and
   rewrites the generated release manifests to `@sha256:` (P2-8). Fails the release if
@@ -2909,22 +2982,22 @@ old uppercase paths on purpose — they record what the files were called at the
 ### Changed
 - `src/scout.rs`: `check_zone_authorization_live` re-reads the granting DNSZone
   immediately before the server-side apply (P3-4), shrinking the TOCTOU window from
-  watch latency to one API round trip. Fails **open** on a transient API error — the
+  watch latency to one API round trip. Fails **open** on a transient API error: the
   cached grant was affirmative and failing closed would drop legitimate records
   during an API-server blip.
 - `deploy/pod-hardening.yaml`: the bindcar API ingress rule had **no `from:`
-  selector**, so any pod in the cluster could reach it. Restricted to the operator —
+  selector**, so any pod in the cluster could reach it. Restricted to the operator,
   least privilege for a management API (P2-4, partial).
 - `.github/workflows/build.yaml`: `package-deploy-manifests` now also needs
   `docker-release`. It previously needed only `extract-version`, so it did not wait
-  for the image push — meaning a digest could not have been resolved there at all.
+  for the image push, meaning a digest could not have been resolved there at all.
 - `docs/src/security/threat-model.md`: M-22 flipped to implemented (opt-in).
 
 ### Why P2-2 was NOT fixed with `immutable: true`
 The roadmap's stated fix is wrong for this codebase. These ConfigMaps carry
 `named.conf` and are **mounted as volumes** by the BIND9 operand pods. The kubelet
 deliberately stops watching an immutable ConfigMap, so marking them immutable would
-mean a zone or ACL change could never reach a running pod — every DNS config update
+mean a zone or ACL change could never reach a running pod; every DNS config update
 would become a rolling restart of the DNS servers. That trades a tampering risk for
 an availability risk. VAP 17/18 gives the same tamper-resistance at no availability
 cost. Literal immutability would require content-hashed ConfigMap names plus
@@ -2932,8 +3005,8 @@ Deployment rollout; that is a feature, not a hardening tweak.
 
 ### Why P2-4 is only partial
 Transport hardening for the operator-to-sidecar link depends on capability that lives
-in the bindcar project, not here. What is in scope for this repo — restricting who may
-reach the sidecar's management port — is done. The remainder is tracked privately
+in the bindcar project, not here. What is in scope for this repo (restricting who may
+reach the sidecar's management port) is done. The remainder is tracked privately
 until the upstream support lands, in line with how the other unremediated findings in
 this audit are handled.
 
@@ -2944,7 +3017,7 @@ this audit are handled.
 - [ ] Documentation only
 
 Rollout: default behaviour is unchanged (`BINDY_WATCH_NAMESPACES` unset = cluster-wide).
-To opt in, follow `deploy/operator/rbac/namespaced/README.md` — the namespace list in
+To opt in, follow `deploy/operator/rbac/namespaced/README.md`: the namespace list in
 the RBAC must match the env var exactly, or the operator crash-loops on 403s.
 `make admission-policies-install` now also applies 17/18.
 
@@ -2961,7 +3034,7 @@ fan-out test where the two watched namespaces reconciled and the unwatched one d
 - `tests/integration_test.sh`: the no-`--image` local-build path could never have
   worked. It ran `docker build -t bindy:latest "${PROJECT_ROOT}"` when there is no
   `Dockerfile` at the repo root (they all live under `docker/`), and then deployed
-  `deploy/operator/deployment.yaml` unmodified — which references
+  `deploy/operator/deployment.yaml` unmodified, which references
   `ghcr.io/firestoned/bindy:latest`, not the `bindy:latest` it had just built, so the
   image name would not have matched either. It now delegates to
   `scripts/build-docker-fast.sh` (the same builder `make ci-e2e` uses) and falls
@@ -2973,7 +3046,7 @@ fan-out test where the two watched namespaces reconciled and the unwatched one d
   tenant-writable `bindy.firestoned.io/ip` annotation as an IPv4 dotted-quad
   (P2-6). Invalid entries are dropped with a warning; an all-invalid list returns
   `None` so `resolve_ips` still falls through to `default_ips` / LB status rather
-  than creating an address-less record. IPv6 literals are rejected — `ARecord` is
+  than creating an address-less record. IPv6 literals are rejected; `ARecord` is
   IPv4-only.
 - `src/scout.rs`: the `bindy.firestoned.io/record-name` override is now syntax-checked
   by `validate_record_name_override` (P2-7). It still bypasses host→zone matching by
@@ -2983,7 +3056,7 @@ fan-out test where the two watched namespaces reconciled and the unwatched one d
 - `src/scout.rs`: `zone_allows_source_namespace` now logs a warning when a
   cross-namespace grant comes from the `*` wildcard (P3-3). Split out a pure
   `zone_namespace_grant` returning `NamespaceGrant` so an explicit listing, a
-  same-namespace zone and a wildcard are distinguishable — an explicit match is
+  same-namespace zone and a wildcard are distinguishable: an explicit match is
   reported in preference to a wildcard, so only genuinely wildcard-driven grants warn.
 - `Makefile`: all four image substitutions now match `bindy[:@]...` instead of a
   tag-only pattern (P2-8, partial). The source manifests still carry a tag, but a
@@ -2991,7 +3064,7 @@ fan-out test where the two watched namespaces reconciled and the unwatched one d
   stale digest forever.
 
 ### Added
-- `src/scout_tests.rs`: 18 tests — 6 for IPv4 annotation validation, 6 for the
+- `src/scout_tests.rs`: 18 tests: 6 for IPv4 annotation validation, 6 for the
   record-name override grammar, 6 for the namespace-grant classification.
 - `src/namespace_scope.rs`: `NamespaceScope::api_targets()` maps a scope to per-watch
   `Api` targets (`None` = `Api::all`, `Some(ns)` = `Api::namespaced`), with 4 tests
@@ -3029,19 +3102,19 @@ Both were producing broken DNS before; the change makes the failure visible.
   multi-arch manifest-list digests. `docker/Dockerfile` (debian, distroless) was already
   current. Verified with `./scripts/pin-image-digests.sh --dry-run`.
 - `scripts/pin-image-digests.sh`: dropped three entries that matched no `FROM` line
-  (`docker/Dockerfile.fast`, `rust:1.94.0`, `alpine:3.21`) — they silently no-opped.
+  (`docker/Dockerfile.fast`, `rust:1.94.0`, `alpine:3.21`); they silently no-opped.
 - `Makefile` (`admission-policies-install`): now applies 14 of the 16 policy manifests.
   **07/08 (pod-shape), 11/12 (operator-workload-SA) and 15/16 (image-provenance) were
   wired into no install target at all.** 05/06 (RNDC strict) stays opt-in because it
   rejects pre-existing hmac-sha1 keys.
-- `deploy/scout/deployment.yaml`: added `seccompProfile: RuntimeDefault` — Scout was the
+- `deploy/scout/deployment.yaml`: added `seccompProfile: RuntimeDefault`; Scout was the
   only pod in the fleet not asserting one (P2-1).
 - `.github/workflows/security-scan.yaml`: workflow-level `issues: write` /
   `security-events: write` reduced to `contents: read`; each job now opts into the single
   scope it needs (P3-8).
 - `deploy/operator/rbac/role.yaml`: removed the unused `create` verb from
   `clusterbind9providers`, `dnszones` and all nine record kinds. Verified no reconciler
-  creates these — records are authored by users/GitOps or by Scout under its own
+  creates these: records are authored by users/GitOps or by Scout under its own
   `bindy-scout` identity. `bootstrap.rs` picks this up automatically via `include_str!`.
 - `deploy/operator/rbac/verify-rbac.sh`: corrected ten assertions that contradicted the
   policy they verify (P3-1). It asserted `delete` was denied on bind9instances, dnszones
@@ -3058,18 +3131,18 @@ Both were producing broken DNS before; the change makes the failure visible.
 - `docs/src/guide/scout.md`: corrected a false claim that Scout never mutates routes or
   adds finalizers. It does (`add_finalizer_to_httproute`), which is why its ClusterRole
   grants `patch`/`update` on route kinds. The RBAC example was wrong to match.
-- `docs/src/security/threat-model.md`: reconciled with the code — immutable ConfigMaps
+- `docs/src/security/threat-model.md`: reconciled with the code: immutable ConfigMaps
   marked MISSING (they are not set), log sanitization marked implemented, RNDC rotation
   downgraded to PARTIAL (a manual runbook, not automation), M-24's "16 policies"
   corrected to "8 policies + 8 bindings", and M-22 marked NOT IMPLEMENTED.
 - `deploy/scout/clusterrole.yaml`: removed a stale comment referring to a cluster-wide
   Secret rule that was removed in #437.
-- `.wolf/cerebrum.md`: the "never pin Chainguard/Distroless digests" rule is superseded —
+- `.wolf/cerebrum.md`: the "never pin Chainguard/Distroless digests" rule is superseded;
   Dependabot now manages the bumps. Marked the reverted port-53/`NET_BIND_SERVICE` entry
   as historical; `named` runs on 5353 with no added capability.
 
 ### Added
-- `src/bootstrap_tests.rs`: two regression tests pinning the RBAC reduction — the
+- `src/bootstrap_tests.rs`: two regression tests pinning the RBAC reduction: the
   operator must not hold `create`/`delete` on user-authored kinds, and must retain
   `create` on the kinds it does author.
 - `src/bind9_resources_tests.rs`: seven tests for the DNSSEC whitelist, covering policy
@@ -3094,7 +3167,7 @@ code in both directions.
 Rollout notes: the operator ClusterRole is narrower, so re-apply
 `deploy/operator/rbac/role.yaml`. `make admission-policies-install` now installs six more
 manifests; policy 15/16 rejects CRD image overrides outside `ghcr.io/firestoned/` or the
-ISC BIND9 repo, and rejects `:latest` — the shipped examples and integration tests already
+ISC BIND9 repo, and rejects `:latest`: the shipped examples and integration tests already
 comply, but a cluster with a custom operand image override will need it allow-listed.
 
 ## [2026-09-10] - Hold three security roadmaps out of the public repo
@@ -3110,7 +3183,7 @@ comply, but a cluster with a custom operand image override will need it allow-li
 
 ### Changed
 - `ROADMAPS.md`, `.github/community/README.md`: rows removed and replaced with a short
-  "reserved numbers" note that does **not** restate the underlying finding — an index
+  "reserved numbers" note that does **not** restate the underlying finding: an index
   entry explaining why a security doc is withheld would disclose what withholding it is
   meant to protect.
 
@@ -3159,7 +3232,7 @@ both were introduced during the migration rather than present in the original no
 
 ### Added
 - `.github/community/`: 24 roadmap docs migrated from the external roadmap set and
-  renumbered into bands — `00`–`09` reference/analysis, `10`–`19` architecture &
+  renumbered into bands: `00`–`09` reference/analysis, `10`–`19` architecture &
   refactoring, `20`–`29` features, `30`–`39` Scout, `40`–`49` security & compliance,
   `50`–`59` testing/ops/deps.
 - Each migrated doc gained a `> **Status:**` block under its title recording a status
@@ -3177,11 +3250,11 @@ both were introduced during the migration rather than present in the original no
 - `.github/community/README.md`: full index by band, plus a note that migrated bodies
   are as-originally-written and their paths/line numbers have drifted.
 - `src/scout.rs`, `src/main.rs`: doc comments pointed at
-  `docs/roadmaps/bindy-scout-ingress-controller.md` — a path that has never existed in
+  `docs/roadmaps/bindy-scout-ingress-controller.md`, a path that has never existed in
   this repo. Repointed at `.github/community/30-SCOUT-INGRESS-CONTROLLER.md`.
 - `examples/dnssec-signing-enabled.yaml`, `docs/src/advanced/dnssec.md`,
   `docs/src/operations/dnszone-migration-troubleshooting.md`,
-  `docs/src/development/TEST_SUMMARY.md`, `scripts/fix-mkdocs-links.sh`: same fix — five
+  `docs/src/development/TEST_SUMMARY.md`, `scripts/fix-mkdocs-links.sh`: same fix: five
   more dead `docs/roadmaps/` references (three of them published GitHub URLs returning
   404) repointed at the migrated docs.
 
@@ -3191,11 +3264,11 @@ both were introduced during the migration rather than present in the original no
   "Appendix A", headings demoted one level.
 
 ### Not migrated
-- `medium-blog-post.md` — a blog draft, not a roadmap; left in the external set.
+- `medium-blog-post.md`: a blog draft, not a roadmap; left in the external set.
 
 ### Why
 Roadmaps were invisible to anyone reading the repo, and six documents linked to a
-`docs/roadmaps/` directory that does not exist — including three public GitHub URLs on
+`docs/roadmaps/` directory that does not exist, including three public GitHub URLs on
 the docs site that 404. Consolidating into `.github/community/` with a verified status
 board makes the backlog reviewable and the links resolvable.
 
@@ -3203,7 +3276,7 @@ board makes the backlog reviewable and the links resolvable.
 - [ ] Breaking change
 - [ ] Requires cluster rollout
 - [ ] Config change only
-- [x] Documentation only (two `.rs` changes are doc comments; `cargo fmt`/`clippy`/`test` green — 1,403 tests pass)
+- [x] Documentation only (two `.rs` changes are doc comments; `cargo fmt`/`clippy`/`test` green, 1,403 tests pass)
 
 ## [2026-09-10] - Roadmap: controller crate split & watch-layer simplification
 
@@ -3240,7 +3313,7 @@ branch.
 
 ### Fixed
 - `src/reconcilers/dnszone.rs`: after a BIND9 pod (or its whole Deployment) was wiped,
-  the zone reconciler recreated the zone from `spec` — SOA and NS records **only** — and
+  the zone reconciler recreated the zone from `spec` (SOA and NS records **only**) and
   then did nothing. The pod came back *authoritative* for an empty zone, answering
   authoritative NXDOMAIN for every name it should have served, or, with
   `global.recursion` + `global.forwarders` set, silently forwarding upstream and
@@ -3262,17 +3335,17 @@ branch.
   next reconciliation instead of being forgotten.
 - `src/reconcilers/records/mod.rs`: `replay_zone_records()` and `RecordReplayOutcome`.
   The replay reuses the record controllers' own BIND9 write path, so a replayed record is
-  identical to a normally reconciled one, and it is idempotent — against an endpoint that
+  identical to a normally reconciled one, and it is idempotent: against an endpoint that
   already holds the data it costs one DNS query per record and writes nothing. A single
   broken record is collected as a failure rather than aborting the whole replay.
-- `src/reconcilers/dnszone/types.rs`: `ZoneConfigOutcome.zones_created` — endpoints where
+- `src/reconcilers/dnszone/types.rs`: `ZoneConfigOutcome.zones_created`: endpoints where
   the zone was newly created by this reconciliation.
 - `src/reconcilers/dnszone/discovery.rs`: `zones_configured_on_instance()` maps a
   `Bind9Instance` back to the zones served by it.
 - `src/main.rs`: the `DNSZone` controller now watches `Endpoints`. An `Endpoints` object
   is named after the instance's Service and changes exactly when the set of ready BIND9
   pods changes, so a replaced pod triggers a zone reconciliation within seconds instead of
-  waiting up to the 5-minute requeue. No RBAC change — `endpoints` `get`/`list`/`watch`
+  waiting up to the 5-minute requeue. No RBAC change: `endpoints` `get`/`list`/`watch`
   was already granted.
 
 ### Changed
@@ -3283,8 +3356,8 @@ branch.
 
 ### Why
 Issue #486. BIND9 operand pods hold zone data in ephemeral storage, so any pod
-replacement — operator upgrade, `placement` change rolling the Deployment, eviction, node
-reboot, `kubectl delete pod` — loses every zone. Recreating the zone restored its shape
+replacement (operator upgrade, `placement` change rolling the Deployment, eviction, node
+reboot, `kubectl delete pod`) loses every zone. Recreating the zone restored its shape
 but never its contents, and the record CRs were not replayed because, as far as
 Kubernetes was concerned, nothing about them had changed. The only known repair was
 `kubectl -n bindy-system rollout restart deploy/bindy`, which worked purely because the
@@ -3313,7 +3386,7 @@ reconciliations. See `docs/src/operations/migration-guide.md` for the full rollo
   for an update. Switched to `directories: ["/docker"]`, which picks up
   `Dockerfile`, `Dockerfile.chainguard` and `Dockerfile.local`.
 - `docker/Dockerfile.chainguard`: `wolfi-base` and `glibc-dynamic` were pinned to the
-  floating `:latest` tag with no digest — nothing for Dependabot to bump, and a
+  floating `:latest` tag with no digest: nothing for Dependabot to bump, and a
   non-reproducible build. Both are now pinned to their multi-arch manifest list digests
   (OCI image index, linux/amd64 + linux/arm64), which is what the surrounding comments
   already claimed and what the repo's base-image policy requires.
@@ -3325,7 +3398,7 @@ reconciliations. See `docs/src/operations/migration-guide.md` for the full rollo
 
 ### Why
 Base images (Chainguard wolfi-base/glibc-dynamic, Google Distroless cc-debian13, Debian
-slim) were silently outside automated dependency updates — a CVE in a base layer would
+slim) were silently outside automated dependency updates; a CVE in a base layer would
 never have opened a PR.
 
 ### Impact
@@ -3350,7 +3423,7 @@ never have opened a PR.
   once in a new `Classify` step whose `auto-merge` output both the `auto-merge`
   and `hold-major` jobs branch on, so their conditions cannot drift apart.
   Eligible when patch/minor, **or** a human approved it, **or** the new version
-  contains no `.` (a commit SHA — an action pinned to a moving tag with no
+  contains no `.` (a commit SHA, i.e. an action pinned to a moving tag with no
   release, which can never yield a semver delta).
 
 ### Why
@@ -3370,7 +3443,7 @@ approving one re-ran nothing. Ported from the sceau investigation.
 ### Fixed
 - `src/scout.rs`: Scout started the `HTTPRoute`, `TLSRoute` and `TCPRoute` controllers
   unconditionally. On a cluster without the Gateway API CRDs every reconcile 404s and
-  retries forever — measured at ~18 `ERROR` lines a minute, indefinitely, for an API that
+  retries forever, measured at ~18 `ERROR` lines a minute, indefinitely, for an API that
   will never appear. `gateway_api_available` now probes once at startup and the three
   route controllers are only started when the kind is served; otherwise a single `info`
   line says so. Only a `404` counts as absent, so a transient API problem at startup
@@ -3384,8 +3457,8 @@ approving one re-ran nothing. Ported from the sceau investigation.
 
 ### Changed (review round 2)
 - The probe is now PER KIND (`kind_served<R>`), not `HTTPRoute` standing in for all three.
-  Gateway API ships in two channels and the kinds graduated separately — `HTTPRoute` Standard
-  since v1.0, `TLSRoute` v1.5, `TCPRoute` v1.6 — so a standard-channel install older than v1.5
+  Gateway API ships in two channels and the kinds graduated separately (`HTTPRoute` Standard
+  since v1.0, `TLSRoute` v1.5, `TCPRoute` v1.6), so a standard-channel install older than v1.5
   serves `HTTPRoute` and not the others. The original probe would have reported the Gateway API
   present and left the TLS/TCP controllers in exactly the 404 loop this PR removes. Each
   controller is now gated on its own kind.

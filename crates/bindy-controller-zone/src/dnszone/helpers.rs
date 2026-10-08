@@ -12,6 +12,6 @@
 // (ADR-0016), so the uncached `load_rndc_key` and `get_endpoint` are no longer
 // re-exported here.
 pub use bindy_bind9::instances::{
-    for_each_instance_endpoint, for_each_instance_endpoint_with_policy,
-    is_unavailable_for_deletion, EndpointFailurePolicy, HTTP_STATUS_NOT_FOUND,
+    for_each_instance_endpoint, for_each_instance_endpoint_with_policy, EndpointFailurePolicy,
+    HTTP_STATUS_NOT_FOUND,
 };

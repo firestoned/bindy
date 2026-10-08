@@ -49,6 +49,7 @@ use crate::crd::{Bind9Instance, DNSZone, InstanceStatus, ServerRole};
 use crate::labels::K8S_INSTANCE;
 use crate::watch::reports_duplicate;
 use anyhow::{anyhow, ensure};
+use bindy_bind9::bind9::zone_ops::ZonePresence;
 use bindy_bind9::instances::{
     cached_endpoints, get_instances_from_zone, instance_allows_zone_namespace,
     pod_containers_ready, EndpointAddress, InstanceResolver,
@@ -484,9 +485,11 @@ async fn served_by_sibling(
     }
     let manager = crate::dnszone::zone_manager_for_instance(ctx, &name, &namespace);
     for sibling in &siblings {
-        match manager.zone_exists(&zone.spec.zone_name, sibling).await {
-            Ok(false) => {}
-            Ok(true) => return true,
+        // Serving means loaded: a sibling with the zone configured but no data
+        // (a secondary whose transfer failed) serves nothing (ADR-0019).
+        match manager.zone_presence(&zone.spec.zone_name, sibling).await {
+            Ok(ZonePresence::Absent | ZonePresence::NotLoaded) => {}
+            Ok(ZonePresence::Loaded) => return true,
             Err(e) => {
                 warn!(
                     "Zones-loaded gate: cannot ask {sibling} whether it serves {}: {e:#}; assuming it does",
@@ -549,9 +552,17 @@ async fn set_gate(
 /// pod got it. The zone's status is not written: the updater the write paths
 /// need is discarded.
 ///
+/// On a secondary (ADR-0019, amending ADR-0017 decision 2): every primary's
+/// `allow-transfer` / `also-notify` is first rewritten to the zone's current
+/// peers, which include this pod, so its transfer is not denied; after the
+/// zone is created and a retransfer issued, a zone not loaded yet is a
+/// failure, so a pod whose sibling still serves the zone waits for its
+/// transfer.
+///
 /// # Errors
 /// Returns an error when the zone or any record could not be written to the
-/// pod.
+/// pod, when the primaries could not be told to allow it, or when a secondary
+/// has not transferred the zone yet.
 async fn load_zone_on_pod(
     ctx: &Arc<Context>,
     zone: &DNSZone,
@@ -570,30 +581,46 @@ async fn load_zone_on_pod(
         pod_ip,
     );
     let mut discarded = bindy_controller_sdk::status::DNSZoneStatusUpdater::new(zone);
+    let (primary_refs, _secondary_refs, peers) =
+        crate::dnszone::transfer_peers::zone_transfer_peers(ctx, &instance_refs).await?;
 
     if instance.spec.role == ServerRole::Secondary {
-        let primary_ips = bindy_bind9::primary::find_primary_ips_from_instances(
-            &ctx.client,
-            &ctx.stores.bind9_instances,
-            &instance_refs,
-        )
-        .await?;
         ensure!(
-            !primary_ips.is_empty(),
-            "no running primary to transfer the zone from"
+            !peers.primaries.is_empty(),
+            "no primary pod with its zones loaded to transfer the zone from"
         );
-        let outcome = crate::dnszone::add_dnszone_to_secondaries_with_resolver(
+        // The primaries must allow this pod before it asks for the zone.
+        let full_resolver = InstanceResolver::for_kube(&ctx.client, &ctx.stores);
+        let failures = crate::dnszone::transfer_peers::refresh_primary_peers(
+            ctx,
+            &zone.spec.zone_name,
+            &primary_refs,
+            &peers,
+            &full_resolver,
+        )
+        .await;
+        ensure!(
+            failures.is_empty(),
+            "the primaries could not be told to allow this pod: {}",
+            failures.join("; ")
+        );
+        let secondary = crate::dnszone::add_dnszone_to_secondaries_with_resolver(
             ctx.clone(),
             zone.clone(),
-            &primary_ips,
+            &peers.primaries,
             &mut discarded,
             &instance_refs,
+            false,
             &resolver,
         )
         .await?;
         ensure!(
-            outcome.endpoints_configured > 0,
+            secondary.outcome.endpoints_configured > 0,
             "the secondary zone was not configured on the pod"
+        );
+        ensure!(
+            secondary.not_loaded.is_empty(),
+            "the zone is configured on the pod but not transferred yet"
         );
         return Ok(());
     }
@@ -603,6 +630,7 @@ async fn load_zone_on_pod(
         zone.clone(),
         &mut discarded,
         &instance_refs,
+        &peers,
         &resolver,
     )
     .await?;

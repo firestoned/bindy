@@ -99,6 +99,20 @@ status:
     - Each entry contains `apiVersion`, `kind`, and `name` of the record resource
     - Automatically populated by record reconcilers after successful reconciliation
     - Provides real-time inventory of all DNS records associated with the zone
+  - `transferPeers`: the zone-transfer peers last pushed to every server
+    (ADR-0019): `primaries` (admitted primary pod IPs a secondary transfers
+    from), `secondaries` (secondary pod IPs in every primary's
+    `allow-transfer`) and `notify` (secondary Service ClusterIPs in every
+    primary's `also-notify`, port 53). Updated only once every server took
+    the new lists.
+- `Ready=True` requires every secondary to have the zone **loaded**, not only
+  configured. `Degraded` reasons from zone transfers: `SecondaryNotLoaded`
+  (a secondary has the zone configured but no data; the message names the
+  instance and endpoint), `TransferPeersNotUpdated` (a primary's
+  `allow-transfer` / `also-notify` could not be rewritten) and
+  `NoTransferSource` (no primary pod has its zones loaded yet). Records:
+  `RecordDeletionPending` (a deleted or unselected record's data is not yet
+  confirmed gone from every pod that holds the zone).
 
 ### DNS Records (A, AAAA, CNAME, MX, TXT, NS, SRV, CAA)
 - All use `Ready` condition type

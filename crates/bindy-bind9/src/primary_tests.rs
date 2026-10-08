@@ -103,32 +103,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_find_primary_ips_from_instances() {
-        // This test requires mocking the Kubernetes API
-        // For now, we document the expected behavior:
-        //
-        // Given: 3 instance references
-        //        AND 2 are PRIMARY instances
-        //        AND primary-1 has 2 running pods (IPs: 10.0.1.1, 10.0.1.2)
-        //        AND primary-2 has 1 running pod (IP: 10.0.2.1)
-        // When: find_primary_ips_from_instances is called
-        // Then: Should return vec!["10.0.1.1", "10.0.1.2", "10.0.2.1"]
-    }
-
-    #[tokio::test]
-    async fn test_find_primary_ips_from_instances_skips_secondary() {
-        // This test requires mocking the Kubernetes API
-        // For now, we document the expected behavior:
-        //
-        // Given: 3 instance references
-        //        AND 1 is PRIMARY with 1 running pod (IP: 10.0.1.1)
-        //        AND 2 are SECONDARY
-        // When: find_primary_ips_from_instances is called
-        // Then: Should return vec!["10.0.1.1"]
-        //       AND not include secondary pod IPs
-    }
-
-    #[tokio::test]
     async fn test_for_each_primary_endpoint_success() {
         // This test requires mocking the Kubernetes API
         // For now, we document the expected behavior:

@@ -1,7 +1,7 @@
 # Zone Spreading and Pod Placement
 
-Distribute DNS servers across availability zones — or racks, or any other
-failure domain your cluster labels nodes with — so a single domain outage
+Distribute DNS servers across availability zones, or racks, or any other
+failure domain your cluster labels nodes with, so a single domain outage
 cannot take out every nameserver at once.
 
 ## Why this needs its own feature
@@ -25,13 +25,13 @@ spec:
 ```
 
 creates **three `Bind9Instance` resources, each backed by a single-Pod
-Deployment** — not one three-Pod Deployment.
+Deployment**, not one three-Pod Deployment.
 
 That distinction is the whole problem. A `topologySpreadConstraint` balances
 the set of Pods matched by its `labelSelector`, bucketed by the value of
 `topologyKey` on their node. If the constraint selected only its own
-Deployment's Pods, the set would have exactly one member — always trivially
-balanced — so the constraint would be satisfied by *any* placement and all
+Deployment's Pods, the set would have exactly one member, always trivially
+balanced, so the constraint would be satisfied by *any* placement and all
 three primaries could still land in the same zone.
 
 Bindy solves this with [`scope`](#scope), which generates a selector matching
@@ -59,8 +59,8 @@ A single-primary cluster gets no constraint, because balancing one Pod is a
 no-op.
 
 The default is deliberately **soft** (`ScheduleAnyway`). A hard constraint on a
-single-zone cluster — or during the very zone outage this feature guards
-against — leaves DNS Pods `Pending`, trading degraded availability for a total
+single-zone cluster, or during the very zone outage this feature guards
+against, leaves DNS Pods `Pending`, trading degraded availability for a total
 outage. The scheduler still fills zones evenly whenever it can.
 
 ### Secondaries have no default
@@ -96,8 +96,8 @@ spec:
 
 Resolution is **whole-block**: the more specific level wins outright, and the
 other is not merged into it. That keeps "what will actually be scheduled"
-answerable by reading one block instead of mentally combining two —
-half-inherited scheduling rules are a bad failure mode, because a Pod in the
+answerable by reading one block instead of mentally combining two.
+Half-inherited scheduling rules are a bad failure mode, because a Pod in the
 wrong place is invisible until the outage.
 
 ### Spread rules
@@ -117,7 +117,7 @@ spec:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `topologyKey` | *(required)* | Node label defining the failure domain. A Kubernetes qualified name: optional ≤253-char prefix, `/`, ≤63-char name — 317 overall |
+| `topologyKey` | *(required)* | Node label defining the failure domain. A Kubernetes qualified name: optional ≤253-char prefix, `/`, ≤63-char name, 317 overall |
 | `maxSkew` | `1` | Largest permitted Pod-count difference between domains (1–100) |
 | `whenUnsatisfiable` | `ScheduleAnyway` | `DoNotSchedule` for a hard guarantee |
 | `scope` | `Role` (cluster-managed) / `Instance` (standalone) | Which Pods are balanced |
@@ -129,14 +129,14 @@ Each rule becomes one `topologySpreadConstraint`; at most 8 per Pod.
 
 Three states, and the difference matters:
 
-- **`spread` absent** — the operator applies its default (primaries only).
-- **`spread: []`** — explicitly no constraints. This is the opt-out.
-- **`spread: [...]`** — exactly these rules, and no default. This is also how
+- **`spread` absent**: the operator applies its default (primaries only).
+- **`spread: []`**: explicitly no constraints. This is the opt-out.
+- **`spread: [...]`**: exactly these rules, and no default. This is also how
   secondaries opt in.
 
 `spread` accepts at most 8 rules; the CRD schema rejects more at admission.
 
-### `topologyKey` — any node label works
+### `topologyKey`: any node label works
 
 This is the answer to "our cluster doesn't use `topology.kubernetes.io/zone`."
 Any node label is a valid failure domain:
@@ -166,8 +166,8 @@ Decides which Pods the scheduler counts per domain.
 | `Cluster` | `cluster` | Total DNS footprint per zone matters more than per-role balance. Set it on both role blocks so every Pod carries it |
 | `Instance` | the Deployment's own labels | **Default for a standalone `Bind9Instance`** with `replicas > 1` |
 
-`Role` and `Cluster` need an owning cluster — a standalone instance's Pods
-carry no cluster label — so they fall back to `Instance` with a warning.
+`Role` and `Cluster` need an owning cluster: a standalone instance's Pods
+carry no cluster label, so they fall back to `Instance` with a warning.
 
 ### What `placement` deliberately does not cover
 
@@ -175,7 +175,7 @@ carry no cluster label — so they fall back to `Instance` with a warning.
 `nodeSelector`, `tolerations`, or `affinity` passthrough.
 
 Two reasons. Embedding the full Kubernetes `Affinity` and `Toleration` schemas
-added roughly 450KB to the generated CRDs — more than the rest of the API
+added roughly 450KB to the generated CRDs, more than the rest of the API
 combined. And those three fields are precisely the primitives needed to
 schedule a Pod onto a control-plane node; since DNS Pods carry operator-issued
 credentials, accepting them would have meant shipping an allow-list validator
@@ -188,13 +188,13 @@ Pod, only how Pods are balanced across the ones that already are. See
 
 If you need DNS pinned to a particular node pool today, set `nodeSelector` or
 `tolerations` on the generated Deployment out-of-band, or open an issue
-describing the case — a small typed API for node tiering can be added without
+describing the case; a small typed API for node tiering can be added without
 re-opening this design.
 
 ## Validation
 
 Most invalid input is rejected by the API server at admission, from the CRD
-schema itself — no optional admission policy required:
+schema itself, with no optional admission policy required:
 
 | Rule | Enforced by |
 |---|---|
@@ -215,8 +215,8 @@ Invalid value: "object": minDomains is only valid together with
 whenUnsatisfiable: DoNotSchedule
 ```
 
-The reconciler re-validates as a backstop — for clusters still running an older
-CRD revision — and additionally rejects two rules sharing the same
+The reconciler re-validates as a backstop (for clusters still running an older
+CRD revision) and additionally rejects two rules sharing the same
 `(topologyKey, whenUnsatisfiable)` pair, which Kubernetes requires to be unique
 and which a structural schema cannot express cheaply. Those surface as a
 `Ready=False` condition naming the offending field.
@@ -251,8 +251,8 @@ And which zones they occupy:
 $ kubectl get pods -l bindy.firestoned.io/cluster=my-dns -o wide
 ```
 
-For a full local verification — including proving a hard constraint is really
-enforced — see [Testing on a multi-zone cluster](#testing-on-a-multi-zone-cluster).
+For a full local verification, including proving a hard constraint is really
+enforced, see [Testing on a multi-zone cluster](#testing-on-a-multi-zone-cluster).
 
 ## Testing on a multi-zone cluster
 
@@ -274,7 +274,7 @@ POD_NAMESPACE=bindy-system BINDY_ENABLE_LEADER_ELECTION=false cargo run -- run
 
 The script asserts the selector spans siblings, that `spec.selector` stays
 free of the cluster label, that placement changes converge onto existing
-Deployments, and — the decisive one — that with two of three zones cordoned
+Deployments, and (the decisive one) that with two of three zones cordoned
 the extra primaries go `Pending` citing topology spread constraints. That last
 check can only pass if the cross-instance selector is correct.
 
@@ -286,7 +286,7 @@ or a `minDomains` floor that is not met. Either add capacity in another
 domain, or relax the rule to `whenUnsatisfiable: ScheduleAnyway`.
 
 **Pods all land in one zone anyway.** Check the constraint's selector as
-above. Also confirm your nodes actually carry the topology label —
+above. Also confirm your nodes actually carry the topology label:
 `kubectl get nodes -L topology.kubernetes.io/zone`. A `topologyKey` no node
 has means one domain, and one domain is always balanced.
 
@@ -307,6 +307,6 @@ kubectl patch bind9cluster my-dns --type=merge \
 
 ## Related
 
-- [ADR-0003](https://github.com/firestoned/bindy/blob/main/docs/adr/0003-pod-placement-and-zone-spreading.md) — the design and what was deliberately left out
-- [Multi-Region Setup](multi-region.md) — spanning regions, not just zones
+- [ADR-0003](https://github.com/firestoned/bindy/blob/main/docs/adr/0003-pod-placement-and-zone-spreading.md): the design and what was deliberately left out
+- [Multi-Region Setup](multi-region.md): spanning regions, not just zones
 - [`examples/zone-spreading.yaml`](https://github.com/firestoned/bindy/blob/main/examples/zone-spreading.yaml)

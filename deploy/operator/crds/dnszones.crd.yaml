@@ -999,6 +999,55 @@ spec:
                   The controller clears it only after every record has been successfully
                   pushed to every primary endpoint.
                 type: boolean
+              transferPeers:
+                description: |-
+                  The zone-transfer peers last pushed to every server of this zone
+                  (ADR-0019).
+
+                  Written by the `DNSZone` controller only after every primary accepted
+                  the `allow-transfer` / `also-notify` lists and every secondary the
+                  `primaries` list. A reconcile whose desired peers differ from these
+                  pushes the new lists; one whose peers are unchanged makes no peer
+                  call. Absent on a zone not yet reconciled by a version that records
+                  it, which makes the first such reconcile push to every server.
+
+                  # Example
+
+                  ```yaml
+                  transferPeers:
+                    primaries: ["10.244.1.7", "10.244.2.9"]
+                    secondaries: ["10.244.3.4"]
+                    notify: ["10.96.41.12"]
+                  ```
+                nullable: true
+                properties:
+                  notify:
+                    default: []
+                    description: |-
+                      Addresses a primary sends NOTIFY to (`also-notify`): the ClusterIP of
+                      each secondary instance's Service, reached on port 53.
+                    items:
+                      type: string
+                    type: array
+                  primaries:
+                    default: []
+                    description: |-
+                      IPs of the primary pods a secondary transfers the zone from: the
+                      zone's primary instances' pods that are running, not terminating and
+                      admitted by the zones-loaded gate.
+                    items:
+                      type: string
+                    type: array
+                  secondaries:
+                    default: []
+                    description: |-
+                      IPs of the secondary pods a primary allows to transfer the zone
+                      (`allow-transfer`): the zone's secondary instances' pods that are
+                      running and not terminating.
+                    items:
+                      type: string
+                    type: array
+                type: object
             type: object
         required:
         - spec

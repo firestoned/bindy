@@ -249,6 +249,7 @@ nav:
           - Operands in Other Namespaces: operations/multi-namespace.md
           - Resource Limits: operations/resources.md
           - High Availability: operations/operator-ha.md
+          - Failure Behaviour and Resilience: operations/failure-behaviour.md
       - Monitoring:
           - Overview: operations/monitoring.md
           - Status Conditions: operations/status.md
@@ -293,6 +294,7 @@ nav:
           - Overview: development/setup.md
           - Building: development/building.md
           - Testing Guide: development/testing-guide.md
+          - Chaos Testing: development/chaos-testing.md
           - Test Summary: development/TEST_SUMMARY.md
           - Coverage: development/test-coverage.md
           - Workflow: development/workflow.md
