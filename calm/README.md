@@ -1,9 +1,9 @@
-# CALM — Architecture as Code
+# CALM: Architecture as Code
 
 This directory holds the [FINOS **CALM** (Common Architecture Language Model)](https://calm.finos.org/)
 description of Bindy's architecture. CALM documents are machine-readable JSON
 (schema **1.2**) and are the **source of truth** for the architecture diagrams
-published in the docs — the Mermaid pages under `docs/src/architecture/` are
+published in the docs: the Mermaid pages under `docs/src/architecture/` are
 generated from these files, never hand-drawn.
 
 ## Models
@@ -15,8 +15,8 @@ generated from these files, never hand-drawn.
 
 Each `*.architecture.json` has:
 
-- **`nodes`** — components/services/data-assets (each with a stable `unique-id`).
-- **`relationships`** — `connects` / `composed-of` edges between nodes, optionally
+- **`nodes`**: components/services/data-assets (each with a stable `unique-id`).
+- **`relationships`**: `connects` / `composed-of` edges between nodes, optionally
   carrying a `protocol` (e.g. `HTTPS`, `TCP`).
 
 ## Working with these files
@@ -34,7 +34,7 @@ make calm-docs-check   # fail if the committed Mermaid pages are stale
 ### Editing workflow
 
 1. Edit or add a `*.architecture.json` model here.
-2. Run `make calm-validate` — it must pass (the Build workflow enforces this on PRs).
+2. Run `make calm-validate`; it must pass (the Build workflow enforces this on PRs).
 3. Run `make calm-docs` to regenerate the diagram pages, and commit both the
    model **and** the regenerated `docs/src/architecture/calm-*.md`.
 
@@ -45,5 +45,5 @@ make calm-docs-check   # fail if the committed Mermaid pages are stale
 
 CALM keeps the architecture description versioned, reviewable and diffable
 alongside the code it documents, and lets the diagrams be regenerated
-deterministically rather than maintained by hand — matching this project's
+deterministically rather than maintained by hand, matching this project's
 compliance requirement that architecture be auditable and traceable.
