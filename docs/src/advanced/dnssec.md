@@ -271,7 +271,7 @@ kubectl -n bindy-system create secret generic bindy-dnssec-keys-example-com "${a
 
 | Algorithm | OID | Recommended Use |
 |-----------|-----|-----------------|
-| `ECDSAP256SHA256` | 13 | **Default — modern, fast, small keys** |
+| `ECDSAP256SHA256` | 13 | **Default: modern, fast, small keys** |
 | `ECDSAP384SHA384` | 14 | Higher security margin, slightly larger |
 | `RSASHA256` | 8 | Legacy compatibility only |
 
@@ -321,13 +321,13 @@ status:
 ```
 
 `nextKeyRollover` is the next KSK/CSK rollover event BIND has scheduled
-(server-local clock), read from the sidecar's `rndc dnssec -status` parsing —
-it needs the bindcar `v0.8.2`+ sidecar and is omitted with older sidecars.
+(server-local clock), read from the sidecar's `rndc dnssec -status` parsing.
+It needs the bindcar `v0.8.2`+ sidecar and is omitted with older sidecars.
 `lastKeyRollover` is always `null` today: bindcar exposes the next scheduled
 event and current key states, not rollover history.
 
 `signed: false` with empty `dsRecords` means the zone has a DNSSEC policy but
-BIND9 is still generating its keys — the status refreshes on the next
+BIND9 is still generating its keys; the status refreshes on the next
 reconcile. A zone with `dnssecPolicy: "none"` reports no `dnssec` status at
 all.
 
@@ -351,19 +351,19 @@ The manual output must match `.status.dnssec.dsRecords`.
 | **RRSIG** | Cryptographic signatures for each RRset |
 | **NSEC** | Proof of non-existence (zone-enumerable) |
 | **NSEC3** | Privacy-preserving proof of non-existence (hashed names) |
-| **DS** | Delegation signer — published in the parent zone |
+| **DS** | Delegation signer, published in the parent zone |
 
 ---
 
 ## Best Practices
 
-1. **Test in staging first** — Enable signing on non-critical zones before production
-2. **Use NSEC3** — Set `nsec3: true` and `nsec3Iterations: 0` per RFC 9276
-3. **Use ECDSAP256SHA256** — Modern, compact, widely supported
-4. **Back up keys** — Set `exportToSecret: true` or use `keysFrom.secretRef` for user-managed keys
-5. **Publish DS records promptly** — Signed zones without a parent DS record are signed but not validated by resolvers
-6. **Monitor for expiry** — Alert on RRSIG validity windows; BIND9 auto-renews but monitor for issues
-7. **Plan DS rollovers** — KSK rollovers require coordinating DS record updates with the parent zone
+1. **Test in staging first**: Enable signing on non-critical zones before production
+2. **Use NSEC3**: Set `nsec3: true` and `nsec3Iterations: 0` per RFC 9276
+3. **Use ECDSAP256SHA256**: Modern, compact, widely supported
+4. **Back up keys**: Set `exportToSecret: true` or use `keysFrom.secretRef` for user-managed keys
+5. **Publish DS records promptly**: Signed zones without a parent DS record are signed but not validated by resolvers
+6. **Monitor for expiry**: Alert on RRSIG validity windows; BIND9 auto-renews but monitor for issues
+7. **Plan DS rollovers**: KSK rollovers require coordinating DS record updates with the parent zone
 
 ---
 

@@ -7,29 +7,38 @@
 //! managing status updates and error handling throughout the configuration process.
 
 use anyhow::{anyhow, Result};
+use bindy_bind9::peers::peer_changes;
 use kube::ResourceExt;
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, info};
 
+use super::transfer_peers::{
+    mark_no_transfer_source, mark_peer_refresh_failed, mark_secondaries_not_loaded, PeerPushResult,
+};
 use crate::crd::{DNSZone, InstanceReference};
 
 /// Configure zone on all BIND9 instances (primary and secondary).
 ///
 /// This function orchestrates the complete BIND9 configuration workflow:
 /// 1. Sets initial "Progressing" status
-/// 2. Finds primary server IPs for secondary configuration
-/// 3. Configures zone on all primary instances
-/// 4. Configures zone on all secondary instances
-/// 5. Updates status conditions based on success/failure
+/// 2. Computes the zone's transfer peers from the stores and compares them
+///    with the ones last pushed (`status.transferPeers`, ADR-0019)
+/// 3. Configures zone on all primary instances (a zone created here gets the
+///    current peers)
+/// 4. When the secondaries or their NOTIFY targets moved, rewrites every
+///    primary's `allow-transfer` / `also-notify`
+/// 5. Configures zone on all secondary instances, replacing the zone where
+///    the transfer sources moved, and reports secondaries not loaded
+/// 6. Records the peers once every server took them
 ///
 /// # Arguments
 ///
 /// * `ctx` - Application context with Kubernetes client
 /// * `dnszone` - The DNSZone resource being reconciled
-/// * `zone_manager` - BIND9 manager for zone operations
 /// * `status_updater` - Status updater for condition updates
 /// * `instance_refs` - All instance references assigned to the zone
-/// * `unreconciled_instances` - Instances that need reconciliation (Phase 2 optimization)
+/// * `_unreconciled_instances` - Unused: every instance is configured on every
+///   reconcile
 ///
 /// # Returns
 ///
@@ -40,13 +49,13 @@ use crate::crd::{DNSZone, InstanceReference};
 /// # Errors
 ///
 /// Returns an error if:
-/// - No primary servers are found (cannot configure secondary zones)
+/// - No primary instance is assigned (cannot configure secondary zones)
 /// - Primary configuration fails completely
 /// - Kubernetes API operations fail
 ///
-/// Note: Secondary configuration failure is non-fatal and logged as a warning.
-/// On every fatal error path the Ready condition is set to False and the
-/// Progressing condition is resolved before the error is returned.
+/// Note: Secondary configuration failure is non-fatal and reported through
+/// `Degraded`. On every fatal error path the Ready condition is set to False
+/// and the Progressing condition is resolved before the error is returned.
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_lines)]
 pub async fn configure_zone_on_instances(
@@ -73,81 +82,107 @@ pub async fn configure_zone_on_instances(
         "Configuring zone on primary servers",
     );
 
-    // Get current primary IPs for secondary zone configuration
-    // Find all primary instances from our instance refs and get their pod IPs
-    let primary_ips = match super::primary::find_primary_ips_from_instances(
-        &client,
-        &ctx.stores.bind9_instances,
-        instance_refs,
-    )
-    .await
-    {
-        Ok(ips) if !ips.is_empty() => {
-            debug!(
-                "Found {} primary server IP(s) for zone {}/{}: {:?}",
-                ips.len(),
-                namespace,
-                spec.zone_name,
-                ips
-            );
-            ips
-        }
-        Ok(_) => {
-            let message = "No primary servers found - cannot configure secondary zones";
-            set_failure_conditions(status_updater, "PrimaryFailed", message);
-            // Apply status before returning error
-            status_updater.apply(&client).await?;
-            return Err(anyhow!(
-                "No primary servers found for zone {}/{} - cannot configure secondary zones",
-                namespace,
-                spec.zone_name
-            ));
-        }
-        Err(e) => {
-            set_failure_conditions(
-                status_updater,
-                "PrimaryFailed",
-                &format!("Failed to find primary servers: {e}"),
-            );
-            // Apply status before returning error
-            status_updater.apply(&client).await?;
-            return Err(e);
-        }
-    };
-
-    // Add/update zone on all primary instances
-    // Primary instances are marked as reconciled inside add_dnszone() immediately after success
-    // CRITICAL: We pass ALL instances (not just unreconciled ones) to ensure zones are recreated
-    // after pod restarts. The add_zones() function is idempotent (checks zone_exists first).
-    let primary_outcome =
-        match super::add_dnszone(ctx.clone(), dnszone.clone(), status_updater, instance_refs).await
-        {
-            Ok(outcome) => {
-                // Update status after successful primary reconciliation (in-memory)
-                status_updater.set_condition(
-                    "Progressing",
-                    "True",
-                    "PrimaryReconciled",
-                    &format!(
-                        "Zone {} configured on {} primary instance(s) ({} endpoint(s))",
-                        spec.zone_name, outcome.instances_configured, outcome.endpoints_configured
-                    ),
-                );
-                outcome
-            }
+    // The peers the zone should carry now, from the Pod store (ADR-0019).
+    let (primary_refs, secondary_refs, peers) =
+        match super::transfer_peers::zone_transfer_peers(&ctx, instance_refs).await {
+            Ok(found) => found,
             Err(e) => {
                 set_failure_conditions(
                     status_updater,
                     "PrimaryFailed",
-                    &format!("Failed to configure zone on primary servers: {e}"),
+                    &format!("Failed to find the zone's instances: {e}"),
                 );
-                // Apply status before returning error
                 status_updater.apply(&client).await?;
                 return Err(e);
             }
         };
 
-    // Update to secondary reconciliation phase (in-memory)
+    if primary_refs.is_empty() {
+        let message = "No primary servers found - cannot configure secondary zones";
+        set_failure_conditions(status_updater, "PrimaryFailed", message);
+        status_updater.apply(&client).await?;
+        return Err(anyhow!(
+            "No primary servers found for zone {}/{} - cannot configure secondary zones",
+            namespace,
+            spec.zone_name
+        ));
+    }
+
+    let recorded = dnszone
+        .status
+        .as_ref()
+        .and_then(|status| status.transfer_peers.as_ref());
+    let changes = peer_changes(recorded, &peers);
+    if changes.any() {
+        info!(
+            "Transfer peers of zone {}/{} changed (primaries: {}, secondaries/notify: {}): recorded {:?}, now {:?}",
+            namespace,
+            spec.zone_name,
+            changes.primaries_changed,
+            changes.secondaries_changed,
+            recorded,
+            peers
+        );
+    } else {
+        debug!(
+            "Transfer peers of zone {}/{} unchanged: {:?}",
+            namespace, spec.zone_name, peers
+        );
+    }
+
+    // Add/update zone on all primary instances. A zone created here gets the
+    // current peers. We pass ALL instances (not just unreconciled ones) so
+    // zones are recreated after pod restarts; add is idempotent.
+    let primary_outcome = match super::add_dnszone(
+        ctx.clone(),
+        dnszone.clone(),
+        status_updater,
+        instance_refs,
+        &peers,
+    )
+    .await
+    {
+        Ok(outcome) => {
+            status_updater.set_condition(
+                "Progressing",
+                "True",
+                "PrimaryReconciled",
+                &format!(
+                    "Zone {} configured on {} primary instance(s) ({} endpoint(s))",
+                    spec.zone_name, outcome.instances_configured, outcome.endpoints_configured
+                ),
+            );
+            outcome
+        }
+        Err(e) => {
+            set_failure_conditions(
+                status_updater,
+                "PrimaryFailed",
+                &format!("Failed to configure zone on primary servers: {e}"),
+            );
+            status_updater.apply(&client).await?;
+            return Err(e);
+        }
+    };
+
+    let mut push = PeerPushResult::default();
+
+    // The secondaries (or the Services NOTIFY reaches them through) moved:
+    // rewrite every primary's allow-transfer / also-notify BEFORE the
+    // secondaries are pointed at them, so a new secondary is allowed first.
+    if changes.secondaries_changed {
+        let resolver = bindy_bind9::instances::InstanceResolver::for_kube(&ctx.client, &ctx.stores);
+        push.primary_failures = super::transfer_peers::refresh_primary_peers(
+            &ctx,
+            &spec.zone_name,
+            &primary_refs,
+            &peers,
+            &resolver,
+        )
+        .await;
+        mark_peer_refresh_failed(status_updater, &spec.zone_name, &push.primary_failures);
+    }
+
     status_updater.set_condition(
         "Progressing",
         "True",
@@ -155,52 +190,75 @@ pub async fn configure_zone_on_instances(
         "Configuring zone on secondary servers",
     );
 
-    // Add/update zone on all secondary instances with primaries configured
-    // Secondary instances are marked as reconciled inside add_dnszone_to_secondaries() immediately after success
-    // CRITICAL: We pass ALL instances (not just unreconciled ones) to ensure zones are recreated
-    // after pod restarts. The add_zones() function is idempotent (checks zone_exists first).
-    let secondary_outcome = match super::add_dnszone_to_secondaries(
-        ctx.clone(),
-        dnszone.clone(),
-        &primary_ips,
-        status_updater,
-        instance_refs,
-    )
-    .await
-    {
-        Ok(outcome) => {
-            // Update status after successful secondary reconciliation (in-memory)
-            if outcome.endpoints_configured > 0 {
+    let secondary_outcome = if secondary_refs.is_empty() {
+        super::types::ZoneConfigOutcome::default()
+    } else if peers.primaries.is_empty() {
+        // Every primary pod is still loading its zones (or none runs): the
+        // secondaries keep what they have until one is admitted, whose
+        // Endpoints change wakes this zone.
+        push.secondaries_skipped = true;
+        mark_no_transfer_source(status_updater, &spec.zone_name);
+        super::types::ZoneConfigOutcome::default()
+    } else {
+        match super::add_dnszone_to_secondaries(
+            ctx.clone(),
+            dnszone.clone(),
+            &peers.primaries,
+            status_updater,
+            instance_refs,
+            changes.primaries_changed,
+        )
+        .await
+        {
+            Ok(secondary) => {
+                push.secondary_failures = secondary.failures;
+                mark_secondaries_not_loaded(status_updater, &spec.zone_name, &secondary.not_loaded);
+                if secondary.outcome.endpoints_configured > 0 {
+                    status_updater.set_condition(
+                        "Progressing",
+                        "True",
+                        "SecondaryReconciled",
+                        &format!(
+                            "Zone {} configured on {} secondary instance(s) ({} endpoint(s))",
+                            spec.zone_name,
+                            secondary.outcome.instances_configured,
+                            secondary.outcome.endpoints_configured
+                        ),
+                    );
+                }
+                secondary.outcome
+            }
+            Err(e) => {
+                // Secondary failure is non-fatal - primaries still work
+                tracing::warn!(
+                    "Failed to configure zone on secondary servers: {}. Primary servers are still operational.",
+                    e
+                );
+                push.secondary_failures += 1;
                 status_updater.set_condition(
-                    "Progressing",
+                    "Degraded",
                     "True",
-                    "SecondaryReconciled",
+                    "SecondaryFailed",
                     &format!(
-                        "Zone {} configured on {} secondary instance(s) ({} endpoint(s))",
-                        spec.zone_name, outcome.instances_configured, outcome.endpoints_configured
+                        "Zone configured on {} primary instance(s) but secondary configuration failed: {e}",
+                        primary_outcome.instances_configured
                     ),
                 );
+                super::types::ZoneConfigOutcome::default()
             }
-            outcome
-        }
-        Err(e) => {
-            // Secondary failure is non-fatal - primaries still work
-            tracing::warn!(
-                "Failed to configure zone on secondary servers: {}. Primary servers are still operational.",
-                e
-            );
-            status_updater.set_condition(
-                "Degraded",
-                "True",
-                "SecondaryFailed",
-                &format!(
-                    "Zone configured on {} primary instance(s) but secondary configuration failed: {e}",
-                    primary_outcome.instances_configured
-                ),
-            );
-            super::types::ZoneConfigOutcome::default()
         }
     };
+
+    // Record the peers only once every server names them; otherwise the next
+    // reconcile (a backoff retry, the zone is Degraded) pushes them again.
+    if push.complete() {
+        status_updater.set_transfer_peers(peers);
+    } else {
+        debug!(
+            "Transfer peers of zone {}/{} not fully pushed ({:?}); not recording them",
+            namespace, spec.zone_name, push
+        );
+    }
 
     Ok((primary_outcome, secondary_outcome))
 }

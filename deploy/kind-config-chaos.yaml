@@ -1,0 +1,15 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: Apache-2.0
+#
+# kind cluster for the chaos e2e suite (tests/e2e/chaos_test.sh).
+#
+# One control plane and two workers, so a BIND9 pod deleted from a cordoned
+# node can reschedule onto another one (chaos step 14). No host port mappings:
+# the chaos suite queries everything from inside the cluster, and leaving host
+# ports out lets this cluster run beside the other e2e clusters.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker

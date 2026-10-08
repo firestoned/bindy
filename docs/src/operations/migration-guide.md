@@ -2,6 +2,46 @@
 
 This document collects the breaking-change migrations for Bindy, newest first.
 
+## Zone transfer peers follow the pods (ADR-0019)
+
+Apply the regenerated `DNSZone` CRD before the new operator: the status
+gains `transferPeers` (additive; an old CRD prunes it and every reconcile
+would push the peers again). No flag or RBAC change.
+
+- **First reconcile after the upgrade pushes every zone's peers once.**
+  Zones reconciled by an older operator have no `status.transferPeers`, so
+  every primary's `allow-transfer` / `also-notify` is rewritten in place
+  and every secondary zone is **replaced** (deleted, created again with the
+  current primaries, retransferred). Each secondary answers `SERVFAIL` for a
+  zone for the length of one AXFR while it is replaced; the primaries keep
+  answering. This is also what repairs a cluster that hit the v0.8.0-rc.7
+  bug (a secondary with no copy of the zone).
+- **`also-notify` now targets the secondary instance's Service** (its
+  ClusterIP, port 53) instead of the secondary pods on 5353, so it survives
+  secondary pod replacement and can be rewritten in place by bindcar 0.9.0.
+  Zones created by an older operator keep their old `also-notify` until
+  their primary pod is replaced: roll the BIND9 pods once after upgrading
+  (`kubectl rollout restart deployment -n <ns> -l app=bind9`; the rollouts
+  are staggered).
+- **A zone is `Ready` only when every secondary has it loaded.** A
+  secondary with the zone configured but no data makes the zone
+  `Degraded=True` / `Ready=False` with reason `SecondaryNotLoaded`. Alerts
+  on `DNSZone` readiness may fire for a few seconds after a secondary pod is
+  replaced, until its transfer completes.
+- **A bindcar env var removed from `bindcarConfig` now leaves the pods.**
+  Removing one rolls the instances (staggered); before, the removal never
+  took effect.
+- **Record and zone deletions wait for every pod that holds the zone.** A
+  deletion while a primary's container restarts now completes a few seconds
+  later instead of leaving the record served. A pod that never becomes ready
+  again blocks the deletion (`RecordDeletionPending`) until it is deleted.
+  Record writes made while such a pod is down are retried until it is back.
+- **The leader election has its own Kubernetes client** (not counted in
+  `BINDY_KUBE_QPS`) with an 8 s request deadline, and renews the lease one
+  retry period after each renewal. Lease API traffic rises from about one
+  request every 13 s to one every 2 s per operator, the cadence of
+  client-go's leader election.
+
 ## Rollouts hand over at termination and are staggered across instances (ADR-0017 amendment, ADR-0018)
 
 No CRD, flag or RBAC change (the `pods/status` grant of ADR-0017 covers the
@@ -155,11 +195,11 @@ bindy changed. What bindy gains:
 - `DNSZone.status.dnssec.nextKeyRollover` is now populated for signed zones
   from the sidecar's `rndc dnssec -status` parsing (the field existed since
   [ADR-0006](https://github.com/firestoned/bindy/blob/main/docs/adr/0006-dnssec-ds-record-status-reporting.md)
-  but had no data source). `lastKeyRollover` remains `null` — bindcar 0.8.x
+  but had no data source). `lastKeyRollover` remains `null`: bindcar 0.8.x
   exposes the next scheduled event and current key states, not history.
 - The v0.8.1 tag of bindcar carries a `Cargo.toml` version of `0.8.0`
   (tag/version divergence); v0.8.2 is the corrected release. Deployments
-  should skip v0.8.1 images — they self-report `0.8.0`.
+  should skip v0.8.1 images: they self-report `0.8.0`.
 
 
 ## Options rendering: explicit `dnssec.validation` always honored; cluster-level transfers denied by default (ADR-0007)
@@ -172,7 +212,7 @@ their next config rollout.
 
 **1. `dnssec-validation` is now rendered whenever `dnssec` is configured.**
 Previously, a `Bind9Instance` with **no** `spec.config` block ignored a
-cluster-global `dnssec.validation: false` and emitted no directive — and an
+cluster-global `dnssec.validation: false` and emitted no directive, and an
 absent directive means `auto` to `named`, i.e. validation ON. Explicit
 configuration is now always honored.
 
@@ -185,14 +225,14 @@ configuration is now always honored.
 
 **2. Cluster-level options now deny zone transfers by default.** The
 cluster-level `named.conf.options` builder previously emitted no
-`allow-transfer` directive when `spec.global.allowTransfer` was unset —
+`allow-transfer` directive when `spec.global.allowTransfer` was unset,
 and BIND 9.18's own default allows AXFR to **any** host. It now renders
 `allow-transfer { none; };`, matching the instance-level builder (#466).
 
 - *How to detect:* anything performing ad-hoc AXFR (monitoring probes,
   scripts using `dig axfr`) against operands configured via the
   cluster-level ConfigMap will start receiving transfer refusals.
-  Operator-managed secondaries are unaffected — per-zone ACLs with the
+  Operator-managed secondaries are unaffected: per-zone ACLs with the
   secondaries' IPs override the options-level default.
 - *Remediation:* add the consumers' CIDRs to
   `Bind9Cluster.spec.global.allowTransfer`.
@@ -201,9 +241,9 @@ and BIND 9.18's own default allows AXFR to **any** host. It now renders
 ## `DNSZone` gains `status.recordsResyncPending` (record replay after a pod is wiped)
 
 Fixes [#486](https://github.com/firestoned/bindy/issues/486). BIND9 operand pods
-hold zone data in ephemeral storage, so any pod replacement — an operator
+hold zone data in ephemeral storage, so any pod replacement (an operator
 upgrade, a `placement` change that rolls the Deployment, an eviction, a node
-reboot, a `kubectl delete pod` — brings the pod back with no zones. The operator
+reboot, a `kubectl delete pod`) brings the pod back with no zones. The operator
 recreated the zone from `spec` (SOA and NS records only) but never replayed the
 record CRs, leaving the server **authoritative for an empty zone**: authoritative
 NXDOMAIN, or, with `global.recursion` + `global.forwarders`, the silently
@@ -240,7 +280,7 @@ be recreated. Rolling the CRDs does not interrupt DNS serving.
 
 1. Re-apply the CRDs (above).
 2. Roll out the new operator image.
-3. Verify — a healthy zone reports the field as `false`:
+3. Verify that a healthy zone reports the field as `false`:
 
 ```bash
 kubectl get dnszone <zone-name> -n bindy-system \
@@ -253,7 +293,7 @@ kubectl get dnszone <zone-name> -n bindy-system \
 A `DNSZone` with an outstanding record replay now reports `Ready=False` /
 `Degraded=True` with reason `RecordsResyncPending`. If you have automation or
 alerting that gates on `DNSZone` readiness, it will now (correctly) fire while a
-zone's records are being restored after a pod restart — typically for a few
+zone's records are being restored after a pod restart, typically for a few
 seconds. A zone stuck in that state means the replay is failing rather than
 pending; the `Degraded` message names each record that could not be pushed. See
 [Common Issues](./common-issues.md#zone-answers-nxdomain-or-a-public-address-after-a-pod-restart).
@@ -262,7 +302,7 @@ pending; the `Degraded` message names each record that could not be pushed. See
 
 `named` now binds the **unprivileged container port 5353** instead of 53, so the
 operand container drops the `NET_BIND_SERVICE` capability entirely (it now adds
-**no** capabilities — the strictest posture under PSA `restricted`). The DNS
+**no** capabilities, the strictest posture under PSA `restricted`). The DNS
 Service is unchanged from a client's view: it still exposes **53** and forwards
 to `targetPort: 5353`, so `dig @<service>` on port 53 keeps working.
 
@@ -298,17 +338,17 @@ already emits.
 
 - **TLS and mutual TLS are available** for bindcar's REST API
   (`BIND_TLS_CERT` / `BIND_TLS_KEY` / `BIND_TLS_CLIENT_CA`), with certificate
-  hot-reload (`BIND_TLS_RELOAD_INTERVAL`, default 60s). TLS is **opt-in** —
+  hot-reload (`BIND_TLS_RELOAD_INTERVAL`, default 60s). TLS is **opt-in**;
   bindcar serves plaintext unless configured otherwise, so this changes nothing
   until bindy grows a way to configure it.
 - **Rate-limit defaults were raised** at v0.7.4: `RATE_LIMIT_REQUESTS`
-  100 → 600 and the burst 10 → 50. This is a fix, not a regression — the old
+  100 → 600 and the burst 10 → 50. This is a fix, not a regression: the old
   burst of 10 guaranteed HTTP 429 during the record replay that follows a BIND9
   pod restart, turning a ~30s recovery into ~130s. Bindy does not set these, so
   it simply inherits the better defaults.
 - **The crate is feature-gated.** Bindy now depends on
   `bindcar = { version = "0.8", default-features = false }`, which drops
-  bindcar's HTTP and TLS stacks from bindy's dependency graph — **31 crates**,
+  bindcar's HTTP and TLS stacks from bindy's dependency graph: **31 crates**,
   including `utoipa`, `utoipa-swagger-ui`, `rust-embed`, `tower-http`,
   `tower_governor` and `governor`. Bindy imports only the data types
   (`ZoneConfig`, `SoaRecord`, `DnsRecord`, `ZoneResponse`, `ZONE_TYPE_*`), which
@@ -320,7 +360,7 @@ already emits.
 bindcar v0.7.3 (the `_total` suffix is reserved for counters, and this is a
 gauge). Bindy's bundled Grafana dashboard and metrics reference have been
 updated. **If you maintain your own dashboards or `PrometheusRule`s against the
-old name, they are silently returning no data** — rename them. During a rolling
+old name, they are silently returning no data**. Rename them. During a rolling
 upgrade, `bindcar_zones_managed or bindcar_zones_managed_total` covers both.
 
 ### Still outstanding
@@ -343,7 +383,7 @@ operator authenticates to the bindcar API with an audience-scoped
 ServiceAccount token, which bindcar validates via a Kubernetes TokenReview.
 
 > ⚠️ **This upgrade is rollout-blocking.** A v0.6.0-shaped deployment will not
-> come up under bindcar 0.7.0 — follow every step below before rolling out.
+> come up under bindcar 0.7.0; follow every step below before rolling out.
 
 ### What changed in Bindy
 
@@ -351,8 +391,8 @@ ServiceAccount token, which bindcar validates via a Kubernetes TokenReview.
 |---|---|---|
 | **Auth** | Presence-only Bearer token | TokenReview with enforced `bindcar` audience; allow-list names the **operator** SA (`system:serviceaccount:<operator-ns>:bindy`) |
 | **DNS port** | `named` listened on 5353 (non-privileged) | `named` listens on **53** with `NET_BIND_SERVICE` (the one capability PSA `restricted` allows); Service `targetPort` follows |
-| **Secondary zones** | `primaries` sent as `"<ip> port 5353"` | Plain IPs only — bindcar rejects non-IP entries with HTTP 400 |
-| **RNDC keys** | `hmac-sha1` accepted | **SHA-2 only** — `hmac-md5`/`hmac-sha1` rejected by both Bindy's parsers and bindcar |
+| **Secondary zones** | `primaries` sent as `"<ip> port 5353"` | Plain IPs only; bindcar rejects non-IP entries with HTTP 400 |
+| **RNDC keys** | `hmac-sha1` accepted | **SHA-2 only**: `hmac-md5`/`hmac-sha1` rejected by both Bindy's parsers and bindcar |
 | **Sidecar pod shape** | Writable rootfs, no seccomp | `readOnlyRootFilesystem: true`, `RuntimeDefault` seccomp, memory-backed `emptyDir` at `/tmp` + `TMPDIR` |
 | **Swagger/OpenAPI** | Served by default | Off unless `BIND_ENABLE_DOCS=true` (set it via `bindcarConfig.envVars` for dev only; `/api/v1/health`, `/api/v1/ready`, `/metrics` unchanged) |
 
@@ -380,7 +420,7 @@ ServiceAccount token, which bindcar validates via a Kubernetes TokenReview.
 
 4. **NetworkPolicy** (recommended): apply `deploy/pod-hardening.yaml` and
    **replace the fail-closed `10.0.0.1/32` placeholder** with your real
-   kube-apiserver endpoint/CIDR — TokenReview (and therefore every
+   kube-apiserver endpoint/CIDR: TokenReview (and therefore every
    authenticated bindcar request) is denied without it.
 
 5. **PSA `restricted`** (recommended): label the operand namespace(s):
@@ -415,7 +455,7 @@ ServiceAccount token, which bindcar validates via a Kubernetes TokenReview.
 
 ### Rollout order
 
-1. RBAC + admission policies (steps 1, 6) — safe to apply ahead of time.
+1. RBAC + admission policies (steps 1, 6): safe to apply ahead of time.
 2. Operator Deployment (step 2).
 3. Operand rollout: the operator recreates Bind9Instance pods with the 0.7.0
    sidecar, port 53, and the hardened pod shape on its next reconcile.
@@ -1048,11 +1088,11 @@ were previously accepted. Review each before upgrading.
 
 **What changed:** Scout (the Ingress/Service/Route watcher) previously created
 DNS records in **any** existing zone. It now requires the target `DNSZone` to
-authorize the source object's namespace — otherwise the record is skipped and
+authorize the source object's namespace; otherwise the record is skipped and
 Scout logs `... namespace not authorized for zone ...`.
 
 **Who is affected:** anyone running Scout where the Ingress/Service/Route lives
-in a *different* namespace than the `DNSZone` (the common case — DNSZones
+in a *different* namespace than the `DNSZone` (the common case; DNSZones
 usually live in `bindy-system`).
 
 **How to migrate:** annotate each `DNSZone` with the namespaces allowed to
@@ -1104,7 +1144,7 @@ rejected if `mountPath` contains a `..` segment (e.g.
 allow-list. Legitimate mounts under `/data/` or `/var/log/bind/` are unaffected;
 only paths using `..` need to be rewritten to their intended absolute location.
 
-All three are enforced both in the operator and — if installed — by the
+All three are enforced both in the operator and, if installed, by the
 `bindy-pod-shape-validation` / Scout admission policies (see
 `deploy/admission-policies/`).
 

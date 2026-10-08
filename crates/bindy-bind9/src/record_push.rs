@@ -885,12 +885,16 @@ impl ReconcilableRecord for PTRRecord {
 /// * `record_type_hickory` - hickory-proto `RecordType` of the record
 /// * `fail_on_error` - When `true`, a failed DNS deletion on any endpoint fails
 ///   the call (used when the record data must be gone before proceeding).
-///   When `false`, failures are logged and skipped (best-effort finalizer cleanup).
+///   When `false` (the finalizer), a failure is tolerated only on an endpoint
+///   whose pod no longer holds the zone (terminating, gone, or its instance
+///   deleted); a pod that still holds it always fails the call, so the
+///   deletion is retried instead of orphaning the record.
 ///
 /// # Errors
 ///
-/// Returns an error if endpoint resolution fails, or if a DNS deletion fails
-/// and `fail_on_error` is `true`.
+/// Returns an error if endpoint resolution fails, if a pod that still holds
+/// the zone was not reached or its deletion failed, or if any DNS deletion
+/// fails and `fail_on_error` is `true`.
 #[allow(clippy::too_many_arguments)]
 pub async fn delete_record_from_primaries(
     client: &Client,
@@ -911,14 +915,18 @@ pub async fn delete_record_from_primaries(
     // Collect per-endpoint failures ourselves: for_each_instance_endpoint only
     // fails when ALL endpoints fail, but with fail_on_error we must also fail
     // on PARTIAL failures (a record left on any endpoint is still an orphan).
-    // The closure always returns Ok so every endpoint is attempted.
+    // Every endpoint is attempted: for_each does not stop at a failure.
     let failures: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
         std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
 
-    // Best-effort finalizer cleanup (fail_on_error=false) must not be blocked
-    // forever by an instance whose RNDC Secret is gone or that has zero ready
-    // endpoints - the DNS data there is unreachable anyway. Strict callers
-    // (fail_on_error=true) keep propagating those lookup failures.
+    // Finalizer cleanup (fail_on_error=false) is not blocked by an instance
+    // whose data is gone (instance deleted, pods gone): SkipUnavailable skips
+    // it. It IS blocked, and retried, by a pod that still holds the zone but
+    // is momentarily unreachable (a container restarting): skipping it left
+    // the record served from the pod's surviving emptyDir (chaos suite). The
+    // coverage check in for_each_instance_endpoint_with_policy enforces that
+    // for both modes. Strict callers (fail_on_error=true) also propagate
+    // lookup failures and fail on any endpoint failure.
     let failure_policy = if fail_on_error {
         crate::instances::EndpointFailurePolicy::Strict
     } else {
@@ -983,6 +991,9 @@ pub async fn delete_record_from_primaries(
                                 .push(format!(
                                     "endpoint {pod_endpoint} (instance: {instance_name}): {e}"
                                 ));
+                            // Reported, so a pod that still holds the zone
+                            // counts as not reached (coverage check).
+                            return Err(e);
                         }
                     }
 

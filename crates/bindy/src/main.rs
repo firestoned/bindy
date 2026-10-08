@@ -192,8 +192,20 @@ async fn run_operator() -> Result<()> {
             renew_deadline_secs = leader_election.renew_deadline,
             "Leader election enabled, waiting to acquire leadership..."
         );
+        // The lease gets a client of its own: not queued behind the
+        // controllers' rate limit, and with a deadline that fits inside the
+        // renewal window (a stalled renewal on the shared 30 s deadline let
+        // the lease expire while this replica still led).
+        let lease_client = rate_limit::build_rate_limited_client(
+            kube::Config::infer().await?,
+            &rate_limit::RateLimitConfig {
+                qps: bindy_api::constants::LEASE_CLIENT_QPS,
+                burst: bindy_api::constants::LEASE_CLIENT_BURST,
+            },
+            leader_election.lease_request_timeout(),
+        )?;
         let leadership = tokio::select! {
-            leadership = acquire_leadership(client, &leader_election) => leadership?,
+            leadership = acquire_leadership(lease_client, &leader_election) => leadership?,
             () = shutdown_signal() => return Ok(()),
         };
         info!("🎉 Leadership acquired! Starting controllers...");

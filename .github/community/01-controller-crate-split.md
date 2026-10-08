@@ -1,7 +1,7 @@
 # 01: Controller crate split & watch-layer simplification
 
 > **Goal.** Break the single `bindy` crate into a workspace of focused
-> crates — one per controller, plus a shared controller SDK — and replace
+> crates (one per controller, plus a shared controller SDK) and replace
 > the hand-written watch/reflector wiring in `src/main.rs` with a small
 > declarative layer built on the kube-runtime APIs that already exist for
 > it.
@@ -65,12 +65,12 @@
 Everything is one compilation unit, so:
 
 - **Any** edit to `src/crd.rs` recompiles `scout.rs` (3,926 lines),
-  `bootstrap.rs` (2,136 lines), every reconciler and every test module —
+  `bootstrap.rs` (2,136 lines), every reconciler and every test module,
   even though Scout only touches `ARecord`/`DNSZone` and bootstrap only
   emits YAML.
 - There is no enforced boundary. Nothing in the type system stops a
   reconciler from reaching into `scout`, or `bind9` from reaching back
-  into `reconcilers` — and one such back-edge already exists
+  into `reconcilers`, and one such back-edge already exists
   (`src/bind9/…` → `crate::reconcilers::retry`).
 - `src/main.rs` (**2,086 lines**) is simultaneously the CLI, the
   controller framework, the reflector supervisor, the leader-election
@@ -78,7 +78,7 @@ Everything is one compilation unit, so:
 
 The good news, which is why this split is cheap: **the dependency graph
 is already almost a DAG.** `src/crd.rs` has *zero* intra-crate `use`
-statements — it is a pure leaf. `src/reconcilers/**` imports
+statements; it is a pure leaf. `src/reconcilers/**` imports
 `crate::crd` 66 times, `crate::constants` 10, `crate::labels` 7,
 `crate::bind9*` 9, and essentially nothing else outside itself. The
 layering exists; it is just not expressed as crates.
@@ -96,9 +96,9 @@ layering exists; it is just not expressed as crates.
 
 Across `main.rs` there are **22** `.watches()` / `.owns()` call sites and
 5 hand-written `run_*_operator` functions. `Stores` in `src/context.rs`
-is a 14-field struct that has to be extended by hand — and in three
-places (`initialize_shared_context`, the struct, `records_matching_selector`)
-— every time a record kind is added. `src/scout.rs` then builds **5 more**
+is a 14-field struct that has to be extended by hand, in three
+places (`initialize_shared_context`, the struct, `records_matching_selector`),
+every time a record kind is added. `src/scout.rs` then builds **5 more**
 controllers with its own copy of the same pattern.
 
 ### 1.3 The watch layer specifically
@@ -145,7 +145,7 @@ Seven concrete problems, in rough order of severity:
 4. **Triplicated stream filters.** The `Deployment` reflector filter
    (`main.rs:510`) repeats the same `owner_references.kind ==
    "Bind9Instance"` check once for `Apply`, once for `Delete` and once
-   for `InitApply` — ~45 lines where a single predicate over
+   for `InitApply`: ~45 lines where a single predicate over
    `event.into_iter()` would be three.
 
 5. **No stated policy for `semantic_watcher_config()` vs
@@ -155,7 +155,7 @@ Seven concrete problems, in rough order of severity:
 
 6. **No shared shutdown.** `run_all_operators`'s `tokio::select!` means
    the first controller to return **drops the other twelve mid-reconcile**
-   — futures, not tasks, so there is no drain. kube-runtime has
+   (futures, not tasks), so there is no drain. kube-runtime has
    `Controller::graceful_shutdown_on()` / `.shutdown_on_signal()`;
    neither is used. SIGTERM handling lives one level up in
    `run_operators_with_leader_election` and likewise cancels rather than
@@ -166,7 +166,7 @@ Seven concrete problems, in rough order of severity:
    `ClusterBind9Provider`, `Bind9Cluster` and `Bind9Instance` **before**
    any controller starts. But a kube-runtime watcher emits
    `Init`/`InitApply` for every existing object on start, and the
-   Controller enqueues each one — so the same full pass happens anyway,
+   Controller enqueues each one, so the same full pass happens anyway,
    moments later, with backoff and concurrency control. The manual pass
    only delays becoming ready after acquiring the lease.
 
@@ -180,7 +180,7 @@ and `src/record_operator.rs:31/38`.
 
 ```
 crates/
-├── bindy-api/              # leaf — no intra-workspace deps
+├── bindy-api/              # leaf, no intra-workspace deps
 │   └── crd, labels, constants, selector, status_reasons
 ├── bindy-controller-sdk/   # the framework main.rs currently hand-rolls
 │   └── context/stores, watch, finalizers, status, retry,
@@ -216,7 +216,7 @@ regenerating CRDs stops rebuilding the controllers.
 ```
 src/
 ├── lib.rs          // pub fn controller(ctx) -> impl Future<Output = Result<()>>
-├── reconcile.rs    // the reconcile fn — pure domain logic
+├── reconcile.rs    // the reconcile fn, pure domain logic
 ├── watch.rs        // this controller's watch wiring, declaratively
 └── status.rs       // this kind's condition helpers
 ```
@@ -277,7 +277,7 @@ Write it down once, in the SDK, and apply it uniformly:
 | Primary CR (spec-driven) | `Config::default()` + `predicates::generation` | Only spec changes reconcile; our own status writes do not |
 | Owned children | `Config::default()` | Any change to a child is real drift |
 | Cross-kind (`.watches`) | `Config::default()` + explicit predicate | Mapper decides; document what field it keys on |
-| Status-driven (zone ⇄ instance) | `any_semantic()` | Deliberate — and the *only* place it is allowed |
+| Status-driven (zone ⇄ instance) | `any_semantic()` | Deliberate, and the *only* place it is allowed |
 
 With `predicates::generation` on the `DNSZone` primary stream, the
 2-second rate limiter in `reconcile_dnszone_wrapper` has nothing left to
@@ -288,10 +288,10 @@ protect against and is deleted outright.
 ## 4. Phases
 
 Each phase is independently mergeable and leaves the binary working.
-Per `.claude/rules/testing.md`, every phase is TDD — tests move with the
+Per `.claude/rules/testing.md`, every phase is TDD: tests move with the
 code they cover, and `cargo-quality` gates each one.
 
-### Phase A — Workspace scaffold, no logic moves
+### Phase A: Workspace scaffold, no logic moves
 
 - [x] Convert the root `Cargo.toml` to a `[workspace]` with
       `[workspace.package]` and `[workspace.dependencies]`, hoisting every
@@ -599,8 +599,8 @@ request).*
 
 | Risk | Mitigation |
 |---|---|
-| A shared reflector store is a single point of failure — if one stream dies, every subscriber goes stale | `WatchSet` supervises each stream with `StreamBackoff` and exposes per-kind staleness as a metric; today's per-controller streams already fail silently (`warn!("… reflector stream ended")` and the task simply ends) |
+| A shared reflector store is a single point of failure: if one stream dies, every subscriber goes stale | `WatchSet` supervises each stream with `StreamBackoff` and exposes per-kind staleness as a metric; today's per-controller streams already fail silently (`warn!("… reflector stream ended")` and the task simply ends) |
 | Removing the DNSZone rate limiter re-exposes a hot loop | Land `predicates::generation` **first**, in its own PR, and watch `bindy_reconciliations_total{kind="DNSZone"}` on a `kind` cluster for a full requeue period before deleting the limiter |
 | Deleting startup drift detection loses a real recovery path | Phase F gates the deletion on a passing integration test, not on reasoning |
-| A 10-crate workspace slows clean builds | Clean builds get slightly slower; *incremental* builds — the ones that matter day to day — get much faster, because `crd.rs` stops invalidating scout, bootstrap and every reconciler |
+| A 10-crate workspace slows clean builds | Clean builds get slightly slower; *incremental* builds, the ones that matter day to day, get much faster, because `crd.rs` stops invalidating scout, bootstrap and every reconciler |
 | Long-lived refactor branch rots against `main` | One crate per PR, each independently mergeable and green, per the phase list above |

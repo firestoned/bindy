@@ -616,4 +616,59 @@ mod tests {
         assert!(updater.has_changes());
         assert!(updater.dnssec().is_none(), "DNSSEC status must be cleared");
     }
+
+    // ------------------------------------------------------------------
+    // ADR-0019: the zone-transfer peers last pushed
+    // ------------------------------------------------------------------
+
+    fn test_peers(secondary: &str) -> bindy_api::crd::ZoneTransferPeers {
+        bindy_api::crd::ZoneTransferPeers {
+            primaries: vec!["10.0.0.1".to_string()],
+            secondaries: vec![secondary.to_string()],
+            notify: vec!["10.96.0.10".to_string()],
+        }
+    }
+
+    #[test]
+    fn test_set_transfer_peers_marks_changes() {
+        let mut dnszone = create_test_dnszone("test-zone", "bindy-system");
+        dnszone.status = Some(bindy_api::crd::DNSZoneStatus::default());
+        let mut updater = DNSZoneStatusUpdater::new(&dnszone);
+
+        updater.set_transfer_peers(test_peers("10.0.0.2"));
+
+        assert!(updater.has_changes(), "new peers must be written");
+        assert_eq!(updater.transfer_peers(), Some(&test_peers("10.0.0.2")));
+    }
+
+    #[test]
+    fn test_set_transfer_peers_same_value_is_not_a_change() {
+        // A reconcile with unchanged peers must not patch the status.
+        let mut dnszone = create_test_dnszone("test-zone", "bindy-system");
+        dnszone.status = Some(bindy_api::crd::DNSZoneStatus {
+            transfer_peers: Some(test_peers("10.0.0.2")),
+            ..Default::default()
+        });
+        let mut updater = DNSZoneStatusUpdater::new(&dnszone);
+
+        updater.set_transfer_peers(test_peers("10.0.0.2"));
+
+        assert!(!updater.has_changes());
+    }
+
+    #[test]
+    fn test_changed_transfer_peers_are_a_status_change() {
+        // The comparison in has_changes must cover the peers, or a moved
+        // secondary would be recorded in memory and never persisted.
+        let mut dnszone = create_test_dnszone("test-zone", "bindy-system");
+        dnszone.status = Some(bindy_api::crd::DNSZoneStatus {
+            transfer_peers: Some(test_peers("10.0.0.2")),
+            ..Default::default()
+        });
+        let mut updater = DNSZoneStatusUpdater::new(&dnszone);
+
+        updater.set_transfer_peers(test_peers("10.0.0.3"));
+
+        assert!(updater.has_changes());
+    }
 }

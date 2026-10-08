@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-06
 - **Deciders:** Erick Bourgeois
+- **Amended:** 2026-10-07 (Decision 2: a `Bind9Cluster` or `ClusterBind9Provider` is also woken by instances that only reference it through `clusterRef`; found by the chaos e2e suite as a cluster left at "3/4 instances are ready")
 - **Related:** Builds on [ADR-0009](0009-workspace-crate-split-and-shared-watch-layer.md) §3 (one shared watch per kind) and §4 (self-trigger policy), and on [ADR-0015](0015-bounded-api-cost-of-dns-writes.md) (resolver, cached lookups)
 
 ## Context
@@ -79,7 +80,7 @@ the only thing that reverted those, and only within five minutes.
    | `Bind9Instance` | Parent cluster or provider missing | The `Bind9Cluster` and `ClusterBind9Provider` mappers (`instances_of_cluster`, `instances_of_provider`) |
    | `Bind9Instance` | Pods not ready | The owned Deployment's status |
    | `Bind9Instance` | Shared cluster ConfigMap deleted or edited | A new mapper on the ConfigMap watch the controller already runs (`instances_for_configmap`): a cluster-level ConfigMap maps to the instances of its cluster |
-   | `Bind9Cluster`, `ClusterBind9Provider` | Instances or clusters not ready | Owned `Bind9Instance` / `Bind9Cluster` status |
+   | `Bind9Cluster`, `ClusterBind9Provider` | Instances or clusters not ready | The status of every `Bind9Instance` the cluster or provider counts: owned, or naming it in `spec.clusterRef` (`clusters_for_instance`, `providers_for_instance`, amended 2026-10-07); owned `Bind9Cluster` status for a provider |
 
    The `DNSZone` mapper is filtered (`changed_only`) on the zone name and
    deletion, and only zones in conflict are returned, so ordinary zone status

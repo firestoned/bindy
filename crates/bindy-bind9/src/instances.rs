@@ -68,11 +68,14 @@ pub enum EndpointFailurePolicy {
     /// operation must be retried until the instance becomes reachable.
     Strict,
     /// Deletion-cleanup mode: an instance whose RNDC key Secret is gone or
-    /// that has no ready endpoints is skipped with a loud warning (the DNS
-    /// data on it is unreachable or already gone), while real API errors
-    /// (timeouts, 429, 5xx, ...) still fail the call so the next reconcile
-    /// retries. This prevents resources from being stuck Terminating behind
-    /// an instance that can never be cleaned up.
+    /// that has no ready endpoints is skipped, but only when no live pod
+    /// still holds its data (the instance is gone or being deleted, or its
+    /// pods are gone; see [`coverage_pod_ips`]). A live pod that is
+    /// momentarily unreachable (a container restarting) fails the call, so
+    /// the caller retries instead of orphaning the data on the pod's
+    /// surviving `emptyDir`. Real API errors (timeouts, 429, 5xx, ...) still
+    /// fail the call. Resources are not stuck Terminating behind an instance
+    /// whose data is gone.
     SkipUnavailable,
 }
 
@@ -173,8 +176,11 @@ where
 ///
 /// # Errors
 ///
-/// Returns an error if all operations fail, or if RNDC-key/endpoint lookups
-/// fail and the policy does not allow skipping them.
+/// Returns an error if all operations fail, if RNDC-key/endpoint lookups
+/// fail and the policy does not allow skipping them, or if a pod that holds
+/// the instance's zone data ([`coverage_pod_ips`]) was not reached or its
+/// operation failed, whatever the policy: a write or a deletion that missed
+/// such a pod is not done.
 pub async fn for_each_instance_endpoint_with_policy<F, Fut>(
     resolver: &InstanceResolver,
     instance_refs: &[crate::crd::InstanceReference],
@@ -190,8 +196,12 @@ where
     let mut first_endpoint: Option<String> = None;
     let mut total_endpoints = 0;
     let mut errors: Vec<String> = Vec::new();
+    // Pods that hold zone data and were not reached (see coverage_pod_ips):
+    // a write or deletion that missed one is not done, whatever the policy.
+    let mut unreached: Vec<String> = Vec::new();
 
     for instance_ref in instance_refs {
+        let coverage = resolver.coverage_pods(&instance_ref.namespace, &instance_ref.name);
         debug!(
             "Processing endpoints for instance {}/{}",
             instance_ref.namespace, instance_ref.name
@@ -208,9 +218,21 @@ where
                     if policy == EndpointFailurePolicy::SkipUnavailable
                         && is_unavailable_for_deletion(&e) =>
                 {
+                    if let Some(live) = coverage.as_ref().filter(|live| !live.is_empty()) {
+                        warn!(
+                            "Instance {}/{}: RNDC key unavailable ({e:#}) but pod(s) {live:?} still hold its zones; retrying",
+                            instance_ref.namespace, instance_ref.name
+                        );
+                        unreached.extend(live.iter().map(|ip| {
+                            format!(
+                                "{ip} (instance {}/{})",
+                                instance_ref.namespace, instance_ref.name
+                            )
+                        }));
+                        continue;
+                    }
                     warn!(
-                        "SKIPPING instance {}/{} during deletion cleanup: RNDC key unavailable ({e:#}). \
-                         DNS data on this instance cannot be cleaned up and may be orphaned.",
+                        "SKIPPING instance {}/{} during deletion cleanup: RNDC key unavailable ({e:#}) and no live pod holds its data.",
                         instance_ref.namespace, instance_ref.name
                     );
                     continue;
@@ -231,9 +253,25 @@ where
                 if policy == EndpointFailurePolicy::SkipUnavailable
                     && is_unavailable_for_deletion(&e) =>
             {
+                // Skip only an instance whose data is gone with its pods. A
+                // pod that is live but momentarily unreachable (a container
+                // restarting) keeps its emptyDir and would serve the data
+                // again: the caller must retry, not skip it.
+                if let Some(live) = coverage.as_ref().filter(|live| !live.is_empty()) {
+                    warn!(
+                        "Instance {}/{} has no reachable endpoint ({e:#}) but pod(s) {live:?} still hold its zones; retrying",
+                        instance_ref.namespace, instance_ref.name
+                    );
+                    unreached.extend(live.iter().map(|ip| {
+                        format!(
+                            "{ip} (instance {}/{})",
+                            instance_ref.namespace, instance_ref.name
+                        )
+                    }));
+                    continue;
+                }
                 warn!(
-                    "SKIPPING instance {}/{} during deletion cleanup: no reachable endpoints ({e:#}). \
-                     DNS data on this instance cannot be cleaned up and may be orphaned.",
+                    "SKIPPING instance {}/{} during deletion cleanup: no reachable endpoints ({e:#}) and no live pod holds its data.",
                     instance_ref.namespace, instance_ref.name
                 );
                 continue;
@@ -249,6 +287,7 @@ where
         );
 
         let mut instance_failed = false;
+        let mut reached: Vec<&str> = Vec::with_capacity(endpoints.len());
         for endpoint in &endpoints {
             let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
 
@@ -279,6 +318,20 @@ where
                 instance_failed = true;
             } else {
                 total_endpoints += 1;
+                reached.push(endpoint.ip.as_str());
+            }
+        }
+
+        if let Some(live) = coverage.as_ref() {
+            for ip in live.iter().filter(|ip| !reached.contains(&ip.as_str())) {
+                warn!(
+                    "Pod {ip} of instance {}/{} holds its zones but was not reached; the operation must be retried",
+                    instance_ref.namespace, instance_ref.name
+                );
+                unreached.push(format!(
+                    "{ip} (instance {}/{})",
+                    instance_ref.namespace, instance_ref.name
+                ));
             }
         }
 
@@ -294,6 +347,19 @@ where
         return Err(anyhow!(
             "All operations failed. Errors: {}",
             errors.join("; ")
+        ));
+    }
+
+    if !unreached.is_empty() {
+        return Err(anyhow!(
+            "{} pod(s) holding the zone data were not reached: {}{}",
+            unreached.len(),
+            unreached.join(", "),
+            if errors.is_empty() {
+                String::new()
+            } else {
+                format!(". Errors: {}", errors.join("; "))
+            }
         ));
     }
 
@@ -343,6 +409,48 @@ pub trait InstanceLookup: Send + Sync {
     /// Drop any longer-lived copy of the instance's RNDC key. Called after a
     /// write with that key failed. The default does nothing.
     fn forget_rndc_key(&self, _namespace: &str, _instance_name: &str) {}
+
+    /// The IPs of the instance's pods that hold its zone data and must be
+    /// reached by a write or a deletion: see [`coverage_pod_ips`]. `None`
+    /// when the lookup cannot tell (no Pod store); callers then fall back to
+    /// the endpoints alone. The default is `None`.
+    fn coverage_pods(&self, _namespace: &str, _instance_name: &str) -> Option<Vec<String>> {
+        None
+    }
+}
+
+/// The IPs of `instance_name`'s pods that hold the instance's zone data: live
+/// (an IP, `Running`, not terminating) and admitted by the zones-loaded gate
+/// (ADR-0017). Empty when the instance is gone or being deleted, whose pods
+/// are garbage-collected with their data.
+///
+/// A pod admitted earlier whose container is restarting is not a writable
+/// endpoint, but its `emptyDir` keeps its zones and serves them again once the
+/// container is back: a write or a deletion that skipped it would leave it
+/// stale. A pod not yet admitted is loaded from the stores by the gate, which
+/// already reflects the write or the deletion.
+///
+/// # Arguments
+/// * `pods` - Every pod in the BIND9 Pod store
+/// * `instances` - Every `Bind9Instance` in the store
+/// * `namespace` - The instance's namespace
+/// * `instance_name` - The instance's name
+#[must_use]
+pub fn coverage_pod_ips(
+    pods: &[std::sync::Arc<Pod>],
+    instances: &[std::sync::Arc<crate::crd::Bind9Instance>],
+    namespace: &str,
+    instance_name: &str,
+) -> Vec<String> {
+    let instance_live = instances.iter().any(|instance| {
+        instance.metadata.name.as_deref() == Some(instance_name)
+            && instance.metadata.namespace.as_deref() == Some(namespace)
+            && instance.metadata.deletion_timestamp.is_none()
+    });
+    if !instance_live {
+        return Vec::new();
+    }
+    crate::peers::peer_pod_ips(pods, namespace, instance_name, true)
 }
 
 /// The production [`InstanceLookup`]: endpoints from the shared `Endpoints`
@@ -352,6 +460,7 @@ pub struct KubeInstanceLookup {
     client: Client,
     endpoints: Option<crate::context::MultiStore<Endpoints>>,
     pods: Option<crate::context::MultiStore<Pod>>,
+    instances: Option<crate::context::MultiStore<crate::crd::Bind9Instance>>,
 }
 
 impl KubeInstanceLookup {
@@ -368,6 +477,7 @@ impl KubeInstanceLookup {
             client,
             endpoints,
             pods: None,
+            instances: None,
         }
     }
 
@@ -381,6 +491,23 @@ impl KubeInstanceLookup {
     #[must_use]
     pub fn with_pods(mut self, pods: crate::context::MultiStore<Pod>) -> Self {
         self.pods = Some(pods);
+        self
+    }
+
+    /// Read instance liveness from the shared `Bind9Instance` store, so the
+    /// pods that must be reached by a write or deletion can be told apart
+    /// from pods being garbage-collected with their instance
+    /// ([`coverage_pod_ips`]).
+    ///
+    /// # Arguments
+    ///
+    /// * `instances` - The shared `Bind9Instance` reflector store
+    #[must_use]
+    pub fn with_instances(
+        mut self,
+        instances: crate::context::MultiStore<crate::crd::Bind9Instance>,
+    ) -> Self {
+        self.instances = Some(instances);
         self
     }
 }
@@ -422,6 +549,17 @@ impl InstanceLookup for KubeInstanceLookup {
 
     fn forget_rndc_key(&self, namespace: &str, instance_name: &str) {
         invalidate_cached_rndc_key(namespace, instance_name);
+    }
+
+    fn coverage_pods(&self, namespace: &str, instance_name: &str) -> Option<Vec<String>> {
+        let pods = self.pods.as_ref()?;
+        let instances = self.instances.as_ref()?;
+        Some(coverage_pod_ips(
+            &pods.state(),
+            &instances.state(),
+            namespace,
+            instance_name,
+        ))
     }
 }
 
@@ -552,12 +690,25 @@ impl InstanceResolver {
         lock(&self.keys).remove(&(namespace.to_string(), instance_name.to_string()));
         self.lookup.forget_rndc_key(namespace, instance_name);
     }
+
+    /// The pod IPs of the instance a write or deletion must reach (see
+    /// [`coverage_pod_ips`]), read fresh from the stores; `None` when the
+    /// lookup cannot tell.
+    ///
+    /// # Arguments
+    /// * `namespace` - Namespace of the instance
+    /// * `instance_name` - Name of the instance
+    #[must_use]
+    pub fn coverage_pods(&self, namespace: &str, instance_name: &str) -> Option<Vec<String>> {
+        self.lookup.coverage_pods(namespace, instance_name)
+    }
 }
 
 /// The production [`KubeInstanceLookup`] over the shared stores.
 fn kube_lookup(client: &Client, stores: &crate::context::Stores) -> KubeInstanceLookup {
     KubeInstanceLookup::new(client.clone(), Some(stores.endpoints.clone()))
         .with_pods(stores.bind9_pods.clone())
+        .with_instances(stores.bind9_instances.clone())
 }
 
 /// An [`InstanceLookup`] restricted to one pod (ADR-0017).
@@ -1058,7 +1209,7 @@ pub async fn get_endpoint(
 /// instance lives). This preserves the cluster-wide-operator contract:
 /// the platform admin keeps full control of who can claim their
 /// instances, expressed through a platform-admin-controlled annotation,
-/// while still preventing the F-003 hijack — labels on the instance side
+/// while still preventing the F-003 hijack: labels on the instance side
 /// are not a security boundary (they are discoverable via list/watch and
 /// any tenant can write any matchLabels they want), but annotations on
 /// the platform-owned instance are.
@@ -1105,7 +1256,7 @@ pub fn get_instances_from_zone(
             let instance_namespace = instance.namespace()?;
             let instance_name = instance.name_any();
 
-            // Selector match (label-based) — necessary but not sufficient.
+            // Selector match (label-based): necessary but not sufficient.
             let matches = bind9_instances_from
                 .iter()
                 .any(|source| source.selector.matches(instance_labels));
@@ -1157,7 +1308,7 @@ pub fn get_instances_from_zone(
         return Ok(instances_with_zone);
     }
 
-    // No instances found — message distinguishes "no labels matched" from
+    // No instances found; message distinguishes "no labels matched" from
     // "labels matched but cross-namespace gate denied them".
     if cross_ns_denied.is_empty() {
         Err(anyhow!(

@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: Apache-2.0
 
-.PHONY: kind-kubeconfig kind-dump-diagnostics pin-release-images help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny cargo-machete gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh tls-transport-test ci-e2e e2e-image e2e-image-load e2e-lifecycle e2e-idempotency e2e-restart e2e-rust e2e-multi-tenancy e2e-regression e2e-zone-spread e2e-tls e2e-all e2e-clean calm-validate calm-docs calm-docs-check sbom-generate sbom-stage sbom-annotate sbom-check cbom-generate cbom-check cbom-stage provenance-subjects slsa-verifier-install verify-provenance verify-image-provenance verify-sbom-attestation image-digest-record image-digests-matrix
+.PHONY: kind-kubeconfig kind-dump-diagnostics pin-release-images help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny cargo-machete gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh tls-transport-test ci-e2e e2e-image e2e-image-load e2e-lifecycle e2e-idempotency e2e-restart e2e-rust e2e-multi-tenancy e2e-regression e2e-zone-spread e2e-tls e2e-chaos e2e-all e2e-clean calm-validate calm-docs calm-docs-check sbom-generate sbom-stage sbom-annotate sbom-check cbom-generate cbom-check cbom-stage provenance-subjects slsa-verifier-install verify-provenance verify-image-provenance verify-sbom-attestation image-digest-record image-digests-matrix
 
 # Detect host architecture and derive the matching Linux cross-compilation target.
 # `uname -m` reports arm64 on Apple Silicon macOS but aarch64 on Linux ARM, so
@@ -20,7 +20,7 @@ endif
 # Upper-cased, hyphen→underscore form used as the CARGO_TARGET_*_LINKER env var name
 LINUX_TARGET_ENV   := $(shell echo $(LINUX_TARGET) | tr 'a-z-' 'A-Z_')
 # The prefixed cross-linker (e.g. x86_64-unknown-linux-gnu-gcc) only exists when
-# cross-compiling from macOS — it is installed via the homebrew
+# cross-compiling from macOS; it is installed via the homebrew
 # macos-cross-toolchains. On a native Linux host, building for the matching
 # *-unknown-linux-gnu target is NOT a cross build (cargo's default `cc` links it)
 # and that prefixed linker is absent, so forcing it fails with "linker not found".
@@ -107,7 +107,7 @@ crds-combined: crds ## Generate combined crds.yaml file for releases
 # manifests currently carry a tag, but if they are ever digest-pinned (audit
 # finding P2-8) a tag-only pattern would silently fail to match and the release
 # would ship whatever digest was hardcoded, forever. Digest pinning itself cannot
-# happen here — a digest only exists after the image is built and pushed, so the
+# happen here: a digest only exists after the image is built and pushed, so the
 # actual pin belongs in the release pipeline, after the push step.
 install-yaml: crds-combined ## Generate single-file install.yaml (CRDs + RBAC + Deployment) for a given VERSION
 	$(if $(VERSION),,$(error VERSION is required, e.g. make install-yaml VERSION=v0.1.0))
@@ -228,7 +228,7 @@ test-integ-cluster-provider: ## Run cluster provider resilience tests (requires 
 	@./tests/cluster_provider_resilience_test.sh
 
 # -----------------------------------------------------------------------------
-# ValidatingAdmissionPolicy (CEL) — defense-in-depth at the kube API server
+# ValidatingAdmissionPolicy (CEL): defense-in-depth at the kube API server
 # -----------------------------------------------------------------------------
 
 admission-policies-install: ## Install bindy ValidatingAdmissionPolicies (k8s 1.30+)
@@ -251,7 +251,7 @@ admission-policies-install: ## Install bindy ValidatingAdmissionPolicies (k8s 1.
 	@kubectl apply -f deploy/admission-policies/18-bindy-configmap-integrity-binding.yaml
 	@echo "✓ Admission policies installed (07/08 pod-shape, 11/12 operator-workload-SA,"
 	@echo "  17/18 ConfigMap integrity,"
-	@echo "  15/16 image-provenance included — 11/12 is the compensating control for the"
+	@echo "  15/16 image-provenance included; 11/12 is the compensating control for the"
 	@echo "  cluster-wide operator Deployment grant, so it must not be skipped)."
 	@echo "  Opt-in (breaking for clusters with existing hmac-sha1 RNDC keys):"
 	@echo "    kubectl apply -f deploy/admission-policies/05-bindy-rndc-strict-policy.yaml"
@@ -482,7 +482,7 @@ trivy-fs: trivy-install ## Scan filesystem for vulnerabilities and misconfigurat
 		--exit-code 0 \
 		.
 
-trivy-fs-ci: trivy-install ## Scan filesystem for CVEs (exit-code 1 on HIGH/CRITICAL — for CI gates)
+trivy-fs-ci: trivy-install ## Scan filesystem for CVEs (exit-code 1 on HIGH/CRITICAL, for CI gates)
 	@echo "Scanning filesystem for vulnerabilities (CI mode)..."
 	@trivy fs \
 		--severity HIGH,CRITICAL \
@@ -724,7 +724,7 @@ security-scan-full: cargo-deny gitleaks vex-validate trivy-all semgrep kubesec l
 GHCR_OWNER ?= firestoned
 GHCR_PACKAGE ?= bindy
 ghcr-report: ## Read-only inventory of GHCR image versions (no deletion). Requires gh auth.
-	@echo "GHCR package: $(GHCR_OWNER)/$(GHCR_PACKAGE) — read-only inventory"
+	@echo "GHCR package: $(GHCR_OWNER)/$(GHCR_PACKAGE), read-only inventory"
 	@gh api "users/$(GHCR_OWNER)/packages/container/$(GHCR_PACKAGE)/versions" --paginate \
 		| jq -rs 'add | { \
 			total: length, \
@@ -860,6 +860,7 @@ tls-transport-test: ## Run the bindcar TLS e2e (cert-manager issues the sidecar 
 #   make e2e-regression     admission policies + operand pod shape + liveness
 #   make e2e-zone-spread    spec.placement topology spread on a 3-zone cluster
 #   make e2e-tls            cert-manager-issued sidecar cert (audit P2-4)
+#   make e2e-chaos          15 chaos steps x 2 passes, invariants + DNS prober (3-node kind)
 #   make e2e-all            all of the above, sequentially
 #
 # Options:
@@ -876,6 +877,7 @@ E2E_RESTART_CLUSTER      ?= bindy-e2e-restart
 E2E_RUST_CLUSTER         ?= bindy-e2e-rust
 E2E_MULTITENANCY_CLUSTER ?= bindy-e2e-multitenancy
 E2E_SCOUT_CLUSTER        ?= bindy-e2e-scout
+E2E_CHAOS_CLUSTER        ?= bindy-e2e-chaos
 
 # Shared image handoff for CI: one job builds and saves the tarball, every suite
 # job loads it. Avoids paying for the same cross-compile once per suite.
@@ -887,7 +889,7 @@ E2E_IMAGE_TAR ?= dist/bindy-e2e-image.tar
 define run-e2e-suite
 	@chmod +x $(1)
 	@CLUSTER_NAME=$(2) $(1) $(if $(E2E_IMAGE),--image "$(E2E_IMAGE)") $(3)
-	@$(if $(KEEP_CLUSTER),echo "KEEP_CLUSTER set — leaving kind cluster '$(2)' up",kind delete cluster --name $(2) >/dev/null 2>&1 || true)
+	@$(if $(KEEP_CLUSTER),echo "KEEP_CLUSTER set; leaving kind cluster '$(2)' up",kind delete cluster --name $(2) >/dev/null 2>&1 || true)
 endef
 
 e2e-image: ## Build the operator image once and save it to $(E2E_IMAGE_TAR) for the suite jobs to load
@@ -927,8 +929,11 @@ e2e-zone-spread: ## E2E: spec.placement topology spread on a three-zone cluster
 e2e-tls: ## E2E: cert-manager-issued bindcar sidecar certificate (audit P2-4)
 	$(call run-e2e-suite,tests/tls_transport_test.sh,$(TLS_TRANSPORT_CLUSTER))
 
+e2e-chaos: ## E2E: chaos steps (operator/pod/container kills, rollouts, churn) with invariants and a DNS prober
+	$(call run-e2e-suite,tests/e2e/chaos_test.sh,$(E2E_CHAOS_CLUSTER))
+
 E2E_SUITES = e2e-rust e2e-lifecycle e2e-idempotency e2e-restart e2e-multi-tenancy \
-             e2e-scout e2e-regression e2e-zone-spread e2e-tls
+             e2e-scout e2e-regression e2e-zone-spread e2e-tls e2e-chaos
 
 e2e-all: ## Run every e2e suite sequentially (CI runs them in parallel instead)
 	@for target in $(E2E_SUITES); do \
@@ -943,7 +948,7 @@ e2e-all: ## Run every e2e suite sequentially (CI runs them in parallel instead)
 
 e2e-clean: ## Delete every kind cluster the e2e suites create
 	@for c in $(E2E_LIFECYCLE_CLUSTER) $(E2E_IDEMPOTENCY_CLUSTER) $(E2E_RESTART_CLUSTER) \
-	          $(E2E_RUST_CLUSTER) $(E2E_MULTITENANCY_CLUSTER) $(E2E_SCOUT_CLUSTER) \
+	          $(E2E_RUST_CLUSTER) $(E2E_MULTITENANCY_CLUSTER) $(E2E_SCOUT_CLUSTER) $(E2E_CHAOS_CLUSTER) \
 	          $(REGRESSION_CLUSTER) $(ZONESPREAD_CLUSTER) $(TLS_TRANSPORT_CLUSTER) \
 	          $(CI_E2E_INTEGRATION_CLUSTER); do \
 		kind delete cluster --name $$c >/dev/null 2>&1 || true; \

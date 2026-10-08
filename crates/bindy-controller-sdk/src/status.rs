@@ -448,6 +448,28 @@ impl DNSZoneStatusUpdater {
         self.new_status.dnssec.as_ref()
     }
 
+    /// Record the zone-transfer peers just pushed to every server of the zone
+    /// (ADR-0019). A value equal to what the update already carries is a
+    /// no-op, so a reconcile with unchanged peers never dirties the status.
+    ///
+    /// # Arguments
+    ///
+    /// * `peers` - The peer sets every primary and secondary now names
+    pub fn set_transfer_peers(&mut self, peers: bindy_api::crd::ZoneTransferPeers) {
+        if self.new_status.transfer_peers.as_ref() == Some(&peers) {
+            return;
+        }
+        self.new_status.transfer_peers = Some(peers);
+        self.has_changes = true;
+    }
+
+    /// The zone-transfer peers this update currently carries: the ones last
+    /// recorded, or the ones set in this reconcile.
+    #[must_use]
+    pub fn transfer_peers(&self) -> Option<&bindy_api::crd::ZoneTransferPeers> {
+        self.new_status.transfer_peers.as_ref()
+    }
+
     /// Set the observed generation to match the current generation.
     pub fn set_observed_generation(&mut self, generation: Option<i64>) {
         self.new_status.observed_generation = generation;
@@ -558,6 +580,7 @@ impl DNSZoneStatusUpdater {
                     || current.bind9_instances_count != self.new_status.bind9_instances_count
                     || current.records_resync_pending != self.new_status.records_resync_pending
                     || current.dnssec != self.new_status.dnssec
+                    || current.transfer_peers != self.new_status.transfer_peers
             }
         }
     }

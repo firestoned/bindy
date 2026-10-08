@@ -5,6 +5,7 @@
 - **Deciders:** Erick Bourgeois
 - **Amended:** 2026-10-07 (Decision 6: a terminating pod's gate is closed at the start of its termination, the one exception to the one-way latch; found rolling v0.8.0-rc.5)
 - **Amended:** 2026-10-07 (Decision 6 corrected against v0.8.0-rc.6: the gate condition flips at once, but the pod's `Ready` follows only on the kubelet's next status sync, about 18 s later; the flip does not shorten the handover, the new pod being Ready first and ADR-0018's staggering do)
+- **Amended:** 2026-10-07 by [ADR-0019](0019-zone-transfer-peers-follow-pods.md) (Decision 2: for a secondary pod the gate first rewrites every primary's `allow-transfer` / `also-notify` to the zone's current peers, then treats a zone not transferred yet as a load failure, so a pod whose sibling still serves the zone waits for its transfer; transfer sources are the admitted primary pods only)
 - **Related:** Builds on [ADR-0016](0016-event-driven-reconciliation.md) (every wake is a watch event or a backoff retry), [ADR-0015](0015-bounded-api-cost-of-dns-writes.md) (`InstanceResolver`, endpoints from the store, record replay), [ADR-0009](0009-workspace-crate-split-and-shared-watch-layer.md) §3 (one shared watch per kind) and [ADR-0013](0013-validate-and-render-bind9-config-with-hornet.md) (a config change rolls every pod)
 
 ## Context
@@ -83,8 +84,11 @@ Two facts constrain the fix:
         (zone, also-notify and allow-transfer for the secondaries, NS and
         glue records, DNSSEC policy), then a replay of every record the store
         holds tagged with the zone (`status.zoneRef`), not terminating;
-      - secondary: the same `add_dnszone_to_secondaries` path (zone with its
-        primaries, then `retransfer`). Transfer completion is not awaited;
+      - secondary: the primaries' `allow-transfer` / `also-notify` are
+        rewritten to the zone's current peers first (ADR-0019), then the same
+        `add_dnszone_to_secondaries` path (zone with its primaries, the
+        admitted primary pods, then `retransfer`). A zone not transferred yet
+        counts as not loaded (amended by ADR-0019; it was not awaited);
    5. decides from the result of every load (`gate_outcome`):
       - every zone loaded and every record replayed: `True`
         (`reason: ZonesLoaded`);

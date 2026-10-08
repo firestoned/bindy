@@ -243,6 +243,17 @@ pub const DEFAULT_LEASE_RENEW_DEADLINE_SECS: u64 = 10;
 /// Default leader election retry period (2 seconds)
 pub const DEFAULT_LEASE_RETRY_PERIOD_SECS: u64 = 2;
 
+/// Sustained request rate of the leader election's own Kubernetes client.
+///
+/// The lease renewals go through a client of their own, so a burst of
+/// controller requests queued behind the shared client's rate limit
+/// ([`KUBE_CLIENT_QPS`]) cannot delay a renewal past the lease. A renewal
+/// every retry period needs well under one request a second.
+pub const LEASE_CLIENT_QPS: f32 = 5.0;
+
+/// Burst size of the leader election's own Kubernetes client.
+pub const LEASE_CLIENT_BURST: u32 = 5;
+
 // ============================================================================
 // BIND9 Version Constants
 // ============================================================================
@@ -282,7 +293,7 @@ pub const BIND9_NONROOT_UID: i64 = 101;
 pub const DEFAULT_BINDCAR_IMAGE: &str = "ghcr.io/firestoned/bindcar:v0.9.0";
 
 // ============================================================================
-// Bindcar Authentication Constants (Mode B — TokenReview)
+// Bindcar Authentication Constants (Mode B: TokenReview)
 // ============================================================================
 
 /// `ServiceAccount` name the bindy operator runs as.
@@ -379,7 +390,7 @@ pub const ANNOTATION_ZONE_PREVIOUS_OWNER: &str = "bindy.firestoned.io/previous-z
 /// instance via `spec.bind9InstancesFrom` selectors.
 ///
 /// **F-003 mitigation.** A label-selector match alone is not enough to
-/// enrol a cross-namespace `Bind9Instance` in a zone — the platform admin
+/// enrol a cross-namespace `Bind9Instance` in a zone: the platform admin
 /// who owns the instance must also annotate it with the zone's namespace.
 /// Same-namespace targeting (zone and instance in the same namespace) is
 /// always permitted and does not require this annotation.
@@ -389,22 +400,22 @@ pub const ANNOTATION_ZONE_PREVIOUS_OWNER: &str = "bindy.firestoned.io/previous-z
 /// platform admins who explicitly accept the risk.
 ///
 /// Examples:
-/// - `"tenant-a,tenant-b"` — only zones in tenant-a or tenant-b may
+/// - `"tenant-a,tenant-b"`: only zones in tenant-a or tenant-b may
 ///   claim this instance.
-/// - `"*"` — any namespace may claim (back to pre-F-003 behaviour).
-/// - annotation absent — only same-namespace zones may claim.
+/// - `"*"`: any namespace may claim (back to pre-F-003 behaviour).
+/// - annotation absent: only same-namespace zones may claim.
 ///
 /// Why an annotation rather than a CRD field on `ClusterBind9Provider`?
 /// The platform-admin contract for a cluster-wide operator is "platform
 /// admin labels their instances; tenants match those labels." The
-/// security gate must live on the side the tenant cannot forge — i.e.
-/// metadata on the platform-owned `Bind9Instance` — and an annotation
+/// security gate must live on the side the tenant cannot forge, i.e.
+/// metadata on the platform-owned `Bind9Instance`, and an annotation
 /// keeps the admin's mental model intact without requiring tenants to
 /// add a `clusterRef` they had no reason to set previously.
 pub const ANNOTATION_ALLOW_ZONE_NAMESPACES: &str = "bindy.firestoned.io/allow-zone-namespaces";
 
 /// Wildcard value for [`ANNOTATION_ALLOW_ZONE_NAMESPACES`] meaning "any
-/// namespace may target this instance." Use with care — restores the
+/// namespace may target this instance." Use with care; restores the
 /// pre-F-003 cluster-wide behaviour.
 pub const ALLOW_ZONE_NAMESPACES_WILDCARD: &str = "*";
 
@@ -584,6 +595,6 @@ pub const MAX_SPREAD_RULES: usize = 8;
 /// HTTP 404 Not Found.
 ///
 /// Used to distinguish "this resource kind is not served by the cluster" from
-/// a genuine failure — both when revoking multi-cluster credentials and when
+/// a genuine failure, both when revoking multi-cluster credentials and when
 /// detecting whether the Gateway API CRDs are installed.
 pub const HTTP_NOT_FOUND: u16 = 404;

@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-10-05
 - **Deciders:** Erick Bourgeois
+- **Amended:** 2026-10-08 (Decision 7: a write or a deletion is done only when every pod that holds the zone was reached; the finalizer no longer skips a live pod whose container is restarting, and discovery confirms a deleted record gone before dropping it; found by the chaos e2e suite as a record served forever)
 - **Related:** Extends [ADR-0005](0005-client-side-kube-api-rate-limiting.md) (client-side rate limit) and [ADR-0009](0009-workspace-crate-split-and-shared-watch-layer.md) §3/§4 (shared watch layer, no self-triggering)
 
 ## Context
@@ -80,6 +81,37 @@ list/watch is the grant M-25 removed. RBAC must not widen.
    there, so the cleanup is retried every reconcile. A replay skips a record
    that is gone or has a `deletionTimestamp`.
 
+7. **Every pod that holds the zone must be reached** (amended 2026-10-08).
+   The "best-effort" finalizer skipped any instance with no writable
+   endpoint. A primary whose bindcar or `named` container is restarting is
+   not a writable endpoint (`ContainersReady=False`), but its pod, its IP and
+   its `emptyDir` survive, and it serves its zones again once the container
+   is back. On a chaos run a record deleted in that window had its
+   finalizer removed with the primary skipped; discovery then saw the
+   record gone and dropped it on the assumption that "its finalizer handles
+   DNS cleanup", and the primary (and the secondary, by transfer) served it
+   forever while the zone reported Ready.
+   - `coverage_pod_ips` (`crates/bindy-bind9/src/instances.rs`): the pods of
+     an instance that hold its zones are its live (`Running`, IP, not
+     terminating) pods admitted by the zones-loaded gate; none when the
+     instance is gone or being deleted. A pod not yet admitted is loaded from
+     the stores by the gate, which already reflect the write or deletion.
+   - `for_each_instance_endpoint_with_policy` fails, whatever the policy,
+     when such a pod was not reached or its operation failed. Writes,
+     record deletions (finalizer, rename, unselected records), the zone
+     stale-record pass and zone deletion (primaries and secondaries) all go
+     through it. `SkipUnavailable` now skips an instance only when no pod
+     holds its data, so deletion never blocks on an instance that is gone.
+   - The record finalizer returns `Ok` when the zone is gone or being
+     deleted (the zone's deletion removes the data, and is itself retried
+     until confirmed on every pod).
+   - Discovery no longer drops a deleted record from `status.records` on
+     trust: it deletes the data by the name the zone recorded, and keeps
+     tracking the record until that succeeded on every pod that holds the
+     zone.
+   - While a deleted or unselected record is not confirmed gone, the zone is
+     `Degraded` with reason `RecordDeletionPending`, never `Ready`.
+
 Per write, with R records and I primaries:
 
 | | Before | After |
@@ -101,9 +133,17 @@ Per write, with R records and I primaries:
   long replay makes that replay's writes to the old IP fail, and the replay is
   retried (the zone stays `Degraded` until it completes), as before.
 - A deleted record whose DNS data cannot be confirmed gone stays in its
-  zone's `status.records`, and the zone logs a warning each reconcile, until
-  the primaries are reachable again. An instance that is deleted leaves the
+  zone's `status.records`, and the zone reports `Degraded`
+  (`RecordDeletionPending`) and logs a warning each reconcile, until the
+  primaries are reachable again. An instance that is deleted leaves the
   zone's primaries and stops blocking the retry.
+- (Decision 7) A record or zone deletion waits, retried with backoff, while
+  a pod that holds the zone cannot be reached: normally the seconds a
+  container takes to restart. A pod that never becomes ready again blocks
+  the deletion until it is deleted or replaced, which is the escape hatch;
+  an instance or zone that is deleted never blocks. Writes made while such a
+  pod is down are retried until it is back, instead of reporting success
+  without it (a container restart keeps the pod's old data).
 - `Stores` gained an `endpoints` field (SDK contract). `discover_and_update_records`,
   `reconcile_zone_records` and `cleanup_stale_records` changed signature; the
   record crate's `update_record_reconciled_timestamp` is gone.

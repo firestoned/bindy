@@ -210,6 +210,7 @@ mod tests {
                 None, // no name_servers
                 None, // no name_server_ips
                 None, // no secondary IPs
+                None, // no notify targets
                 None, // no primary IPs for primary zones
                 None, // no DNSSEC policy for this test
             )
@@ -231,6 +232,7 @@ mod tests {
                 None, // no name_servers
                 None, // no name_server_ips
                 None, // no secondary IPs
+                None, // no notify targets
                 None, // no primary IPs for primary zones
                 None, // no DNSSEC policy for this test
             )
@@ -573,6 +575,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             Some("core-dns"),
         )
         .await
@@ -606,6 +609,7 @@ mod tests {
             &server.uri(),
             &test_key_data(),
             &test_soa_record(),
+            None,
             None,
             None,
             None,
@@ -1396,5 +1400,443 @@ mod tests {
             keys: vec![key_status("ZSK", false, false, Some("2026-12-01T00:00:00"))],
         };
         assert!(super::super::next_ksk_rollover(&status).is_none());
+    }
+
+    // =====================================================
+    // ADR-0019: a configured but unloaded zone is a state, not a 500 to
+    // hammer; peers are rewritten on existing zones
+    // =====================================================
+
+    use super::super::{presence_after_server_error, PeerUpdate, SoaProbe, ZonePresence};
+
+    /// A one-shot UDP DNS responder answering every query with `rcode`
+    /// (and the AA bit when `authoritative`). Returns its address.
+    async fn dns_responder(rcode: hickory_proto::op::ResponseCode, authoritative: bool) -> String {
+        use hickory_proto::op::{Message, MessageType};
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("bind test DNS responder");
+        let addr = socket.local_addr().expect("responder address").to_string();
+        tokio::spawn(async move {
+            let mut buf = vec![0u8; 4096];
+            loop {
+                let Ok((len, peer)) = socket.recv_from(&mut buf).await else {
+                    return;
+                };
+                let Ok(query) = Message::from_vec(&buf[..len]) else {
+                    continue;
+                };
+                let mut response = Message::new(
+                    query.metadata.id,
+                    MessageType::Response,
+                    query.metadata.op_code,
+                );
+                response.metadata.response_code = rcode;
+                response.metadata.authoritative = authoritative;
+                response.queries = query.queries.clone();
+                let Ok(bytes) = response.to_vec() else {
+                    continue;
+                };
+                let _ = socket.send_to(&bytes, peer).await;
+            }
+        });
+        addr
+    }
+
+    /// bindcar 0.9.0's answer to `zonestatus` on a configured zone with no
+    /// data: a 500 whose body is masked to a generic message (the rndc text
+    /// "zone not loaded" only reaches bindcar's own log).
+    fn masked_500() -> ResponseTemplate {
+        ResponseTemplate::new(500).set_body_string(r#"{"error":"Internal server error"}"#)
+    }
+
+    #[test]
+    fn test_dns_query_endpoint_strips_a_scheme() {
+        assert_eq!(
+            super::super::dns_query_endpoint("https://10.1.2.3:8080"),
+            "10.1.2.3:5353"
+        );
+        assert_eq!(
+            super::super::dns_query_endpoint("http://10.1.2.3:8080/"),
+            "10.1.2.3:5353"
+        );
+    }
+
+    #[test]
+    fn test_presence_after_server_error_servfail_means_not_loaded() {
+        // named answers SERVFAIL for a zone it is configured for but holds
+        // no data for (a secondary that never transferred).
+        assert_eq!(
+            presence_after_server_error(Some(SoaProbe::ServFail)),
+            Some(ZonePresence::NotLoaded)
+        );
+    }
+
+    #[test]
+    fn test_presence_after_server_error_authoritative_means_loaded() {
+        assert_eq!(
+            presence_after_server_error(Some(SoaProbe::Authoritative)),
+            Some(ZonePresence::Loaded)
+        );
+    }
+
+    #[test]
+    fn test_presence_after_server_error_unknown_otherwise() {
+        // REFUSED, no answer, a dead DNS port: the 500 stays an error.
+        assert_eq!(presence_after_server_error(Some(SoaProbe::Other)), None);
+        assert_eq!(presence_after_server_error(None), None);
+    }
+
+    #[test]
+    fn test_classify_soa_response() {
+        use hickory_proto::op::ResponseCode;
+        assert_eq!(
+            super::super::classify_soa_response(ResponseCode::NoError, true),
+            SoaProbe::Authoritative
+        );
+        assert_eq!(
+            super::super::classify_soa_response(ResponseCode::ServFail, false),
+            SoaProbe::ServFail
+        );
+        assert_eq!(
+            super::super::classify_soa_response(ResponseCode::Refused, false),
+            SoaProbe::Other
+        );
+        // NOERROR without AA is a referral or a cache, not this server's zone.
+        assert_eq!(
+            super::super::classify_soa_response(ResponseCode::NoError, false),
+            SoaProbe::Other
+        );
+    }
+
+    #[tokio::test]
+    async fn test_zone_presence_not_loaded_is_not_retried_for_minutes() {
+        // rc.7: the operator retried this 500 for two minutes per reconcile.
+        ensure_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/zones/sec.example.com/status"))
+            .respond_with(masked_500())
+            .mount(&server)
+            .await;
+        let dns = dns_responder(hickory_proto::op::ResponseCode::ServFail, false).await;
+
+        let client = Arc::new(reqwest::Client::new());
+        let started = std::time::Instant::now();
+        let presence =
+            super::super::zone_presence(&client, None, "sec.example.com", &server.uri(), &dns)
+                .await
+                .expect("an unloaded zone is a state, not an error");
+
+        assert_eq!(presence, ZonePresence::NotLoaded);
+        assert!(
+            started.elapsed() < PROMPT,
+            "took {:?}; must not ride the two-minute retry",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_zone_presence_500_with_refused_dns_is_an_error() {
+        ensure_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(masked_500())
+            .mount(&server)
+            .await;
+        let dns = dns_responder(hickory_proto::op::ResponseCode::Refused, false).await;
+
+        let client = Arc::new(reqwest::Client::new());
+        let result =
+            super::super::zone_presence(&client, None, "x.example.com", &server.uri(), &dns).await;
+
+        assert!(result.is_err(), "an unexplained 500 stays an error");
+    }
+
+    #[tokio::test]
+    async fn test_zone_presence_maps_404_and_200() {
+        ensure_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/zones/absent.example.com/status"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("zone not found"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/zones/loaded.example.com/status"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .mount(&server)
+            .await;
+        let client = Arc::new(reqwest::Client::new());
+        // No DNS probe is made for these: point it nowhere.
+        let dns = "127.0.0.1:1";
+
+        assert_eq!(
+            super::super::zone_presence(&client, None, "absent.example.com", &server.uri(), dns)
+                .await
+                .expect("404 is a state"),
+            ZonePresence::Absent
+        );
+        assert_eq!(
+            super::super::zone_presence(&client, None, "loaded.example.com", &server.uri(), dns)
+                .await
+                .expect("200 is a state"),
+            ZonePresence::Loaded
+        );
+    }
+
+    #[tokio::test]
+    async fn test_delete_zone_deletes_an_unloaded_zone() {
+        // A secondary zone that never transferred must still be deletable
+        // (the zone finalizer, and the ADR-0019 replace, go through here).
+        ensure_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/zones/sec.example.com/status"))
+            .respond_with(masked_500())
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/v1/zones/sec.example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = Arc::new(reqwest::Client::new());
+        super::super::delete_zone_within(
+            &client,
+            None,
+            "sec.example.com",
+            &server.uri(),
+            TEST_DELETE_BUDGET,
+        )
+        .await
+        .expect("an unloaded zone is deleted, not reported as a failed check");
+    }
+
+    #[tokio::test]
+    async fn test_update_primary_transfer_peers_sends_exact_bare_lists() {
+        use wiremock::matchers::body_json;
+        ensure_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/api/v1/zones/example.com"))
+            .and(body_json(serde_json::json!({
+                "allowTransfer": ["10.0.0.7"],
+                "alsoNotify": ["10.96.0.10"],
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = Arc::new(reqwest::Client::new());
+        let outcome = super::super::update_primary_transfer_peers(
+            &client,
+            None,
+            "example.com",
+            &server.uri(),
+            &["10.0.0.7".to_string()],
+            &["10.96.0.10".to_string()],
+        )
+        .await
+        .expect("PATCH accepted");
+
+        assert_eq!(outcome, PeerUpdate::Updated);
+    }
+
+    #[tokio::test]
+    async fn test_update_primary_transfer_peers_empty_lists_clear_the_acl() {
+        // A zone that lost its last secondary must stop allowing the old one:
+        // an empty list is sent, not omitted (bindcar treats an absent field
+        // as "leave unchanged").
+        use wiremock::matchers::body_json;
+        ensure_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(body_json(serde_json::json!({
+                "allowTransfer": [],
+                "alsoNotify": [],
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = Arc::new(reqwest::Client::new());
+        super::super::update_primary_transfer_peers(
+            &client,
+            None,
+            "example.com",
+            &server.uri(),
+            &[],
+            &[],
+        )
+        .await
+        .expect("PATCH accepted");
+    }
+
+    /// Matches a PATCH body that carries no `alsoNotify` key.
+    struct WithoutAlsoNotify;
+
+    impl wiremock::Match for WithoutAlsoNotify {
+        fn matches(&self, request: &wiremock::Request) -> bool {
+            serde_json::from_slice::<serde_json::Value>(&request.body)
+                .ok()
+                .is_some_and(|body| body.get("alsoNotify").is_none())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_update_primary_transfer_peers_falls_back_for_legacy_zones() {
+        // A zone created before ADR-0019 carries `also-notify { ip port 5353; }`,
+        // which bindcar 0.9.0 cannot rewrite: the PATCH that names alsoNotify
+        // fails. allow-transfer alone must still be rewritten, so transfers
+        // work.
+        use wiremock::matchers::body_partial_json;
+        ensure_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(body_partial_json(
+                serde_json::json!({"alsoNotify": ["10.96.0.10"]}),
+            ))
+            .respond_with(masked_500())
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(WithoutAlsoNotify)
+            .and(body_partial_json(
+                serde_json::json!({"allowTransfer": ["10.0.0.7"]}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = Arc::new(reqwest::Client::new());
+        let started = std::time::Instant::now();
+        let outcome = super::super::update_primary_transfer_peers(
+            &client,
+            None,
+            "example.com",
+            &server.uri(),
+            &["10.0.0.7".to_string()],
+            &["10.96.0.10".to_string()],
+        )
+        .await
+        .expect("allow-transfer was rewritten");
+
+        assert_eq!(outcome, PeerUpdate::UpdatedWithoutNotify);
+        assert!(started.elapsed() < PROMPT, "took {:?}", started.elapsed());
+    }
+
+    #[tokio::test]
+    async fn test_update_primary_transfer_peers_absent_zone() {
+        ensure_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("zone not found"))
+            .mount(&server)
+            .await;
+
+        let client = Arc::new(reqwest::Client::new());
+        let outcome = super::super::update_primary_transfer_peers(
+            &client,
+            None,
+            "example.com",
+            &server.uri(),
+            &["10.0.0.7".to_string()],
+            &[],
+        )
+        .await
+        .expect("an absent zone is not an error");
+
+        assert_eq!(outcome, PeerUpdate::ZoneAbsent);
+    }
+
+    #[tokio::test]
+    async fn test_replace_secondary_zone_deletes_then_recreates_with_exact_primaries() {
+        // bindcar 0.9.0 has no PATCH field for a secondary's primaries; the
+        // list is replaced by re-creating the zone. Stale primaries must not
+        // survive (rc.7 accumulated them).
+        use wiremock::matchers::body_partial_json;
+        ensure_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/zones/sec.example.com/status"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path("/api/v1/zones/sec.example.com"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/zones"))
+            .and(body_partial_json(serde_json::json!({
+                "zoneName": "sec.example.com",
+                "zoneType": "secondary",
+                "zoneConfig": {"primaries": ["10.0.0.1:5353", "10.0.0.2:5353"]},
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_string("{}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = Arc::new(reqwest::Client::new());
+        super::super::replace_secondary_zone(
+            &client,
+            None,
+            "sec.example.com",
+            &server.uri(),
+            &test_key_data(),
+            &["10.0.0.1".to_string(), "10.0.0.2".to_string()],
+        )
+        .await
+        .expect("replace succeeds");
+    }
+
+    #[tokio::test]
+    async fn test_add_primary_zone_sends_notify_targets_bare_and_acl_exact() {
+        // also-notify goes to the secondary Service ClusterIP on port 53
+        // (bare, so bindcar 0.9.0 can PATCH it later); allow-transfer names
+        // the secondary pods.
+        use wiremock::matchers::body_partial_json;
+        ensure_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/zones"))
+            .and(body_partial_json(serde_json::json!({
+                "zoneConfig": {
+                    "alsoNotify": ["10.96.0.10"],
+                    "allowTransfer": ["10.0.0.7"],
+                }
+            })))
+            .respond_with(ResponseTemplate::new(201).set_body_string("{}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = Arc::new(reqwest::Client::new());
+        let added = super::super::add_primary_zone(
+            &client,
+            None,
+            "example.com",
+            &server.uri(),
+            &test_key_data(),
+            &test_soa_record(),
+            None,
+            None,
+            Some(&["10.0.0.7".to_string()]),
+            Some(&["10.96.0.10".to_string()]),
+            None,
+        )
+        .await
+        .expect("zone created");
+
+        assert!(added);
     }
 }

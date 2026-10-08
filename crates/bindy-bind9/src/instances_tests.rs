@@ -379,7 +379,7 @@ mod tests {
                 match_expressions: None,
             },
         }];
-        // Zone in tenant-b — not in the allow-list.
+        // Zone in tenant-b, not in the allow-list.
         let zone = create_test_zone_with_selectors(
             "tenant-b-zone",
             "tenant-b",
@@ -1379,5 +1379,257 @@ mod gated_pod_tests {
         let key = lookup.rndc_key(NS, "primary-1").await.expect("key");
 
         assert_eq!(key.name, "primary-1");
+    }
+
+    // ------------------------------------------------------------------
+    // Live-pod coverage (chaos suite: a record deleted while a primary's
+    // bindcar container restarted stayed served forever)
+    // ------------------------------------------------------------------
+
+    const LIVE_A: &str = "10.2.0.1";
+    const LIVE_B: &str = "10.2.0.2";
+
+    /// A lookup whose endpoints and live pods are fixed by the test.
+    struct CoverageLookup {
+        /// `None` makes `endpoints` fail as "no ready endpoints"
+        endpoints: Option<Vec<&'static str>>,
+        coverage: Option<Vec<&'static str>>,
+    }
+
+    impl InstanceLookup for CoverageLookup {
+        fn rndc_key<'a>(
+            &'a self,
+            _namespace: &'a str,
+            instance_name: &'a str,
+        ) -> LookupFuture<'a, RndcKeyData> {
+            Box::pin(async move {
+                Ok(RndcKeyData {
+                    name: instance_name.to_string(),
+                    algorithm: RndcAlgorithm::HmacSha256,
+                    secret: "s".to_string(),
+                })
+            })
+        }
+
+        fn endpoints<'a>(
+            &'a self,
+            _namespace: &'a str,
+            service_name: &'a str,
+            port_name: &'a str,
+        ) -> LookupFuture<'a, Vec<EndpointAddress>> {
+            let found = self.endpoints.clone();
+            Box::pin(async move {
+                let Some(found) = found else {
+                    return Err(anyhow::anyhow!(
+                        "No ready endpoints found for service {service_name} with port '{port_name}'"
+                    ));
+                };
+                Ok(found
+                    .into_iter()
+                    .map(|ip| EndpointAddress {
+                        ip: ip.to_string(),
+                        port: HTTP_PORT,
+                    })
+                    .collect())
+            })
+        }
+
+        fn coverage_pods(&self, _namespace: &str, _instance_name: &str) -> Option<Vec<String>> {
+            self.coverage
+                .as_ref()
+                .map(|ips| ips.iter().map(|ip| (*ip).to_string()).collect())
+        }
+    }
+
+    fn primary_ref() -> crate::crd::InstanceReference {
+        crate::crd::InstanceReference {
+            api_version: "bindy.firestoned.io/v1beta1".to_string(),
+            kind: "Bind9Instance".to_string(),
+            name: "primary-0".to_string(),
+            namespace: NS.to_string(),
+            last_reconciled_at: None,
+        }
+    }
+
+    async fn run(
+        lookup: CoverageLookup,
+        policy: EndpointFailurePolicy,
+        failing_ip: Option<&'static str>,
+    ) -> anyhow::Result<(Option<String>, usize)> {
+        let resolver = InstanceResolver::new(lookup);
+        for_each_instance_endpoint_with_policy(
+            &resolver,
+            &[primary_ref()],
+            true,
+            PORT_HTTP,
+            policy,
+            |endpoint, _instance, _key| async move {
+                if failing_ip.is_some_and(|ip| endpoint.starts_with(ip)) {
+                    anyhow::bail!("bindcar unreachable");
+                }
+                Ok(())
+            },
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_live_pod_missing_from_the_endpoints_fails_the_call() {
+        // The pod's bindcar container is restarting: it is not a writable
+        // endpoint, but its emptyDir still holds the zone. A delete that
+        // silently skips it leaves the record served when the container is
+        // back.
+        let lookup = CoverageLookup {
+            endpoints: Some(vec![LIVE_A]),
+            coverage: Some(vec![LIVE_A, LIVE_B]),
+        };
+
+        let result = run(lookup, EndpointFailurePolicy::Strict, None).await;
+
+        let err = result.expect_err("a live pod was not reached");
+        assert!(format!("{err:#}").contains(LIVE_B), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn every_live_pod_reached_succeeds() {
+        let lookup = CoverageLookup {
+            endpoints: Some(vec![LIVE_A, LIVE_B]),
+            coverage: Some(vec![LIVE_A, LIVE_B]),
+        };
+
+        let (_, total) = run(lookup, EndpointFailurePolicy::Strict, None)
+            .await
+            .expect("every live pod reached");
+
+        assert_eq!(total, 2);
+    }
+
+    #[tokio::test]
+    async fn skip_unavailable_skips_an_instance_with_no_live_pod() {
+        // The pod (and its data) is gone, or the instance is being deleted:
+        // nothing to clean up, deletion must not block.
+        let lookup = CoverageLookup {
+            endpoints: None,
+            coverage: Some(vec![]),
+        };
+
+        let result = run(lookup, EndpointFailurePolicy::SkipUnavailable, None).await;
+
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn skip_unavailable_does_not_skip_a_live_but_unreachable_pod() {
+        // THE BUG: the finalizer skipped primary-0 while only its bindcar
+        // container was down, removed the finalizer, and the record stayed
+        // served from the surviving emptyDir.
+        let lookup = CoverageLookup {
+            endpoints: None,
+            coverage: Some(vec![LIVE_A]),
+        };
+
+        let result = run(lookup, EndpointFailurePolicy::SkipUnavailable, None).await;
+
+        let err = result.expect_err("the pod is live; the delete must be retried");
+        assert!(format!("{err:#}").contains(LIVE_A), "{err:#}");
+    }
+
+    #[tokio::test]
+    async fn skip_unavailable_without_liveness_keeps_the_old_skip() {
+        // A lookup that cannot tell (tests, the single-pod gate lookup).
+        let lookup = CoverageLookup {
+            endpoints: None,
+            coverage: None,
+        };
+
+        let result = run(lookup, EndpointFailurePolicy::SkipUnavailable, None).await;
+
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_operation_on_a_live_pod_fails_the_call() {
+        let lookup = CoverageLookup {
+            endpoints: Some(vec![LIVE_A, LIVE_B]),
+            coverage: Some(vec![LIVE_A, LIVE_B]),
+        };
+
+        let result = run(lookup, EndpointFailurePolicy::SkipUnavailable, Some(LIVE_B)).await;
+
+        assert!(result.is_err(), "a live pod kept the data: {result:?}");
+    }
+
+    #[tokio::test]
+    async fn a_failed_operation_on_a_pod_that_is_not_live_is_tolerated() {
+        // An endpoint whose pod is terminating (or gone) is not a pod whose
+        // data can come back.
+        let lookup = CoverageLookup {
+            endpoints: Some(vec![LIVE_A, LIVE_B]),
+            coverage: Some(vec![LIVE_A]),
+        };
+
+        let result = run(lookup, EndpointFailurePolicy::SkipUnavailable, Some(LIVE_B)).await;
+
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    // --- coverage_pod_ips ------------------------------------------------
+
+    fn instance(name: &str, deleting: bool) -> std::sync::Arc<crate::crd::Bind9Instance> {
+        let mut inst: crate::crd::Bind9Instance = serde_json::from_value(serde_json::json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "Bind9Instance",
+            "metadata": {"name": name, "namespace": NS},
+            "spec": {"clusterRef": "c", "role": "primary"},
+        }))
+        .expect("instance");
+        if deleting {
+            inst.metadata.deletion_timestamp = Some(Time(k8s_openapi::jiff::Timestamp::now()));
+        }
+        std::sync::Arc::new(inst)
+    }
+
+    fn admitted_pod(
+        name: &str,
+        instance: &str,
+        ip: &str,
+    ) -> std::sync::Arc<k8s_openapi::api::core::v1::Pod> {
+        let pod: k8s_openapi::api::core::v1::Pod = serde_json::from_value(serde_json::json!({
+            "metadata": {
+                "name": name,
+                "namespace": NS,
+                "labels": {"app.kubernetes.io/instance": instance},
+            },
+            "spec": {"containers": []},
+            "status": {"podIP": ip, "phase": "Running"},
+        }))
+        .expect("pod");
+        std::sync::Arc::new(pod)
+    }
+
+    #[test]
+    fn coverage_lists_the_live_pods_of_a_live_instance() {
+        let pods = vec![
+            admitted_pod("p0", "primary-0", LIVE_A),
+            admitted_pod("other", "primary-1", LIVE_B),
+        ];
+        let instances = vec![instance("primary-0", false)];
+
+        assert_eq!(
+            coverage_pod_ips(&pods, &instances, NS, "primary-0"),
+            vec![LIVE_A.to_string()]
+        );
+    }
+
+    #[test]
+    fn coverage_is_empty_for_a_deleted_or_deleting_instance() {
+        // Its pods are being garbage-collected with their data: an instance
+        // deletion must never block a record or zone deletion.
+        let pods = vec![admitted_pod("p0", "primary-0", LIVE_A)];
+
+        assert!(coverage_pod_ips(&pods, &[], NS, "primary-0").is_empty());
+        assert!(
+            coverage_pod_ips(&pods, &[instance("primary-0", true)], NS, "primary-0").is_empty()
+        );
     }
 }

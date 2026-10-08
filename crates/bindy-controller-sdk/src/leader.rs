@@ -83,6 +83,46 @@ impl LeaderElectionConfig {
     }
 }
 
+impl LeaderElectionConfig {
+    /// The `grace` handed to kube-lease-manager: how long before the lease
+    /// expires the leader renews it.
+    ///
+    /// kube-lease-manager renews `grace` seconds before expiry, so the grace is
+    /// the time a renewal has to succeed (retries included) before the lease
+    /// is lost. It is the lease duration minus one retry period: the leader
+    /// renews one retry period after each renewal, as client-go's leader
+    /// election does, and a slow API server has the rest of the lease to
+    /// answer. Passing the retry period itself (2 s) left a renewal 2 s, and
+    /// one slow PATCH cost the leader its lease and a process restart.
+    ///
+    /// Always `> 0` and `< lease_duration` (kube-lease-manager requires it)
+    /// for a lease duration of at least 2 s.
+    #[must_use]
+    pub fn renewal_grace(&self) -> u64 {
+        // A retry period as long as the lease leaves a one-second grace.
+        self.lease_duration
+            .saturating_sub(self.retry_period.max(1))
+            .max(1)
+    }
+}
+
+impl LeaderElectionConfig {
+    /// The deadline of each Lease API request, on the leader election's own
+    /// client: the renew deadline minus one retry period (8 s by default), and
+    /// at least one second.
+    ///
+    /// The shared client's deadline (ADR-0014, 30 s) is longer than the lease
+    /// (15 s): one stalled renewal let the lease expire while the leader still
+    /// ran its controllers, another replica took over, and the two led
+    /// together until the call returned. With this deadline a stalled renewal
+    /// fails and is retried inside the renewal window, and a lease lost to
+    /// another replica is noticed within one request.
+    #[must_use]
+    pub fn lease_request_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(self.renew_deadline.saturating_sub(self.retry_period).max(1))
+    }
+}
+
 /// A held lease: this replica is the leader.
 pub struct Leadership {
     /// `true` while this replica leads; flips to `false` when the lease is lost
@@ -109,7 +149,7 @@ pub async fn acquire_leadership(
         .with_namespace(&config.lease_namespace)
         .with_identity(&config.identity)
         .with_duration(config.lease_duration)
-        .with_grace(config.retry_period)
+        .with_grace(config.renewal_grace())
         .build()
         .await?;
 

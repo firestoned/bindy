@@ -544,12 +544,20 @@ async fn cleanup_unselected_record_dns(
     let record = match api.get(name).await {
         Ok(record) => record,
         Err(kube::Error::Api(ae)) if ae.code == HTTP_STATUS_NOT_FOUND => {
-            // Record resource was deleted - its finalizer handles DNS cleanup
-            debug!(
-                "Record {} {}/{} no longer exists, skipping DNS cleanup",
-                kind, namespace, name
-            );
-            return Ok(());
+            // The record resource is gone. Its finalizer deleted its data,
+            // but do not take that on trust: confirm it gone from every pod
+            // that holds the zone before the zone stops tracking it
+            // (ADR-0015 amended; the chaos suite found a record whose
+            // finalizer had skipped a primary with a restarting container).
+            return delete_deleted_record_dns(
+                client,
+                stores,
+                resolver,
+                dnszone,
+                record_ref,
+                primary_refs_cache,
+            )
+            .await;
         }
         Err(e) => {
             return Err(anyhow::Error::from(e)
@@ -647,6 +655,67 @@ async fn cleanup_unselected_record_dns(
         kind, namespace, name, record_name, dnszone.spec.zone_name
     );
 
+    Ok(())
+}
+
+/// Delete the DNS data of a record whose resource is already gone, from
+/// every primary of `dnszone`, by the name and type the zone recorded for it
+/// in `status.records`. Called before the zone stops tracking the record.
+///
+/// # Errors
+///
+/// Returns an error if the zone's primaries cannot be resolved, or if a pod
+/// that holds the zone was not reached or its deletion failed; the caller
+/// keeps tracking the record and retries.
+async fn delete_deleted_record_dns(
+    client: &Client,
+    stores: &crate::context::Stores,
+    resolver: &bindy_bind9::instances::InstanceResolver,
+    dnszone: &DNSZone,
+    record_ref: &crate::crd::RecordReferenceWithTimestamp,
+    primary_refs_cache: &mut Option<Vec<crate::crd::InstanceReference>>,
+) -> Result<()> {
+    let Some(record_name) = record_ref.record_name.as_deref() else {
+        debug!(
+            "Deleted record {} {}/{} has no recorded name; nothing to delete",
+            record_ref.kind, record_ref.namespace, record_ref.name
+        );
+        return Ok(());
+    };
+    if primary_refs_cache.is_none() {
+        let Ok(instance_refs) =
+            crate::dnszone::validation::get_instances_from_zone(dnszone, &stores.bind9_instances)
+        else {
+            return Ok(());
+        };
+        let primaries = bindy_bind9::primary::filter_primary_instances_cached(
+            client,
+            &stores.bind9_instances,
+            &instance_refs,
+        )
+        .await?;
+        *primary_refs_cache = Some(primaries);
+    }
+    let primary_refs = primary_refs_cache.as_deref().unwrap_or_default();
+    if primary_refs.is_empty() {
+        return Ok(());
+    }
+    let record_type_hickory = hickory_record_type_for_kind(&record_ref.kind)?;
+    bindy_bind9::record_push::delete_record_from_primaries(
+        client,
+        stores,
+        resolver,
+        primary_refs,
+        &dnszone.spec.zone_name,
+        record_name,
+        record_type_hickory,
+        true, // fail_on_error: the zone keeps tracking it until it is gone
+    )
+    .await?;
+    info!(
+        "Confirmed DNS data of deleted record {} {}/{} ('{}') gone from zone {}",
+        record_ref.kind, record_ref.namespace, record_ref.name, record_name, dnszone.spec.zone_name
+    );
     Ok(())
 }
 

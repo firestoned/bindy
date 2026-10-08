@@ -16,6 +16,7 @@ pub mod helpers;
 pub use bindy_bind9::primary;
 pub mod secondary;
 pub mod status_helpers;
+pub mod transfer_peers;
 pub mod types;
 pub mod validation;
 
@@ -711,6 +712,19 @@ pub async fn reconcile_dnszone(
         .await?;
     cleanup_incomplete |= unselected_cleanup_pending;
 
+    // Truthful status: a record that should no longer be served may still
+    // be, until its deletion is confirmed on every pod holding the zone.
+    let pending_deletions: Vec<String> = retained_records
+        .iter()
+        .map(|r| format!("{}/{}", r.kind, r.name))
+        .collect();
+    status_helpers::mark_record_deletions_pending(
+        &mut status_updater,
+        &spec.zone_name,
+        &pending_deletions,
+        unselected_cleanup_pending,
+    );
+
     // Replay the zone's records whenever the zone had to be (re)created on any
     // server, or a previous replay did not finish. Without this a wiped pod
     // comes back authoritative for a zone containing only SOA and NS - see
@@ -939,7 +953,7 @@ async fn replay_records_if_zone_was_recreated(
 /// Zone operations must not reuse the process-wide manager built at startup.
 /// That one is constructed before any `Bind9Instance` exists, so it has neither
 /// the instance's TLS configuration nor the Kubernetes client needed to read the
-/// configured CA bundle — it can only ever speak plaintext. Records already
+/// configured CA bundle; it can only ever speak plaintext. Records already
 /// resolve a manager per instance (`reconcilers::records`); zones did not, so a
 /// TLS-enabled sidecar was dialled over `http://` and every zone operation
 /// failed, with the ServiceAccount token attached to the plaintext request.
@@ -958,7 +972,7 @@ async fn replay_records_if_zone_was_recreated(
 /// needed to dial it correctly: which `Bind9Instance` owns the endpoint, and so
 /// whether that instance's sidecar speaks TLS. Without it the call fell back to
 /// the shared startup manager, which carries no TLS configuration, and went out
-/// over plaintext `http://` against a TLS-only sidecar — refused, then retried
+/// over plaintext `http://` against a TLS-only sidecar: refused, then retried
 /// until the reconcile ran out of time. Keeping the two together is what lets
 /// the notify site resolve a manager through [`zone_manager_for_instance`] like
 /// every other bindcar call in this reconciler.
@@ -1233,12 +1247,21 @@ pub async fn add_dnszone(
     dnszone: DNSZone,
     status_updater: &mut bindy_controller_sdk::status::DNSZoneStatusUpdater,
     instance_refs: &[crate::crd::InstanceReference],
+    peers: &crate::crd::ZoneTransferPeers,
 ) -> Result<types::ZoneConfigOutcome> {
     // One resolver for every BIND9 write this function makes: each primary's
     // RNDC key and endpoints are read once, endpoints from the shared store
     // (ADR-0015, ADR-0016).
     let resolver = bindy_bind9::instances::InstanceResolver::for_kube(&ctx.client, &ctx.stores);
-    add_dnszone_with_resolver(ctx, dnszone, status_updater, instance_refs, &resolver).await
+    add_dnszone_with_resolver(
+        ctx,
+        dnszone,
+        status_updater,
+        instance_refs,
+        peers,
+        &resolver,
+    )
+    .await
 }
 
 /// [`add_dnszone`] through a caller-supplied resolver.
@@ -1247,8 +1270,10 @@ pub async fn add_dnszone(
 /// only, so the zone, its NS and glue records are configured on the pod being
 /// admitted exactly as the zone reconcile configures every pod (ADR-0017).
 /// `instance_refs` must still be every instance the zone selects: the
-/// secondaries' addresses (also-notify, allow-transfer) and the generated
-/// nameservers are derived from them.
+/// generated nameservers are derived from them. A zone created here gets the
+/// secondaries of `peers` as `allow-transfer` and its NOTIFY targets as
+/// `also-notify` (ADR-0019); a zone that already exists is left as it is, its
+/// peers are rewritten by `transfer_peers::refresh_primary_peers`.
 ///
 /// # Errors
 ///
@@ -1260,6 +1285,7 @@ pub(crate) async fn add_dnszone_with_resolver(
     dnszone: DNSZone,
     status_updater: &mut bindy_controller_sdk::status::DNSZoneStatusUpdater,
     instance_refs: &[crate::crd::InstanceReference],
+    peers: &crate::crd::ZoneTransferPeers,
     resolver: &bindy_bind9::instances::InstanceResolver,
 ) -> Result<types::ZoneConfigOutcome> {
     let client = ctx.client.clone();
@@ -1311,16 +1337,14 @@ pub(crate) async fn add_dnszone_with_resolver(
         name
     );
 
-    // Find all secondary instances for zone transfer configuration
+    // The secondaries (for nameserver ordering) and their transfer peers:
+    // allow-transfer names the secondary pods, also-notify their Services
+    // (ADR-0019), both computed by the caller from the stores.
     let secondary_instance_refs =
         secondary::filter_secondary_instances(&client, &ctx.stores.bind9_instances, instance_refs)
             .await?;
-    let secondary_ips = secondary::find_secondary_pod_ips_from_instances(
-        &client,
-        &ctx.stores.bind9_instances,
-        &secondary_instance_refs,
-    )
-    .await?;
+    let secondary_ips = peers.secondaries.clone();
+    let notify_targets = peers.notify.clone();
 
     if secondary_ips.is_empty() {
         warn!(
@@ -1476,6 +1500,7 @@ pub(crate) async fn add_dnszone_with_resolver(
             let all_nameserver_hostnames = all_nameserver_hostnames.clone();
             let name_server_ips = name_server_ips.clone();
             let secondary_ips = secondary_ips.clone();
+            let notify_targets = notify_targets.clone();
             let first_endpoint = Arc::clone(&first_endpoint);
             let total_endpoints = Arc::clone(&total_endpoints);
             let zones_created = Arc::clone(&zones_created);
@@ -1528,6 +1553,7 @@ pub(crate) async fn add_dnszone_with_resolver(
                         let all_nameserver_hostnames = all_nameserver_hostnames.clone();
                         let name_server_ips = name_server_ips.clone();
                         let secondary_ips = secondary_ips.clone();
+                        let notify_targets = notify_targets.clone();
                         let first_endpoint = Arc::clone(&first_endpoint);
                         let total_endpoints = Arc::clone(&total_endpoints);
                         let zones_created = Arc::clone(&zones_created);
@@ -1555,12 +1581,22 @@ pub(crate) async fn add_dnszone_with_resolver(
                             let zone_exists = match zone_manager.zone_exists(&zone_name, &pod_endpoint).await {
                                 Ok(exists) => exists,
                                 Err(e) => {
+                                    // An endpoint that cannot say whether it has the
+                                    // zone (a pod that is gone, a sidecar restarting)
+                                    // is a failed endpoint, retried with the zone's
+                                    // backoff. A POST to it would only ride the
+                                    // two-minute bindcar retry and hold this zone's
+                                    // reconcile, and every other change of the zone,
+                                    // behind a dead address (chaos suite).
                                     error!(
-                                        "Failed to check if zone {} exists on endpoint {} (instance {}/{}): {}",
+                                        "Failed to check if zone {} exists on endpoint {} (instance {}/{}): {:#}",
                                         zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name, e
                                     );
-                                    // Treat errors as "zone might not exist" - proceed with add_zones
-                                    false
+                                    errors.lock().await.push(format!(
+                                        "endpoint {pod_endpoint} (instance {}/{}): zone state unknown: {e:#}",
+                                        instance_ref.namespace, instance_ref.name
+                                    ));
+                                    return Err(());
                                 }
                             };
 
@@ -1580,6 +1616,11 @@ pub(crate) async fn add_dnszone_with_resolver(
                             } else {
                                 Some(secondary_ips.as_slice())
                             };
+                            let notify_targets_ref = if notify_targets.is_empty() {
+                                None
+                            } else {
+                                Some(notify_targets.as_slice())
+                            };
 
                             match zone_manager
                                 .add_zones(
@@ -1591,6 +1632,7 @@ pub(crate) async fn add_dnszone_with_resolver(
                                     Some(&all_nameserver_hostnames),
                                     name_server_ips.as_ref(),
                                     secondary_ips_ref,
+                                    notify_targets_ref,
                                     None, // primary_ips only for secondary zones
                                     dnssec_policy,
                                 )
@@ -1776,41 +1818,56 @@ pub(crate) async fn add_dnszone_with_resolver(
     })
 }
 
-/// Adds a DNS zone to all secondary instances in the cluster with primaries configured.
+/// What configuring a zone on the secondaries achieved (ADR-0019).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SecondaryConfigOutcome {
+    /// Per-instance and per-endpoint counts. An instance counts as configured
+    /// only when every one of its endpoints has the zone **loaded**.
+    pub outcome: types::ZoneConfigOutcome,
+    /// Endpoints that have the zone configured but not loaded, as
+    /// `namespace/instance (ip:port)`.
+    pub not_loaded: Vec<String>,
+    /// Endpoints where the zone could not be created or replaced, or whose
+    /// state could not be read when a replace was required.
+    pub failures: usize,
+}
+
+/// Adds a DNS zone to all secondary instances, transferring from
+/// `primary_ips`.
 ///
-/// Creates secondary zones on all secondary instances, configuring them to transfer
-/// from the provided primary server IPs. If a zone already exists on a secondary,
-/// it checks if the primaries list matches and updates it if necessary.
+/// For each secondary endpoint the zone's presence is read (bindcar status,
+/// with a SOA probe of `named` when bindcar cannot tell, ADR-0019): an absent
+/// zone is created; an existing zone is **replaced** (deleted and created
+/// again with exactly `primary_ips`) when `replace_existing` is set, because
+/// bindcar 0.9.0 cannot change a secondary's primaries in place; then a
+/// `retransfer` is issued. An endpoint whose zone was not loaded before this
+/// reconcile, or was just created or replaced, is reported in `not_loaded`.
 ///
 /// # Arguments
 ///
-/// * `client` - Kubernetes API client
+/// * `ctx` - Controller context
 /// * `dnszone` - The `DNSZone` resource
-/// * `primary_ips` - List of primary server IPs to configure in the primaries field
+/// * `primary_ips` - The transfer sources (admitted primary pod IPs)
+/// * `status_updater` - Status updater for per-instance status
+/// * `instance_refs` - Every instance the zone selects
+/// * `replace_existing` - Whether the transfer sources changed since they
+///   were last pushed
 ///
 /// # Returns
 ///
-/// * `Ok(ZoneConfigOutcome)` - Per-instance and per-endpoint configuration counts.
-///   An instance counts as configured only if ALL of its ready endpoints accepted
-///   the zone, so the instance count is directly comparable with the expected
-///   SECONDARY instance count when computing readiness.
-/// * `Err(_)` - If zone addition failed on every endpoint
+/// The [`SecondaryConfigOutcome`].
 ///
 /// # Errors
 ///
-/// Returns an error if BIND9 zone addition fails on any secondary instance.
-///
-/// # Panics
-///
-/// Panics if internal Arc unwrapping fails (should not happen in normal operation).
-#[allow(clippy::too_many_lines)]
+/// Returns an error if BIND9 zone addition fails on every endpoint.
 pub async fn add_dnszone_to_secondaries(
     ctx: Arc<crate::context::Context>,
     dnszone: DNSZone,
     primary_ips: &[String],
     status_updater: &mut bindy_controller_sdk::status::DNSZoneStatusUpdater,
     instance_refs: &[crate::crd::InstanceReference],
-) -> Result<types::ZoneConfigOutcome> {
+    replace_existing: bool,
+) -> Result<SecondaryConfigOutcome> {
     // One resolver for every secondary's RNDC key and endpoints (ADR-0016)
     let resolver = bindy_bind9::instances::InstanceResolver::for_kube(&ctx.client, &ctx.stores);
     add_dnszone_to_secondaries_with_resolver(
@@ -1819,10 +1876,16 @@ pub async fn add_dnszone_to_secondaries(
         primary_ips,
         status_updater,
         instance_refs,
+        replace_existing,
         &resolver,
     )
     .await
 }
+
+/// The result of one secondary endpoint: whether the zone was created
+/// (`Ok(true)`), already there (`Ok(false)`) or failed (`Err`), and whether
+/// it is loaded.
+type SecondaryEndpointResult = (std::result::Result<bool, ()>, bool);
 
 /// [`add_dnszone_to_secondaries`] through a caller-supplied resolver.
 ///
@@ -1840,8 +1903,11 @@ pub(crate) async fn add_dnszone_to_secondaries_with_resolver(
     primary_ips: &[String],
     status_updater: &mut bindy_controller_sdk::status::DNSZoneStatusUpdater,
     instance_refs: &[crate::crd::InstanceReference],
+    replace_existing: bool,
     resolver: &bindy_bind9::instances::InstanceResolver,
-) -> Result<types::ZoneConfigOutcome> {
+) -> Result<SecondaryConfigOutcome> {
+    use crate::bind9::zone_ops::ZonePresence;
+
     let client = ctx.client.clone();
     let namespace = dnszone.namespace().unwrap_or_default();
     let name = dnszone.name_any();
@@ -1852,16 +1918,13 @@ pub(crate) async fn add_dnszone_to_secondaries_with_resolver(
             "No primary IPs provided for secondary zone {}/{} - skipping secondary configuration",
             namespace, spec.zone_name
         );
-        return Ok(types::ZoneConfigOutcome::default());
+        return Ok(SecondaryConfigOutcome::default());
     }
 
     debug!(
-        "Adding DNSZone {}/{} to secondary instances with primaries: {:?}",
-        namespace, name, primary_ips
+        "Adding DNSZone {}/{} to secondary instances with primaries: {:?} (replace existing: {})",
+        namespace, name, primary_ips, replace_existing
     );
-
-    // PHASE 2 OPTIMIZATION: Use the filtered instance list passed by the caller
-    // This ensures we only process instances that need reconciliation (lastReconciledAt == None)
 
     // Filter to only SECONDARY instances, roles from the Bind9Instance store
     let secondary_instance_refs =
@@ -1873,29 +1936,18 @@ pub(crate) async fn add_dnszone_to_secondaries_with_resolver(
             "No secondary instances found for DNSZone {}/{} - skipping secondary zone configuration",
             namespace, name
         );
-        return Ok(types::ZoneConfigOutcome::default());
+        return Ok(SecondaryConfigOutcome::default());
     }
 
-    debug!(
-        "Found {} secondary instance(s) for DNSZone {}/{}",
-        secondary_instance_refs.len(),
-        namespace,
-        name
-    );
-
-    // Process all secondary instances concurrently using async streams
-    // Mark each instance as reconciled immediately after first successful endpoint configuration
     let total_endpoints = Arc::new(Mutex::new(0_usize));
     // Endpoints where the secondary zone had to be created (see the primary
-    // path for why this matters).
+    // path for why this matters). A replaced zone is not counted: the
+    // primaries still hold every record, nothing needs a replay.
     let zones_created = Arc::new(Mutex::new(0_usize));
     let errors = Arc::new(Mutex::new(Vec::<String>::new()));
+    let not_loaded = Arc::new(Mutex::new(Vec::<String>::new()));
     let status_updater_shared = Arc::new(Mutex::new(status_updater));
 
-    // Create a stream of futures for all secondary instances.
-    // Each instance future resolves to `true` only if EVERY endpoint of that
-    // instance accepted the zone (added or already present) - this is the
-    // per-INSTANCE success signal used for readiness computation.
     let instance_results = stream::iter(secondary_instance_refs.iter())
         .then(|instance_ref| {
             let zone_manager =
@@ -1905,10 +1957,9 @@ pub(crate) async fn add_dnszone_to_secondaries_with_resolver(
             let total_endpoints = Arc::clone(&total_endpoints);
             let zones_created = Arc::clone(&zones_created);
             let errors = Arc::clone(&errors);
+            let not_loaded = Arc::clone(&not_loaded);
             let status_updater_shared = Arc::clone(&status_updater_shared);
             let instance_ref = instance_ref.clone();
-            let _zone_namespace = namespace.clone();
-            let _zone_name_ref = name.clone();
 
             async move {
                 debug!(
@@ -1916,7 +1967,6 @@ pub(crate) async fn add_dnszone_to_secondaries_with_resolver(
                     instance_ref.namespace, instance_ref.name, zone_name
                 );
 
-                // Load RNDC key for this specific instance
                 // Each instance has its own RNDC secret for security isolation
                 let key_data = match resolver.rndc_key(&instance_ref.namespace, &instance_ref.name).await {
                     Ok(key) => key,
@@ -1927,7 +1977,6 @@ pub(crate) async fn add_dnszone_to_secondaries_with_resolver(
                     }
                 };
 
-                // Get all endpoints for this secondary instance
                 let endpoints = match resolver.endpoints(&instance_ref.namespace, &instance_ref.name, "http").await {
                     Ok(eps) => eps,
                     Err(e) => {
@@ -1937,14 +1986,6 @@ pub(crate) async fn add_dnszone_to_secondaries_with_resolver(
                     }
                 };
 
-                debug!(
-                    "Found {} endpoint(s) for secondary instance {}/{}",
-                    endpoints.len(),
-                    instance_ref.namespace,
-                    instance_ref.name
-                );
-
-                // Process endpoints concurrently for this instance
                 let endpoint_results = stream::iter(endpoints.iter())
                     .then(|endpoint| {
                         let zone_manager = zone_manager.clone();
@@ -1959,38 +2000,44 @@ pub(crate) async fn add_dnszone_to_secondaries_with_resolver(
 
                         async move {
                             let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
+                            let label = format!("{}/{} ({pod_endpoint})", instance_ref.namespace, instance_ref.name);
 
-                            // Check if zone already exists before attempting creation
-                            let zone_exists = match zone_manager.zone_exists(&zone_name, &pod_endpoint).await {
-                                Ok(exists) => exists,
+                            // Absent, loaded, or configured with no data
+                            // (ADR-0019). An endpoint whose state cannot be read
+                            // (a pod that is gone, a sidecar restarting) is a
+                            // failed endpoint retried with the zone's backoff,
+                            // never a POST that rides the two-minute bindcar
+                            // retry against a dead address.
+                            let presence = match zone_manager.zone_presence(&zone_name, &pod_endpoint).await {
+                                Ok(presence) => Some(presence),
                                 Err(e) => {
-                                    error!(
-                                        "Failed to check if zone {} exists on endpoint {} (instance {}/{}): {}",
-                                        zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name, e
-                                    );
-                                    // Treat errors as "zone might not exist" - proceed with add_zones
-                                    false
+                                    warn!("Cannot read zone {zone_name} on secondary {label}: {e:#}");
+                                    errors.lock().await.push(format!("endpoint {label}: zone state unknown: {e:#}"));
+                                    return (Err(()), false);
                                 }
                             };
+                            let exists = matches!(presence, Some(ZonePresence::Loaded | ZonePresence::NotLoaded));
+                            let mut loaded = presence == Some(ZonePresence::Loaded);
 
-                            // Variable to track if zone was added
-                            let was_added = if zone_exists {
-                                debug!(
-                                    "Secondary zone {} already exists on endpoint {} (instance {}/{}), skipping creation",
-                                    zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name
-                                );
-                                *total_endpoints.lock().await += 1;
-                                false // Zone not newly added
+                            let created = if exists && replace_existing {
+                                match zone_manager
+                                    .replace_secondary_zone(&zone_name, &pod_endpoint, &key_data, &primary_ips)
+                                    .await
+                                {
+                                    Ok(()) => {
+                                        info!("Replaced secondary zone {zone_name} on {label}: primaries {primary_ips:?}");
+                                        loaded = false;
+                                        false
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to replace secondary zone {zone_name} on {label}: {e:#}");
+                                        errors.lock().await.push(format!("endpoint {label}: {e:#}"));
+                                        return (Err(()), false);
+                                    }
+                                }
+                            } else if exists {
+                                false
                             } else {
-                                debug!(
-                                    "Adding secondary zone {} to endpoint {} (instance: {}/{}) with primaries: {:?}",
-                                    zone_name,
-                                    pod_endpoint,
-                                    instance_ref.namespace,
-                                    instance_ref.name,
-                                    primary_ips
-                                );
-
                                 match zone_manager
                                     .add_zones(
                                         &zone_name,
@@ -2001,6 +2048,7 @@ pub(crate) async fn add_dnszone_to_secondaries_with_resolver(
                                         None, // No name_servers for secondary zones
                                         None, // No name_server_ips for secondary zones
                                         None, // No secondary_ips for secondary zones
+                                        None, // No notify targets for secondary zones
                                         Some(&primary_ips),
                                         None, // No DNSSEC policy for secondary zones
                                     )
@@ -2008,97 +2056,78 @@ pub(crate) async fn add_dnszone_to_secondaries_with_resolver(
                                 {
                                     Ok(added) => {
                                         if added {
-                                            info!(
-                                                "Successfully added secondary zone {} to endpoint {} (instance: {}/{})",
-                                                zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name
-                                            );
+                                            info!("Added secondary zone {zone_name} to {label}");
                                             *zones_created.lock().await += 1;
-                                        } else {
-                                            debug!(
-                                                "Secondary zone {} already exists on endpoint {} (instance: {}/{})",
-                                                zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name
-                                            );
                                         }
-                                        *total_endpoints.lock().await += 1;
+                                        loaded = false;
                                         added
                                     }
                                     Err(e) => {
-                                        error!(
-                                            "Failed to add secondary zone {} to endpoint {} (instance {}/{}): {}",
-                                            zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name, e
-                                        );
-                                        errors.lock().await.push(format!(
-                                            "endpoint {pod_endpoint} (instance {}/{}): {e}",
-                                            instance_ref.namespace, instance_ref.name
-                                        ));
-                                        return Err(());
+                                        error!("Failed to add secondary zone {zone_name} to {label}: {e:#}");
+                                        errors.lock().await.push(format!("endpoint {label}: {e:#}"));
+                                        return (Err(()), false);
                                     }
                                 }
                             };
+                            *total_endpoints.lock().await += 1;
 
-                            // CRITICAL: Immediately trigger zone transfer to load the zone data
-                            // This is necessary because:
-                            // 1. `rndc addzone` only adds the zone to BIND9's config (in-memory)
-                            // 2. The zone file doesn't exist yet on the secondary
-                            // 3. Queries will return SERVFAIL until data is transferred from primary
-                            // 4. `rndc retransfer` forces an immediate AXFR from primary to secondary
-                            //
-                            // This ensures the zone is LOADED and SERVING queries immediately after
-                            // secondary pod restart or zone creation.
-                            // NOTE: We trigger transfer even if zone already existed to ensure it's up to date
-                            debug!(
-                                "Triggering immediate zone transfer for {} on secondary {} to load zone data",
-                                zone_name, pod_endpoint
-                            );
-                            if let Err(e) = zone_manager
-                                .retransfer_zone(&zone_name, &pod_endpoint)
-                                .await
-                            {
-                                // Don't fail reconciliation if retransfer fails - zone will sync via SOA refresh
+                            // `rndc addzone` only configures the zone; the data
+                            // comes from an AXFR. Force one now (also on a zone
+                            // that already existed, to bring it up to date).
+                            if let Err(e) = zone_manager.retransfer_zone(&zone_name, &pod_endpoint).await {
                                 warn!(
-                                    "Failed to trigger immediate zone transfer for {} on {}: {}. Zone will sync via SOA refresh timer.",
-                                    zone_name, pod_endpoint, e
-                                );
-                            } else {
-                                debug!(
-                                    "Successfully triggered zone transfer for {} on {}",
-                                    zone_name, pod_endpoint
+                                    "Failed to trigger zone transfer for {zone_name} on {label}: {e:#}. Zone will sync via SOA refresh timer."
                                 );
                             }
 
-                            // Return was_added so we can check if zone was actually configured
-                            Ok(was_added)
+                            (Ok(created), loaded)
                         }
                     })
-                    .collect::<Vec<Result<bool, ()>>>()
+                    .collect::<Vec<SecondaryEndpointResult>>()
                     .await;
 
-                // Mark this instance as configured if at least one endpoint accepted
-                // the zone - freshly added OR already present. has_changes() compares
-                // instance lists excluding lastReconciledAt, so re-marking an already
-                // recorded instance does not cause a status patch per cycle.
-                let zone_was_configured = instance_serves_zone(&endpoint_results);
-                if zone_was_configured {
-                    status_updater_shared
-                        .lock()
-                        .await
-                        .update_instance_status(
-                            &instance_ref.name,
-                            &instance_ref.namespace,
+                let accepted: Vec<std::result::Result<bool, ()>> =
+                    endpoint_results.iter().map(|(result, _)| *result).collect();
+                let all_loaded = !endpoint_results.is_empty()
+                    && endpoint_results.iter().all(|(result, loaded)| result.is_ok() && *loaded);
+                let unloaded: Vec<String> = endpoint_results
+                    .iter()
+                    .zip(endpoints.iter())
+                    .filter(|((result, loaded), _)| result.is_ok() && !*loaded)
+                    .map(|(_, endpoint)| {
+                        format!(
+                            "{}/{} ({}:{})",
+                            instance_ref.namespace, instance_ref.name, endpoint.ip, endpoint.port
+                        )
+                    })
+                    .collect();
+
+                if instance_serves_zone(&accepted) {
+                    let (status, message) = if unloaded.is_empty() {
+                        (
                             crate::crd::InstanceStatus::Configured,
-                            Some("Zone successfully configured on secondary instance".to_string()),
-                        );
-                    debug!(
-                        "Marked secondary instance {}/{} as configured for zone {}",
-                        instance_ref.namespace, instance_ref.name, zone_name
+                            "Zone successfully configured on secondary instance".to_string(),
+                        )
+                    } else {
+                        (
+                            crate::crd::InstanceStatus::Failed,
+                            format!(
+                                "Zone configured but not loaded on {} endpoint(s): transfer pending or denied",
+                                unloaded.len()
+                            ),
+                        )
+                    };
+                    status_updater_shared.lock().await.update_instance_status(
+                        &instance_ref.name,
+                        &instance_ref.namespace,
+                        status,
+                        Some(message),
                     );
                 }
+                not_loaded.lock().await.extend(unloaded);
 
-                // The instance counts as fully configured only if every one of
-                // its ready endpoints accepted the zone (added OR already
-                // present). A single failed endpoint means the instance is NOT
-                // fully serving the zone and must not count towards readiness.
-                !endpoint_results.is_empty() && endpoint_results.iter().all(Result::is_ok)
+                // Fully configured only if every endpoint has the zone loaded.
+                all_loaded
             }
         })
         .collect::<Vec<bool>>()
@@ -2115,6 +2144,9 @@ pub(crate) async fn add_dnszone_to_secondaries_with_resolver(
     let errors = Arc::try_unwrap(errors)
         .expect("Failed to unwrap errors Arc")
         .into_inner();
+    let not_loaded = Arc::try_unwrap(not_loaded)
+        .expect("Failed to unwrap not_loaded Arc")
+        .into_inner();
 
     // If ALL operations failed, return an error
     if total_endpoints == 0 && !errors.is_empty() {
@@ -2126,17 +2158,22 @@ pub(crate) async fn add_dnszone_to_secondaries_with_resolver(
     }
 
     debug!(
-        "Successfully configured secondary zone {} on {} endpoint(s) across {}/{} fully configured secondary instance(s)",
+        "Secondary zone {}: {} endpoint(s) configured, {}/{} instance(s) fully loaded, not loaded on {:?}",
         spec.zone_name,
         total_endpoints,
         instances_configured,
-        secondary_instance_refs.len()
+        secondary_instance_refs.len(),
+        not_loaded
     );
 
-    Ok(types::ZoneConfigOutcome {
-        instances_configured,
-        endpoints_configured: total_endpoints,
-        zones_created,
+    Ok(SecondaryConfigOutcome {
+        outcome: types::ZoneConfigOutcome {
+            instances_configured,
+            endpoints_configured: total_endpoints,
+            zones_created,
+        },
+        not_loaded,
+        failures: errors.len(),
     })
 }
 
@@ -2197,15 +2234,17 @@ pub async fn delete_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZone)
         .collect();
 
     // Delete from all primary instances.
-    // Deletion cleanup uses SkipUnavailable: an instance with zero ready
-    // endpoints must not block finalizer removal forever - its DNS data is
-    // unreachable (and lost anyway with ephemeral storage). Real API errors
-    // still propagate so the next reconcile retries.
+    // Deletion cleanup uses SkipUnavailable: an instance whose data is gone
+    // (instance deleted, pods gone) must not block finalizer removal. A pod
+    // that still holds the zone but cannot be reached right now (a container
+    // restarting) fails the deletion, which is retried with backoff: removing
+    // the finalizer then left the zone served from the pod's surviving
+    // emptyDir (chaos suite). Real API errors still propagate.
     if !primary_instance_refs.is_empty() {
         let (_first_endpoint, total_endpoints) = helpers::for_each_instance_endpoint_with_policy(
             &resolver,
             &primary_instance_refs,
-            false, // with_rndc_key = false for zone deletion
+            false,  // with_rndc_key = false for zone deletion
             "http", // Use HTTP API port for zone deletion via bindcar API
             helpers::EndpointFailurePolicy::SkipUnavailable,
             |pod_endpoint, instance_name, _rndc_key| {
@@ -2225,23 +2264,22 @@ pub async fn delete_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZone)
                         zone_name, pod_endpoint, instance_name
                     );
 
-                    // Attempt to delete zone - if it fails (zone not found, endpoint unreachable, etc.),
-                    // log a warning but don't fail the deletion. This ensures DNSZones can be deleted
-                    // even if BIND9 instances are unavailable or the zone was already removed.
-                    // Each call gives up within DELETE_RETRY_BUDGET, so an endpoint
-                    // that is gone cannot hold this reconcile for minutes.
+                    // An absent zone counts as deleted. A failure is reported:
+                    // tolerated for a pod that no longer holds the zone,
+                    // retried for one that does (coverage check). Each call
+                    // gives up within DELETE_RETRY_BUDGET, so an endpoint that
+                    // is gone cannot hold this reconcile for minutes.
                     if let Err(e) = zone_manager.delete_zone(&zone_name, &pod_endpoint).await {
                         warn!(
-                            "Failed to delete zone {} from endpoint {} (instance: {}): {}. Continuing with deletion anyway.",
+                            "Failed to delete zone {} from endpoint {} (instance: {}): {:#}",
                             zone_name, pod_endpoint, instance_name, e
                         );
-                    } else {
-                        debug!(
-                            "Successfully deleted zone {} from endpoint {} (instance: {})",
-                            zone_name, pod_endpoint, instance_name
-                        );
+                        return Err(e);
                     }
-
+                    debug!(
+                        "Successfully deleted zone {} from endpoint {} (instance: {})",
+                        zone_name, pod_endpoint, instance_name
+                    );
                     Ok(())
                 }
             },
@@ -2254,63 +2292,49 @@ pub async fn delete_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZone)
         );
     }
 
-    // Delete from all secondary instances
+    // Delete from all secondary instances, with the same rule: skipped when
+    // its data is gone, retried while a pod that holds the zone cannot be
+    // reached (a secondary left with the zone would serve it until expiry).
     if !secondary_instance_refs.is_empty() {
-        let mut secondary_endpoints_deleted = 0;
-
-        for instance_ref in &secondary_instance_refs {
-            // Per instance, not the shared startup manager: only this carries
-            // the instance's TLS configuration. A secondary whose sidecar
-            // speaks TLS would otherwise be dialled over plaintext http://,
-            // refused, and its zone left orphaned. See zone_manager_for_instance.
-            let zone_manager =
-                zone_manager_for_instance(&ctx, &instance_ref.name, &instance_ref.namespace);
-
-            // Deletion cleanup: skip secondary instances with no reachable
-            // endpoints instead of blocking finalizer removal forever. Real
-            // (potentially transient) API errors still propagate for retry.
-            let endpoints = match resolver
-                .endpoints(&instance_ref.namespace, &instance_ref.name, "http")
-                .await
-            {
-                Ok(eps) => eps,
-                Err(e) if helpers::is_unavailable_for_deletion(&e) => {
-                    warn!(
-                        "SKIPPING secondary instance {}/{} during zone deletion: no reachable endpoints ({e:#}). \
-                         Zone data on this instance cannot be cleaned up and may be orphaned.",
-                        instance_ref.namespace, instance_ref.name
-                    );
-                    continue;
-                }
-                Err(e) => return Err(e),
-            };
-
-            for endpoint in &endpoints {
-                let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
-
-                debug!(
-                    "Deleting zone {} from secondary endpoint {} (instance: {}/{})",
-                    spec.zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name
-                );
-
-                // Attempt to delete zone - if it fails, log a warning but don't fail the deletion
-                if let Err(e) = zone_manager
-                    .delete_zone(&spec.zone_name, &pod_endpoint)
-                    .await
-                {
-                    warn!(
-                        "Failed to delete zone {} from secondary endpoint {} (instance: {}/{}): {}. Continuing with deletion anyway.",
-                        spec.zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name, e
-                    );
-                } else {
-                    debug!(
-                        "Successfully deleted zone {} from secondary endpoint {} (instance: {}/{})",
-                        spec.zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name
-                    );
-                    secondary_endpoints_deleted += 1;
-                }
-            }
-        }
+        let secondary_ns_by_name: std::collections::HashMap<String, String> =
+            secondary_instance_refs
+                .iter()
+                .map(|r| (r.name.clone(), r.namespace.clone()))
+                .collect();
+        let (_first_endpoint, secondary_endpoints_deleted) =
+            helpers::for_each_instance_endpoint_with_policy(
+                &resolver,
+                &secondary_instance_refs,
+                false, // with_rndc_key = false for zone deletion
+                "http",
+                helpers::EndpointFailurePolicy::SkipUnavailable,
+                |pod_endpoint, instance_name, _rndc_key| {
+                    let zone_name = spec.zone_name.clone();
+                    let instance_namespace = secondary_ns_by_name
+                        .get(instance_name.as_str())
+                        .cloned()
+                        .unwrap_or_else(|| namespace.clone());
+                    // Per instance, not the shared startup manager: only this
+                    // carries the instance's TLS configuration.
+                    let zone_manager =
+                        zone_manager_for_instance(&ctx, &instance_name, &instance_namespace);
+                    async move {
+                        if let Err(e) = zone_manager.delete_zone(&zone_name, &pod_endpoint).await {
+                            warn!(
+                                "Failed to delete zone {} from secondary endpoint {} (instance: {}): {:#}",
+                                zone_name, pod_endpoint, instance_name, e
+                            );
+                            return Err(e);
+                        }
+                        debug!(
+                            "Successfully deleted zone {} from secondary endpoint {} (instance: {})",
+                            zone_name, pod_endpoint, instance_name
+                        );
+                        Ok(())
+                    }
+                },
+            )
+            .await?;
 
         info!(
             "Successfully deleted zone {} from {} secondary endpoint(s)",

@@ -1,6 +1,8 @@
 # Bindy Load Testing Framework - Claude Code Roadmap
 
-> **Status:** ⛔ Not started. The workspace conversion in [01](01-controller-crate-split.md) is done, so `crates/` exists, but `crates/loadtest/` does not. Audited 2026-10-06.
+> **Status:** 🔶 In progress. The chaos scenario (Milestone 4.3) exists as a bash e2e suite, `tests/e2e/chaos_test.sh` (`make e2e-chaos`, a CI matrix job; see [Chaos Testing](../../docs/src/development/chaos-testing.md)), not as `crates/loadtest/`, which still does not exist. Audited 2026-10-07.
+>
+> **Chaos suite (2026-10-07).** v0.8.0-rc.7 passed every unit test and broke on a real cluster when pods were replaced: a secondary held no copy of a zone while the zone reported Ready. The suite builds two primaries, one secondary and a standalone primary on a three-node kind cluster, runs fifteen failure steps (operator leader and replicas killed, the operator down while a Service and the cluster ConfigMap are deleted, BIND9 pods and containers killed alone and together, a staggered rollout with and without an operator kill in the middle, record and zone churn during pod chaos, rescheduling to another node) in a fixed and a seeded random order, and after each checks every pod's served records and serials, `rndc zonestatus` and `showzone` transfer peers, truthful statuses, a quiet operator, and per-Service DNS gaps from a prober querying every second. Against rc.7 it failed 25 of 29 step runs. It found and is the regression test for: stale transfer peers and untruthful secondary status ([ADR-0019](../../docs/adr/0019-zone-transfer-peers-follow-pods.md)), a two-minute retry on unloaded zones and dead endpoints, the leader lease renewed 2 s before expiry on the shared client (leader restarts, two leaders for up to 30 s), a bindcar env var removal that never reached the pods, and a `Bind9Cluster` not woken by instances that only reference it (ADR-0016 amended).
 >
 > **Manual load tests in the meantime.** The v0.8.0-rc.2 and rc.3 runs (300 `ARecord`s, 3 primaries) were driven by hand, and their findings landed as [ADR-0014](../../docs/adr/0014-bounded-kube-api-request-timeout.md) (request deadline), [ADR-0015](../../docs/adr/0015-bounded-api-cost-of-dns-writes.md) (API cost of DNS writes) and [ADR-0016](../../docs/adr/0016-event-driven-reconciliation.md) (no periodic resync). The burst scenario in Milestone 4.1 should assert what those runs measured by hand: reconciles per record, API requests per record, and zero reconciles at rest.
 >
@@ -447,13 +449,13 @@ Implement failure injection tests.
   async fn apply_network_chaos(&self, spec: NetworkChaosSpec) -> Result<()>;
   ```
 
-- [ ] Implement manual chaos (no Chaos Mesh dependency):
+- [x] Implement manual chaos (no Chaos Mesh dependency): pod deletion via the API, container kills on the node (`crictl stop`), operator scale-down, Service and ConfigMap deletion, node cordon. Done 2026-10-07 in `tests/lib/chaos.sh` (bash, not Rust); resource limit patching not done
   - Pod deletion via API
   - Resource limit patching
 
-- [ ] Run background load during chaos
+- [x] Run background load during chaos: record churn (create, change, delete) during pod deletions and container kills, step 11 (light load, not the burst scale)
 
-- [ ] Measure recovery time after failures
+- [x] Measure recovery time after failures: convergence seconds per step, longest DNS gap per Service, zone outage seconds
 
 - [ ] Wire up CLI: `bindy-loadtest chaos --scenario pod-kill --duration 10m`
 

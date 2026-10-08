@@ -135,6 +135,58 @@ mod tests {
     }
 
     #[test]
+    fn test_dnszone_status_transfer_peers_wire_shape() {
+        // ADR-0019: the peer sets last pushed to every endpoint. Pin the wire
+        // names (a key the structural schema does not know is pruned).
+        let status = DNSZoneStatus {
+            transfer_peers: Some(ZoneTransferPeers {
+                primaries: vec!["10.0.0.1".into()],
+                secondaries: vec!["10.0.0.2".into()],
+                notify: vec!["10.96.0.3".into()],
+            }),
+            ..Default::default()
+        };
+
+        let json = serde_json::to_value(&status).expect("status serializes");
+
+        assert_eq!(
+            json.get("transferPeers"),
+            Some(&serde_json::json!({
+                "primaries": ["10.0.0.1"],
+                "secondaries": ["10.0.0.2"],
+                "notify": ["10.96.0.3"],
+            }))
+        );
+    }
+
+    #[test]
+    fn test_zone_transfer_peers_empty_lists_stay_on_the_wire() {
+        // The status is sent as a JSON merge patch, which replaces arrays
+        // whole but leaves an omitted key alone: an empty list must be
+        // serialized, or a zone that lost its last secondary would keep the
+        // old one recorded forever.
+        let peers = ZoneTransferPeers::default();
+
+        let json = serde_json::to_value(&peers).expect("peers serialize");
+
+        assert_eq!(
+            json,
+            serde_json::json!({"primaries": [], "secondaries": [], "notify": []})
+        );
+    }
+
+    #[test]
+    fn test_dnszone_status_transfer_peers_absent_on_legacy_status() {
+        // Zones reconciled before ADR-0019 have no such key.
+        let json = serde_json::json!({ "conditions": [] });
+
+        let status: DNSZoneStatus =
+            serde_json::from_value(json).expect("legacy status deserializes");
+
+        assert!(status.transfer_peers.is_none());
+    }
+
+    #[test]
     fn test_tsig_key() {
         let tsig = TSIGKey {
             name: "transfer-key".into(),
@@ -606,6 +658,7 @@ mod tests {
             bind9_instances_count: None,
             records_resync_pending: false,
             dnssec: None,
+            transfer_peers: None,
         };
 
         assert_eq!(status.conditions.len(), 1);
@@ -785,7 +838,7 @@ mod tests {
     #[test]
     fn test_rndc_algorithm_as_str_all_variants() {
         // Test that as_str() returns the BIND9 format with "hmac-" prefix.
-        // HMAC-MD5 is intentionally absent — see H4 in the security audit.
+        // HMAC-MD5 is intentionally absent; see H4 in the security audit.
         assert_eq!(RndcAlgorithm::HmacSha1.as_str(), "hmac-sha1");
         assert_eq!(RndcAlgorithm::HmacSha224.as_str(), "hmac-sha224");
         assert_eq!(RndcAlgorithm::HmacSha256.as_str(), "hmac-sha256");
@@ -1137,7 +1190,7 @@ fn test_zones_count_serialization() {
 /// B-6: `dnssecPolicy` flows into BIND9 configuration (via bindcar's
 /// `rndc addzone ... dnssec-policy "<name>"` quoted literal), so the CRD schema
 /// must constrain it to a safe identifier set at the source. These tests pin the
-/// generated OpenAPI schema pattern — the Kubernetes API server enforces it on
+/// generated OpenAPI schema pattern; the Kubernetes API server enforces it on
 /// admission.
 #[cfg(test)]
 mod dnssec_policy_schema_tests {
@@ -1198,7 +1251,7 @@ mod dnssec_policy_schema_tests {
 
     /// Sanity-check the pattern itself: legitimate policy names match, injection
     /// payloads do not. Implemented as a literal character walk to avoid adding a
-    /// regex dev-dependency — the pattern is simple enough to verify directly.
+    /// regex dev-dependency; the pattern is simple enough to verify directly.
     #[test]
     fn test_pattern_semantics_reject_injection_payloads() {
         fn matches(s: &str) -> bool {

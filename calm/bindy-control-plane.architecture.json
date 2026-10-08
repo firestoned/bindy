@@ -225,7 +225,7 @@
     },
     {
       "unique-id": "operator-manages-zones",
-      "description": "add / delete / notify zones (SA token, TokenReview), on every container-ready pod, including pods the zones-loaded gate holds out of Service (ADR-0017)",
+      "description": "add / delete / notify zones (SA token, TokenReview), on every container-ready pod, including pods the zones-loaded gate holds out of Service (ADR-0017); keeps each zone's transfer peers in step with the pods: rewrites a primary's allow-transfer / also-notify, replaces a secondary zone whose primaries moved, records the peers in DNSZone status.transferPeers (ADR-0019)",
       "protocol": "HTTPS",
       "relationship-type": {
         "connects": {
@@ -247,7 +247,7 @@
     },
     {
       "unique-id": "operator-extracts-ds-records",
-      "description": "queries DNSKEY (read-only, DNS over UDP :5353) to derive DS records for DNSZone status — ADR-0006",
+      "description": "queries DNSKEY (read-only, DNS over UDP :5353) to derive DS records for DNSZone status, ADR-0006",
       "protocol": "TCP",
       "relationship-type": {
         "connects": {
@@ -303,6 +303,17 @@
         "connects": {
           "source": { "node": "bind9-svc" },
           "destination": { "node": "named" }
+        }
+      }
+    },
+    {
+      "unique-id": "named-zone-transfer",
+      "description": "zone transfer between BIND9 pods: a secondary named transfers (AXFR/IXFR, TCP :5353) from the primary pod IPs in its primaries list, allowed by the primaries' allow-transfer (exactly the zone's live secondary pod IPs); a primary sends NOTIFY to each secondary instance's Service ClusterIP on :53 (ADR-0019)",
+      "protocol": "TCP",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "named" },
+          "destination": { "node": "bind9-svc" }
         }
       }
     }

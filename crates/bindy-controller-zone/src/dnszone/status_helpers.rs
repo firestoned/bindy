@@ -172,6 +172,44 @@ pub fn set_final_zone_conditions(
     );
 }
 
+/// `Degraded` reason: a deleted or unselected record's DNS data is not yet
+/// confirmed gone from every pod that holds the zone (ADR-0015 amended).
+pub const REASON_RECORD_DELETION_PENDING: &str = "RecordDeletionPending";
+
+/// Set `Degraded` (`RecordDeletionPending`) while a record that should no
+/// longer be served may still be (in-memory only).
+///
+/// # Arguments
+///
+/// * `status_updater` - The zone's status updater
+/// * `zone_name` - The zone's DNS name
+/// * `pending` - `Kind/name` of each deleted record still being cleaned up
+/// * `unselected_pending` - Whether a record no longer selected by the zone
+///   still has its data to delete
+pub fn mark_record_deletions_pending(
+    status_updater: &mut bindy_controller_sdk::status::DNSZoneStatusUpdater,
+    zone_name: &str,
+    pending: &[String],
+    unselected_pending: bool,
+) {
+    if pending.is_empty() && !unselected_pending {
+        return;
+    }
+    let mut what: Vec<String> = pending.to_vec();
+    if unselected_pending {
+        what.push("a record no longer selected by the zone".to_string());
+    }
+    status_updater.set_condition(
+        "Degraded",
+        "True",
+        REASON_RECORD_DELETION_PENDING,
+        &format!(
+            "Zone {zone_name}: DNS data not yet confirmed gone from every server for {}; retrying",
+            what.join(", ")
+        ),
+    );
+}
+
 /// Determine final zone status and apply conditions.
 ///
 /// Sets the final condition triple via [`set_final_zone_conditions`] and then

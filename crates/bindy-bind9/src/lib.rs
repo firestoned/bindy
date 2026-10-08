@@ -34,6 +34,7 @@ pub mod context;
 pub mod ddns;
 pub mod dns_errors;
 pub mod instances;
+pub mod peers;
 pub mod placement;
 pub mod primary;
 pub mod record_push;

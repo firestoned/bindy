@@ -215,6 +215,55 @@ Deployment <ns>/<name>: the pod template patch for <field> changed nothing (gene
 Deployment's `spec.template` (`kubectl get deployment <name> -n <ns> -o yaml`):
 it is a comparison bug, and the instance keeps working meanwhile.
 
+### A Secondary Holds No Copy of the Zone (`SecondaryNotLoaded`)
+
+Symptoms, seen on v0.8.0-rc.7 after pods were replaced: the secondary answers
+`SERVFAIL` for the zone; `rndc zonestatus` on it says the zone is not loaded;
+its log shows `transfer of '<zone>' from <ip>#5353: failed ... denied` or
+`host unreachable`; the primaries' `rndc showzone <zone>` names an old
+secondary IP in `allow-transfer`, and the secondary's names old primary IPs in
+`primaries`. rc.7 still reported the zone `Ready=True`.
+
+Cause: the peer lists were written only when a zone was created on a pod and
+never updated when pods were replaced. Fixed by
+[ADR-0019](https://github.com/firestoned/bindy/blob/main/docs/adr/0019-zone-transfer-peers-follow-pods.md):
+the operator records the peers it last pushed in `status.transferPeers` and,
+when the zone's pods move, rewrites every primary's `allow-transfer` /
+`also-notify` and replaces every secondary zone whose primaries moved. Check:
+
+```bash
+kubectl get dnszone <name> -n <ns> -o jsonpath='{.status.transferPeers}'
+# primaries:   the admitted primary pod IPs (what secondaries transfer from)
+# secondaries: the secondary pod IPs (the primaries' allow-transfer)
+# notify:      the secondary Services' ClusterIPs (the primaries' also-notify, port 53)
+```
+
+While a secondary has the zone configured but not loaded, the zone reports
+`Degraded=True` / `Ready=False` with reason `SecondaryNotLoaded`, naming the
+instance and endpoint, and retries with backoff until the transfer completes.
+`TransferPeersNotUpdated` means a primary refused the new `allow-transfer`;
+`NoTransferSource` means no primary pod has its zones loaded yet (all
+primaries were replaced at once and are still loading).
+
+Zones created by an operator older than ADR-0019 carry an `also-notify` with
+a port (`<ip> port 5353`) that bindcar 0.9.0 cannot rewrite in place: their
+`allow-transfer` is still corrected, and the operator logs
+`also-notify could not be` once per change. Roll the BIND9 pods once after
+upgrading (`kubectl rollout restart deployment -n <ns> -l app=bind9`) to move
+every zone to the new form.
+
+### A Record or Zone Stays `Terminating` (`RecordDeletionPending`)
+
+A record or zone deletion waits until its data is confirmed gone from every
+pod that holds the zone (ADR-0015 decision 7). The operator logs
+`Pod <ip> of instance <ns>/<name> holds its zones but was not reached` and
+the zone reports `Degraded=True` with reason `RecordDeletionPending`. This
+normally lasts the few seconds a restarted `bindcar` or `named` container
+takes to become ready again: the pod keeps its zones on its `emptyDir`, and
+skipping it used to leave the deleted record served forever (v0.8.0-rc.7).
+If the pod never becomes ready (a crash-looping container), fix it or delete
+the pod: its data goes with it and the deletion completes.
+
 ## Debugging Steps
 
 See [Debugging Guide](./debugging.md) for detailed debugging procedures.

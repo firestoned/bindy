@@ -92,7 +92,7 @@ fn is_zone_already_exists_message(message: &str) -> bool {
         || msg.contains("duplicate zone")
 }
 
-/// Returns `true` if the error indicates the zone already exists — either an
+/// Returns `true` if the error indicates the zone already exists: either an
 /// HTTP 409 Conflict or a BIND9 "already exists"-style message.
 fn is_zone_already_exists_error(err: &anyhow::Error) -> bool {
     is_http_conflict(err) || is_zone_already_exists_message(&err.to_string())
@@ -111,7 +111,7 @@ pub(crate) fn build_api_url(server: &str) -> String {
 /// Call sites pass a bare `<pod-ip>:<port>`, so `tls` is what actually moves
 /// the operator onto the encrypted transport (ADR-0004).
 ///
-/// An explicit scheme already present on `server` is always preserved — in
+/// An explicit scheme already present on `server` is always preserved, in
 /// both directions. Silently upgrading a configured `http://` would be
 /// surprising, and silently downgrading an `https://` would be dangerous.
 ///
@@ -247,9 +247,11 @@ async fn bindcar_request_with_backoff<T: Serialize + std::fmt::Debug>(
                             error = %e,
                             "Max retry time exceeded, giving up"
                         );
-                        return Err(anyhow::anyhow!(
-                            "Max retry time exceeded after {attempt} attempts: {e}"
-                        ));
+                        // Context, not a new error: callers inspect the
+                        // HttpError (404, 500) through the chain.
+                        return Err(
+                            e.context(format!("Max retry time exceeded after {attempt} attempts"))
+                        );
                     }
                 }
 
@@ -277,9 +279,7 @@ async fn bindcar_request_with_backoff<T: Serialize + std::fmt::Debug>(
                         error = %e,
                         "Backoff exhausted, giving up"
                     );
-                    return Err(anyhow::anyhow!(
-                        "Backoff exhausted after {attempt} attempts: {e}"
-                    ));
+                    return Err(e.context(format!("Backoff exhausted after {attempt} attempts")));
                 }
             }
         }
@@ -530,45 +530,203 @@ pub async fn zone_status(
     Ok(status)
 }
 
-/// Check if a zone exists by trying to get its status.
+/// How long a zone-status check retries a transient failure before the
+/// caller decides what it means (ADR-0019).
 ///
-/// Returns `Ok(true)` if the zone exists and can be queried, `Ok(false)` if the zone
-/// definitely does not exist (404), or `Err` for transient errors (rate limiting, network
-/// errors, server errors, etc.) that should be retried.
+/// bindcar 0.9.0 answers `zonestatus` on a configured zone with no data
+/// ("zone not loaded") with an HTTP 500 whose body is masked to a generic
+/// message. Retrying it for the default two minutes held every reconcile of a
+/// zone with an unloaded secondary for two minutes; the check now gives up
+/// after this budget and asks `named` itself (see [`zone_presence`]).
+pub const ZONE_STATUS_RETRY_BUDGET: Duration = Duration::from_secs(2);
+
+/// What a server's answer to a SOA query for a zone says about the zone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SoaProbe {
+    /// `NOERROR` with the authoritative-answer bit: the zone is loaded.
+    Authoritative,
+    /// `SERVFAIL`: `named` is configured for the zone but cannot answer from
+    /// it, which for a zone bindcar also cannot report the status of means it
+    /// is configured but not loaded (a secondary that has not transferred).
+    ServFail,
+    /// Anything else (`REFUSED`, a non-authoritative answer, ...).
+    Other,
+}
+
+/// Classify a SOA response. Pure.
+///
+/// # Arguments
+/// * `rcode` - The response code
+/// * `authoritative` - Whether the AA bit is set
+#[must_use]
+pub fn classify_soa_response(
+    rcode: hickory_proto::op::ResponseCode,
+    authoritative: bool,
+) -> SoaProbe {
+    use hickory_proto::op::ResponseCode;
+    match rcode {
+        ResponseCode::NoError if authoritative => SoaProbe::Authoritative,
+        ResponseCode::ServFail => SoaProbe::ServFail,
+        _ => SoaProbe::Other,
+    }
+}
+
+/// Ask `named` directly for a zone's SOA.
+///
+/// # Arguments
+/// * `zone_name` - The zone
+/// * `dns_server` - The server's DNS endpoint as `<ip>:<port>` (see
+///   [`dns_query_endpoint`])
+///
+/// # Errors
+/// Returns an error if the address or zone name is invalid or the query gets
+/// no response.
+pub async fn probe_zone_soa(zone_name: &str, dns_server: &str) -> Result<SoaProbe> {
+    use hickory_net::client::{Client, ClientHandle};
+    use hickory_net::runtime::TokioRuntimeProvider;
+    use hickory_net::udp::UdpClientStream;
+    use hickory_proto::rr::{DNSClass, Name, RecordType};
+    use std::net::SocketAddr;
+    use std::str::FromStr;
+
+    let server_addr: SocketAddr = dns_server
+        .parse()
+        .with_context(|| format!("Invalid DNS server address: {dns_server}"))?;
+    let name =
+        Name::from_str(zone_name).with_context(|| format!("Invalid zone name: {zone_name}"))?;
+    let stream = UdpClientStream::builder(server_addr, TokioRuntimeProvider::default()).build();
+    let (mut client, bg) = Client::<TokioRuntimeProvider>::from_sender(stream);
+    tokio::spawn(bg);
+
+    let response = client
+        .query(name, DNSClass::IN, RecordType::SOA)
+        .await
+        .with_context(|| format!("SOA query for {zone_name} on {server_addr} failed"))?;
+    Ok(classify_soa_response(
+        response.metadata.response_code,
+        response.metadata.authoritative,
+    ))
+}
+
+/// Whether a zone is on a server, and whether it has data (ADR-0019).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZonePresence {
+    /// The server is not configured for the zone.
+    Absent,
+    /// The zone is configured and loaded.
+    Loaded,
+    /// The zone is configured but has no data: a secondary that has not
+    /// transferred it (yet, or because the transfer is denied).
+    NotLoaded,
+}
+
+/// What a bindcar zone-status 500 means, given `named`'s own answer. Pure.
+///
+/// # Arguments
+/// * `probe` - The SOA probe of the zone on the same pod, `None` when the
+///   probe itself failed
+///
+/// # Returns
+/// `Some(NotLoaded)` for `SERVFAIL`, `Some(Loaded)` for an authoritative
+/// answer, `None` (the 500 stays an error) otherwise.
+#[must_use]
+pub fn presence_after_server_error(probe: Option<SoaProbe>) -> Option<ZonePresence> {
+    match probe? {
+        SoaProbe::ServFail => Some(ZonePresence::NotLoaded),
+        SoaProbe::Authoritative => Some(ZonePresence::Loaded),
+        SoaProbe::Other => None,
+    }
+}
+
+/// Whether a zone is on a server and loaded (ADR-0019).
+///
+/// bindcar's zone status answers 200 for a loaded zone and 404 for an absent
+/// one. For a configured zone with no data, bindcar 0.9.0 answers 500 with a
+/// masked body, indistinguishable from a real fault, so on a 500 the zone's
+/// SOA is asked of `named` directly: `SERVFAIL` there means configured but not
+/// loaded. The status check retries only for [`ZONE_STATUS_RETRY_BUDGET`].
+///
+/// # Arguments
+/// * `client` - HTTP client
+/// * `token` - Optional authentication token
+/// * `zone_name` - The zone
+/// * `server` - The bindcar API endpoint
+/// * `dns_server` - The same pod's DNS endpoint (see [`dns_query_endpoint`])
+///
+/// # Errors
+/// Returns an error for a failure that is not one of the three states: a
+/// 5xx that `named` does not explain, a 4xx other than 404, or a dead
+/// endpoint.
+pub async fn zone_presence(
+    client: &Arc<HttpClient>,
+    token: Option<&str>,
+    zone_name: &str,
+    server: &str,
+    dns_server: &str,
+) -> Result<ZonePresence> {
+    let base_url = build_api_url(server);
+    let url = format!("{base_url}/api/v1/zones/{zone_name}/status");
+    let error = match bindcar_request_within(
+        client,
+        token,
+        "GET",
+        &url,
+        None::<&()>,
+        ZONE_STATUS_RETRY_BUDGET,
+    )
+    .await
+    {
+        Ok(_) => return Ok(ZonePresence::Loaded),
+        Err(e) if is_http_not_found(&e) => return Ok(ZonePresence::Absent),
+        Err(e) => e,
+    };
+    if !bindcar_http_status(&error).is_some_and(|status| status.is_server_error()) {
+        return Err(error).context("Failed to get zone status");
+    }
+    let probe = match probe_zone_soa(zone_name, dns_server).await {
+        Ok(probe) => Some(probe),
+        Err(probe_error) => {
+            debug!("SOA probe of {zone_name} on {dns_server} failed: {probe_error:#}");
+            None
+        }
+    };
+    match presence_after_server_error(probe) {
+        Some(presence) => {
+            debug!("Zone {zone_name} on {server}: bindcar status failed, named says {presence:?}");
+            Ok(presence)
+        }
+        None => Err(error).context("Failed to get zone status"),
+    }
+}
+
+/// Check if a zone is configured on a server, loaded or not.
+///
+/// Returns `Ok(true)` for a loaded zone and for a configured zone with no
+/// data (see [`zone_presence`]), `Ok(false)` for an absent one (404), or `Err`
+/// for a failure that is neither.
 ///
 /// # Errors
 ///
-/// Returns an error if:
-/// - The server is rate limiting requests (429 Too Many Requests)
-/// - Network connectivity issues occur
-/// - The server returns a 5xx error
-/// - Any other non-404 error occurs
+/// Returns an error for a failure [`zone_presence`] cannot classify: rate
+/// limiting, network errors, a 5xx `named` does not explain.
 pub async fn zone_exists(
     client: &Arc<HttpClient>,
     token: Option<&str>,
     zone_name: &str,
     server: &str,
 ) -> Result<bool> {
-    match zone_status(client, token, zone_name, server).await {
-        Ok(_) => {
-            debug!("Zone {zone_name} exists on {server}");
-            Ok(true)
-        }
-        // 404 Not Found - zone definitely doesn't exist. Inspect the typed
-        // error in the chain: zone_status wraps the HttpError with anyhow
-        // context, so string-matching on e.to_string() would never see "404".
-        Err(e) if is_http_not_found(&e) => {
+    let dns_server = dns_query_endpoint(server);
+    match zone_presence(client, token, zone_name, server, &dns_server).await {
+        Ok(ZonePresence::Absent) => {
             debug!("Zone {zone_name} does not exist on {server}");
             Ok(false)
         }
-        // Rate limiting - should retry
-        Err(e) if bindcar_http_status(&e) == Some(StatusCode::TOO_MANY_REQUESTS) => {
-            error!("Rate limited while checking if zone {zone_name} exists on {server}: {e}");
-            Err(e).context("Rate limited while checking zone existence")
+        Ok(presence) => {
+            debug!("Zone {zone_name} exists on {server} ({presence:?})");
+            Ok(true)
         }
-        // Any other error is a transient failure that should be retried
         Err(e) => {
-            error!("Error checking if zone {zone_name} exists on {server}: {e}");
+            error!("Error checking if zone {zone_name} exists on {server}: {e:#}");
             Err(e).context("Failed to check zone existence")
         }
     }
@@ -614,7 +772,11 @@ pub async fn server_status(
 /// * `soa_record` - SOA record data
 /// * `name_servers` - Optional list of ALL authoritative nameserver hostnames (including primary from SOA)
 /// * `name_server_ips` - Optional map of nameserver hostnames to IP addresses for glue records
-/// * `secondary_ips` - Optional list of secondary server IPs for also-notify and allow-transfer
+/// * `secondary_ips` - Optional list of secondary pod IPs for `allow-transfer`
+/// * `notify_targets` - Optional `also-notify` targets reached on port 53 (the
+///   secondary Services' ClusterIPs, ADR-0019), sent bare so bindcar can
+///   rewrite them later; `None` falls back to the secondary pod IPs on the
+///   operand's DNS port
 ///
 /// # Returns
 ///
@@ -639,6 +801,7 @@ pub async fn add_primary_zone(
     name_servers: Option<&[String]>,
     name_server_ips: Option<&HashMap<String, String>>,
     secondary_ips: Option<&[String]>,
+    notify_targets: Option<&[String]>,
     dnssec_policy: Option<&str>,
 ) -> Result<bool> {
     use bindcar::ZONE_TYPE_PRIMARY;
@@ -678,9 +841,13 @@ pub async fn add_primary_zone(
         name_servers: all_name_servers,
         name_server_ips: name_server_ips.cloned().unwrap_or_default(),
         records: vec![],
-        // Configure zone transfers to secondary servers. NOTIFY targets the
-        // secondaries' operand port (5353); allow-transfer is a bare-IP ACL.
-        also_notify: secondary_ips.map(with_transfer_port),
+        // Configure zone transfers to secondary servers. allow-transfer is a
+        // bare-IP ACL of the secondary pods. NOTIFY goes to the secondary
+        // Services on port 53 when known (bare entries bindcar 0.9.0 can
+        // PATCH later, ADR-0019), else to the pods on the operand port.
+        also_notify: notify_targets
+            .map(<[String]>::to_vec)
+            .or_else(|| secondary_ips.map(with_transfer_port)),
         allow_transfer: secondary_ips.map(<[String]>::to_vec),
         // Primary zones don't have primaries field (only secondary zones do)
         primaries: None,
@@ -717,18 +884,26 @@ pub async fn add_primary_zone(
             if is_zone_already_exists_error(&e) {
                 info!("Zone {zone_name} already exists on {server} (HTTP 409 Conflict), treating as success");
 
-                // Zone exists: bring its transfer ACLs (secondary pods get
-                // new IPs when they restart) and its DNSSEC policy (set, or
-                // inherited, after the zone was created) up to date.
-                let ips = secondary_ips.filter(|ips| !ips.is_empty());
-                if ips.is_some() || dnssec_policy.is_some() {
+                // Zone exists: bring its transfer peers (secondary pods get
+                // new IPs when they restart, ADR-0019) and its DNSSEC policy
+                // (set, or inherited, after the zone was created) up to date.
+                if secondary_ips.is_some() || notify_targets.is_some() {
+                    let _peers = update_primary_transfer_peers(
+                        client,
+                        token,
+                        zone_name,
+                        server,
+                        secondary_ips.unwrap_or_default(),
+                        notify_targets.unwrap_or_default(),
+                    )
+                    .await?;
+                }
+                if dnssec_policy.is_some() {
                     info!(
-                        "Zone {zone_name} already exists on {server}, updating {} secondary server(s), dnssec-policy {:?}",
-                        ips.map_or(0, <[String]>::len),
-                        dnssec_policy
+                        "Zone {zone_name} already exists on {server}, updating dnssec-policy {dnssec_policy:?}"
                     );
                     let _updated =
-                        update_primary_zone(client, token, zone_name, server, ips, dnssec_policy)
+                        update_primary_zone(client, token, zone_name, server, None, dnssec_policy)
                             .await?;
                 }
                 // IMPORTANT: Ok(false) because the zone was NOT newly added.
@@ -820,6 +995,159 @@ pub async fn update_primary_zone(
         }
         Err(e) => Err(e).context("Failed to update zone configuration"),
     }
+}
+
+/// Retry budget for each PATCH that rewrites a primary's transfer peers
+/// (ADR-0019): long enough to ride out a bindcar restart, short enough that a
+/// dead endpoint does not hold the zone's reconcile.
+pub const PEER_UPDATE_RETRY_BUDGET: Duration = Duration::from_secs(10);
+
+/// Retry budget of the first peer PATCH, the one that also rewrites
+/// `also-notify`. A zone created before ADR-0019 fails it deterministically
+/// (see [`update_primary_transfer_peers`]), so it is not retried for long.
+const NOTIFY_PEER_UPDATE_RETRY_BUDGET: Duration = Duration::from_secs(2);
+
+/// What a primary's transfer-peer PATCH achieved (ADR-0019).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerUpdate {
+    /// `allow-transfer` and `also-notify` now name exactly the given peers.
+    Updated,
+    /// Only `allow-transfer` was rewritten: the zone predates ADR-0019 and its
+    /// port-qualified `also-notify` cannot be rewritten by bindcar 0.9.0.
+    /// Transfers work; NOTIFY follows when the pod is next replaced.
+    UpdatedWithoutNotify,
+    /// The zone is not on the server; nothing to rewrite.
+    ZoneAbsent,
+}
+
+/// Rewrite a primary zone's `allow-transfer` and `also-notify` in place.
+///
+/// Both lists are always sent, empty included: bindcar leaves an absent field
+/// unchanged, and a zone that lost its last secondary must stop allowing it.
+///
+/// A zone created before ADR-0019 carries `also-notify { <ip> port 5353; }`.
+/// bindcar 0.9.0 re-reads the zone with `rndc showzone`, cannot parse that
+/// statement, keeps it verbatim, and renders a second `also-notify` beside
+/// the requested one, which `rndc modzone` rejects. That PATCH is retried only
+/// briefly; on its failure `allow-transfer` alone is rewritten, which is what
+/// transfers need.
+///
+/// # Arguments
+/// * `client` - HTTP client
+/// * `token` - Optional authentication token
+/// * `zone_name` - The zone
+/// * `server` - The primary's bindcar endpoint
+/// * `allow_transfer` - The secondary pod IPs, bare
+/// * `also_notify` - The NOTIFY targets, bare (port 53)
+///
+/// # Errors
+/// Returns an error if even the `allow-transfer` PATCH fails.
+pub async fn update_primary_transfer_peers(
+    client: &Arc<HttpClient>,
+    token: Option<&str>,
+    zone_name: &str,
+    server: &str,
+    allow_transfer: &[String],
+    also_notify: &[String],
+) -> Result<PeerUpdate> {
+    #[derive(Serialize, Debug)]
+    #[serde(rename_all = "camelCase")]
+    struct PeerPatch<'a> {
+        allow_transfer: &'a [String],
+        #[serde(skip_serializing_if = "Option::is_none")]
+        also_notify: Option<&'a [String]>,
+    }
+
+    let base_url = build_api_url(server);
+    let url = format!("{base_url}/api/v1/zones/{zone_name}");
+
+    let full = PeerPatch {
+        allow_transfer,
+        also_notify: Some(also_notify),
+    };
+    let first_error = match bindcar_request_within(
+        client,
+        token,
+        "PATCH",
+        &url,
+        Some(&full),
+        NOTIFY_PEER_UPDATE_RETRY_BUDGET,
+    )
+    .await
+    {
+        Ok(_) => {
+            info!(
+                "Zone {zone_name} on {server}: allow-transfer {allow_transfer:?}, also-notify {also_notify:?}"
+            );
+            return Ok(PeerUpdate::Updated);
+        }
+        Err(e) if is_http_not_found(&e) => return Ok(PeerUpdate::ZoneAbsent),
+        Err(e) => e,
+    };
+
+    let acl_only = PeerPatch {
+        allow_transfer,
+        also_notify: None,
+    };
+    match bindcar_request_within(
+        client,
+        token,
+        "PATCH",
+        &url,
+        Some(&acl_only),
+        PEER_UPDATE_RETRY_BUDGET,
+    )
+    .await
+    {
+        Ok(_) => {
+            warn!(
+                "Zone {zone_name} on {server}: allow-transfer rewritten to {allow_transfer:?}, but also-notify could not be ({first_error:#}); a zone created before ADR-0019 keeps its also-notify until its pod is replaced"
+            );
+            Ok(PeerUpdate::UpdatedWithoutNotify)
+        }
+        Err(e) if is_http_not_found(&e) => Ok(PeerUpdate::ZoneAbsent),
+        Err(e) => Err(e).context("Failed to rewrite the zone's allow-transfer"),
+    }
+}
+
+/// Replace a secondary zone so its `primaries` are exactly `primary_ips`
+/// (ADR-0019).
+///
+/// bindcar 0.9.0 has no PATCH field for a secondary's `primaries`, and a POST
+/// of an existing zone is a 409 that changes nothing, so the zone is deleted
+/// and created again. A secondary holds nothing the primaries do not; the
+/// caller issues `retransfer` afterwards.
+///
+/// # Arguments
+/// * `client` - HTTP client
+/// * `token` - Optional authentication token
+/// * `zone_name` - The zone
+/// * `server` - The secondary's bindcar endpoint
+/// * `key_data` - The instance's RNDC key (its name is the update key)
+/// * `primary_ips` - The transfer sources, bare (the DNS port is added)
+///
+/// # Errors
+/// Returns an error if the delete or the create fails.
+pub async fn replace_secondary_zone(
+    client: &Arc<HttpClient>,
+    token: Option<&str>,
+    zone_name: &str,
+    server: &str,
+    key_data: &RndcKeyData,
+    primary_ips: &[String],
+) -> Result<()> {
+    anyhow::ensure!(
+        !primary_ips.is_empty(),
+        "refusing to re-create secondary zone {zone_name} on {server} with no primaries"
+    );
+    delete_zone(client, token, zone_name, server)
+        .await
+        .context("Failed to delete the secondary zone before re-creating it")?;
+    let _added = add_secondary_zone(client, token, zone_name, server, key_data, primary_ips)
+        .await
+        .context("Failed to re-create the secondary zone")?;
+    info!("Replaced secondary zone {zone_name} on {server}: primaries {primary_ips:?}");
+    Ok(())
 }
 
 /// Add a secondary zone via HTTP API.
@@ -930,7 +1258,8 @@ pub async fn add_secondary_zone(
 /// * `soa_record` - Optional SOA record data (required for primary zones, ignored for secondary)
 /// * `name_servers` - Optional list of ALL authoritative nameserver hostnames (for primary zones)
 /// * `name_server_ips` - Optional map of nameserver hostnames to IP addresses (for primary zones)
-/// * `secondary_ips` - Optional list of secondary server IPs for also-notify and allow-transfer (for primary zones)
+/// * `secondary_ips` - Optional list of secondary pod IPs for allow-transfer (for primary zones)
+/// * `notify_targets` - Optional also-notify targets on port 53 (for primary zones, ADR-0019)
 /// * `primary_ips` - Optional list of primary server IPs to transfer from (for secondary zones)
 ///
 /// # Returns
@@ -957,6 +1286,7 @@ pub async fn add_zones(
     name_servers: Option<&[String]>,
     name_server_ips: Option<&HashMap<String, String>>,
     secondary_ips: Option<&[String]>,
+    notify_targets: Option<&[String]>,
     primary_ips: Option<&[String]>,
     dnssec_policy: Option<&str>,
 ) -> Result<bool> {
@@ -977,6 +1307,7 @@ pub async fn add_zones(
                 name_servers,
                 name_server_ips,
                 secondary_ips,
+                notify_targets,
                 dnssec_policy,
             )
             .await
@@ -1152,6 +1483,12 @@ pub(crate) async fn delete_zone_within(
             debug!("Zone {zone_name} is not on {server}; nothing to delete");
             return Ok(());
         }
+        // bindcar 0.9.0 answers the status of a configured zone with no data
+        // (a secondary that never transferred) with a 500. Such a zone is
+        // there and must still be deletable: the DELETE decides (ADR-0019).
+        Err(e) if bindcar_http_status(&e).is_some_and(|status| status.is_server_error()) => {
+            debug!("Status of zone {zone_name} on {server} failed ({e:#}); deleting anyway");
+        }
         Err(e) => return Err(e).context("Failed to check zone before deletion"),
     }
 
@@ -1326,6 +1663,13 @@ pub struct DsRecordInfo {
 /// * `endpoint` - The `<host>:<port>` endpoint the zone was configured through
 #[must_use]
 pub fn dns_query_endpoint(endpoint: &str) -> String {
+    // A TLS-qualified endpoint (`https://ip:port`, see
+    // `Bind9Manager::qualify_server`) names the same pod.
+    let endpoint = endpoint
+        .strip_prefix("https://")
+        .or_else(|| endpoint.strip_prefix("http://"))
+        .unwrap_or(endpoint)
+        .trim_end_matches('/');
     if let Some(bracket_end) = endpoint.rfind(']') {
         let host = &endpoint[..=bracket_end];
         return format!("{host}:{DNS_CONTAINER_PORT}");
@@ -1402,7 +1746,7 @@ pub fn ds_records_from_dnskeys(
 
 /// Query a zone's DNSKEY RRset and derive its DS records (ADR-0006).
 ///
-/// Queries the operand directly over DNS (read-only, unauthenticated — DNSKEY
+/// Queries the operand directly over DNS (read-only, unauthenticated; DNSKEY
 /// data is public by design) and derives one DS record per KSK. An unsigned
 /// zone returns an empty vector.
 ///
@@ -1468,7 +1812,7 @@ pub async fn extract_ds_records(zone_name: &str, server: &str) -> Result<Vec<DsR
 ///
 /// bindcar 0.8.1+ returns `ZoneStatusResponse` JSON whose optional `dnssec`
 /// field carries the state parsed from `rndc dnssec -status`. Returns `None`
-/// for older sidecars, unsigned zones, or an unparsable body — key timing is
+/// for older sidecars, unsigned zones, or an unparsable body; key timing is
 /// best-effort and must never fail a reconcile.
 ///
 /// # Arguments
@@ -1482,7 +1826,7 @@ pub fn parse_zone_status_dnssec(body: &str) -> Option<bindcar::DnssecStatus> {
 
 /// The next scheduled KSK rollover event for a zone, if BIND reports one.
 ///
-/// Only keys with the key-signing duty (KSK/CSK) are considered — a ZSK
+/// Only keys with the key-signing duty (KSK/CSK) are considered: a ZSK
 /// rollover does not change the DS at the parent, and
 /// `DNSZone.status.dnssec.keyTag` describes the KSK. Removed keys are
 /// skipped; with several eligible keys the earliest event wins (the
