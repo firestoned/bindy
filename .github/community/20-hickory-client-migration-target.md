@@ -1,6 +1,6 @@
 # Hickory client: revisit migration target in Q3 2026
 
-> **Status:** ⛔ Not started — a scheduled revisit, not a build. `Cargo.toml` pins `hickory-net` / `hickory-proto` 0.26; re-evaluate the migration target in Q3 2026.
+> **Status:** ✅ Revisit done 2026-10-08: **stay on `hickory-net`**. Already on the newest release (0.26.3, which carries every 0.26.2 security fix); requirement floor raised to `0.26.3`. Next revisit when hickory 0.27.0 ships. See "Outcome (2026-10-08)" below.
 >
 > *Migrated 2026-09-10 from the external roadmap set. Status verified against `fix-idempotency` @ `648ff7a`.*
 
@@ -76,9 +76,46 @@ Encapsulating the client construction inside `records/mod.rs` was a deliberate
 choice during the 2026-05-02 migration so that any future swap touches a small
 surface (3 helper functions + one DNSSEC verification call site).
 
+## Outcome (2026-10-08)
+
+Answers to the five questions, checked against crates.io, the RustSec
+advisory database, GitHub security advisories and the upstream repositories:
+
+1. **1.0?** No. `hickory-net` / `hickory-proto` are at **0.26.3
+   (2026-09-10)**; no 0.27 or 1.0 is published (upstream `main` reads
+   `0.27.0-alpha.1`). The README no longer carries a "not recommended for
+   production" caveat.
+2. **High-level client crate?** No separate one is coming: the v0.26.0 release
+   notes state `hickory-client` is subsumed into `hickory-net::client`, which
+   is what bindy already uses.
+3. **`domain` (NLnetLabs)?** 0.12.3 (2026-09-25), still pre-1.0. `net::client`
+   and its TSIG transport remain behind `unstable-client-transport`, and there
+   is no RFC 2136 UPDATE builder (messages would be hand-built). It also just
+   shipped a batch of panic/DoS fixes (RUSTSEC-2026-0310).
+4. **Open advisories?** None affecting the locked 0.26.3. RustSec lists nothing
+   for hickory after RUSTSEC-2026-0119/0120. Upstream published about 40 GHSAs
+   with 0.26.2 (2026-09-03), all patched there; the client-relevant ones (TSIG
+   RDATA decode panic, spoofed-response UDP DoS, RR-count memory amplification,
+   QDCOUNT=0 question-match bypass) are fixed in what bindy runs. bindy
+   computes key tags with `calculate_key_tag()`, not the `DS::from_key` path
+   whose wrong key tag 0.26.2 fixed.
+5. **Maintenance?** Healthy: five stable releases from 2026-04-16 to
+   2026-09-10, steady commits (228 in September 2026), active maintainers,
+   ISRG/Prossimo funding, Let's Encrypt resolver as the target user.
+
+**Decision:** stay. The only alternative fails every migration criterion (not
+1.0, client transport unstable, no first-class UPDATE builder, no concrete
+benefit). The workspace requirement is raised from `"0.26"` to `"0.26.3"` for
+both crates so a lockfile regeneration can never fall below the patched floor.
+
+**Next revisit:** when hickory 0.27.0 is published. Upstream `main` shows churn
+in record decoding (`RecordDataDecodable::read_data()`), the TSIG RDATA parser
+and DNSSEC internals, so re-check `TSigner`, `Client`/`ClientHandle` and the
+`DNSKEY` key-tag/digest helpers against its release notes before bumping.
+
 ## Tracking
 
 - Owner: TBD (security/platform)
-- Re-evaluation date: 2026-09-01 (Q3 2026)
+- Re-evaluation date: 2026-09-01 (Q3 2026); done 2026-10-08. Next: on hickory 0.27.0
 - Linked CHANGELOG entry: `2026-05-02 — Migrate hickory-client → hickory-net 0.26.1`
 - Linked advisory: RUSTSEC-2026-0119

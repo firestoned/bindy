@@ -92,8 +92,8 @@ k8s-openapi = { version = "0.28", features = ["v1_32", "schemars"] }
 reqwest = { version = "0.13", features = ["json", "rustls-no-provider"], default-features = false }
 base64 = "0.23"
 rand = "0.10"
-hickory-net = { version = "0.26", features = ["dnssec-ring"] }
-hickory-proto = { version = "0.26", features = ["dnssec-ring"] }
+hickory-net = { version = "0.26.3", features = ["dnssec-ring"] }
+hickory-proto = { version = "0.26.3", features = ["dnssec-ring"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 # Chain-only certificate verification for the bindcar sidecar transport, where
 # the peer is dialled by pod IP and has no matching SAN (ADR-0004). Already in
