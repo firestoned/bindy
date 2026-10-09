@@ -157,4 +157,25 @@ mod tests {
             "the first failure after convergence starts from the fast interval again"
         );
     }
+
+    #[test]
+    fn fast_retry_action_requeues_at_the_short_interval_within_budget() {
+        use crate::error::fast_retry_action;
+        let cm = config_map("error-tests", "fast-retry");
+        let _ = converged_action(cm.as_ref());
+        let interval = Duration::from_secs(3);
+        assert_eq!(
+            fast_retry_action(cm.as_ref(), interval, 2),
+            Action::requeue(interval)
+        );
+        assert_eq!(
+            fast_retry_action(cm.as_ref(), interval, 2),
+            Action::requeue(interval)
+        );
+        assert_ne!(
+            fast_retry_action(cm.as_ref(), interval, 2),
+            Action::requeue(interval)
+        );
+        let _ = converged_action(cm.as_ref());
+    }
 }

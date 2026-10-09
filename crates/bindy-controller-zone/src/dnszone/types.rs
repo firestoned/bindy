@@ -67,6 +67,11 @@ pub const REASON_CLEANUP_PENDING: &str = "CleanupPending";
 /// being generated, which no Kubernetes event announces.
 pub const REASON_DNSSEC_KEYS_PENDING: &str = "DnssecKeysPending";
 
+/// [`ZoneOutcome::Retry`] reason: the zone's only problem is a secondary that
+/// has the zone configured but not loaded yet. Its transfer finishing raises
+/// no Kubernetes event, so the zone is rechecked on a short bounded interval.
+pub const REASON_TRANSFER_PENDING: &str = "TransferPending";
+
 /// How one `DNSZone` reconcile ended, decided from the in-memory status the
 /// reconcile built (no re-GET), so the controller can pick its `Action`
 /// (ADR-0016).

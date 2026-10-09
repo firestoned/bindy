@@ -63,6 +63,9 @@ rollout the old pod keeps serving until the new one is loaded.
   onto the running pod without taking it out of service.
 - A container restart inside a pod does not re-gate it: the zone data
   survives a container restart.
+- Readiness probes start 2 s after a container starts and run every 2 s, so
+  a replacement pod reaches the gate quickly, and a pod that stops answering
+  leaves its Service after three failed probes (6 s).
 - A zone that cannot be loaded anywhere does not hold a new pod out forever:
   the pod is admitted as `ZonesPartiallyLoaded`, naming the missing zones.
 - When a pod starts terminating, the operator closes its gate at once
@@ -114,7 +117,7 @@ configured. Otherwise the zone is `Degraded` with one of these reasons:
 
 | Reason | Meaning | Usually resolves when |
 |---|---|---|
-| `SecondaryNotLoaded` | A secondary has the zone configured but no data (the message names the instance and endpoint) | Its transfer completes |
+| `SecondaryNotLoaded` | A secondary has the zone configured but no data (the message names the instance and endpoint) | Its transfer completes; the operator rechecks every 3 s while it waits, since a finished transfer raises no Kubernetes event |
 | `TransferPeersNotUpdated` | A primary's `allow-transfer` / `also-notify` could not be rewritten | The primary's bindcar is reachable again |
 | `NoTransferSource` | No primary pod has its zones loaded yet | A primary pod is admitted |
 | `RecordDeletionPending` | A deleted or unselected record is not yet confirmed gone from every pod | The pod holding it is reachable again |
@@ -140,7 +143,7 @@ steps per run, all passing):
 | | Measured |
 |---|---|
 | Convergence after a single pod or container failure | about 30 s (27 to 43 s) |
-| Convergence after every BIND9 pod is deleted | 42 to 114 s |
+| Convergence after every BIND9 pod is deleted | about 50 s (45 to 57 s) |
 | Operator reconciles in the 60 s after convergence | 0 to 3 |
 | A zone with no answering nameserver | never, except when every pod is deleted on purpose (up to 16 s) |
 | Longest gap on a Service the attack did not touch | 2 s |

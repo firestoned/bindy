@@ -312,8 +312,10 @@ mod tests {
 mod zone_outcome_tests {
     use super::super::{parse_rollover_instant, zone_outcome};
     use crate::crd::DNSSECStatus;
+    use crate::dnszone::transfer_peers::REASON_SECONDARY_NOT_LOADED;
     use crate::dnszone::types::{
         ZoneOutcome, REASON_CLEANUP_PENDING, REASON_DEGRADED, REASON_DNSSEC_KEYS_PENDING,
+        REASON_TRANSFER_PENDING,
     };
     use k8s_openapi::jiff::Timestamp;
     use std::time::Duration;
@@ -339,7 +341,7 @@ mod zone_outcome_tests {
     #[test]
     fn a_converged_zone_awaits_the_next_change() {
         assert_eq!(
-            zone_outcome(false, false, None, now()),
+            zone_outcome(None, false, None, now()),
             ZoneOutcome::Converged { next_wake: None }
         );
     }
@@ -347,9 +349,22 @@ mod zone_outcome_tests {
     #[test]
     fn a_degraded_zone_retries() {
         assert_eq!(
-            zone_outcome(true, false, None, now()),
+            zone_outcome(Some("PrimaryFailed"), false, None, now()),
             ZoneOutcome::Retry {
                 reason: REASON_DEGRADED
+            }
+        );
+    }
+
+    /// A secondary's transfer finishing raises no Kubernetes event, so a zone
+    /// waiting only on it is rechecked on a short, bounded interval rather than
+    /// a backoff that grows to a minute (status lagged recovery by up to 60 s).
+    #[test]
+    fn a_zone_waiting_only_on_a_secondary_transfer_retries_as_transfer_pending() {
+        assert_eq!(
+            zone_outcome(Some(REASON_SECONDARY_NOT_LOADED), false, None, now()),
+            ZoneOutcome::Retry {
+                reason: REASON_TRANSFER_PENDING
             }
         );
     }
@@ -360,7 +375,7 @@ mod zone_outcome_tests {
     #[test]
     fn an_incomplete_cleanup_retries() {
         assert_eq!(
-            zone_outcome(false, true, None, now()),
+            zone_outcome(None, true, None, now()),
             ZoneOutcome::Retry {
                 reason: REASON_CLEANUP_PENDING
             }
@@ -370,7 +385,7 @@ mod zone_outcome_tests {
     #[test]
     fn dnssec_keys_still_generating_retry_because_no_event_announces_them() {
         assert_eq!(
-            zone_outcome(false, false, Some(&dnssec(false, None)), now()),
+            zone_outcome(None, false, Some(&dnssec(false, None)), now()),
             ZoneOutcome::Retry {
                 reason: REASON_DNSSEC_KEYS_PENDING
             }
@@ -380,7 +395,7 @@ mod zone_outcome_tests {
     #[test]
     fn a_signed_zone_wakes_at_its_next_ksk_rollover() {
         let outcome = zone_outcome(
-            false,
+            None,
             false,
             Some(&dnssec(true, Some("2026-10-08T00:00:00"))),
             now(),
@@ -398,7 +413,7 @@ mod zone_outcome_tests {
     fn a_rollover_in_the_past_or_unknown_schedules_nothing() {
         for next in [Some("2026-10-01T00:00:00Z"), Some("not a time"), None] {
             assert_eq!(
-                zone_outcome(false, false, Some(&dnssec(true, next)), now()),
+                zone_outcome(None, false, Some(&dnssec(true, next)), now()),
                 ZoneOutcome::Converged { next_wake: None },
                 "{next:?}"
             );

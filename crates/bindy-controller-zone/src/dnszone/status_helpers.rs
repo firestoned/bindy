@@ -12,6 +12,7 @@ use kube::Client;
 
 use super::types::{
     ZoneOutcome, REASON_CLEANUP_PENDING, REASON_DEGRADED, REASON_DNSSEC_KEYS_PENDING,
+    REASON_TRANSFER_PENDING,
 };
 use crate::crd::{DNSSECStatus, InstanceReference};
 
@@ -292,9 +293,14 @@ pub fn parse_rollover_instant(value: &str) -> Option<Timestamp> {
 
 /// Decide how a finished zone reconcile asks to be continued (ADR-0016).
 ///
-/// - Any `Degraded` condition left set: [`ZoneOutcome::Retry`]. An instance or
-///   endpoint rejected the zone, or a record replay is incomplete; the backoff
-///   retries it, the Endpoints watch wakes it sooner when a pod comes back.
+/// - `Degraded` only because a secondary has not loaded the zone yet
+///   (`SecondaryNotLoaded`): [`ZoneOutcome::Retry`] with
+///   [`REASON_TRANSFER_PENDING`], rechecked on a short bounded interval,
+///   because the transfer finishing raises no Kubernetes event.
+/// - Any other `Degraded` condition left set: [`ZoneOutcome::Retry`]. An
+///   instance or endpoint rejected the zone, or a record replay is
+///   incomplete; the backoff retries it, the Endpoints watch wakes it sooner
+///   when a pod comes back.
 /// - A cleanup pass left work behind (a deleted record whose DNS data is not
 ///   confirmed gone, or a failed instance or record cleanup):
 ///   [`ZoneOutcome::Retry`], because the pass only runs inside a reconcile.
@@ -306,7 +312,8 @@ pub fn parse_rollover_instant(value: &str) -> Option<Timestamp> {
 ///
 /// # Arguments
 ///
-/// * `degraded` - Whether the reconcile left a `Degraded` condition set
+/// * `degraded_reason` - The reason of the `Degraded` condition the reconcile
+///   left set, if any
 /// * `cleanup_incomplete` - Whether a cleanup pass left work to retry
 /// * `dnssec` - The DNSSEC status the reconcile computed, if any
 /// * `now` - The current instant
@@ -316,12 +323,17 @@ pub fn parse_rollover_instant(value: &str) -> Option<Timestamp> {
 /// The zone's [`ZoneOutcome`].
 #[must_use]
 pub fn zone_outcome(
-    degraded: bool,
+    degraded_reason: Option<&str>,
     cleanup_incomplete: bool,
     dnssec: Option<&DNSSECStatus>,
     now: Timestamp,
 ) -> ZoneOutcome {
-    if degraded {
+    if degraded_reason == Some(super::transfer_peers::REASON_SECONDARY_NOT_LOADED) {
+        return ZoneOutcome::Retry {
+            reason: REASON_TRANSFER_PENDING,
+        };
+    }
+    if degraded_reason.is_some() {
         return ZoneOutcome::Retry {
             reason: REASON_DEGRADED,
         };

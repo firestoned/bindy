@@ -65,8 +65,8 @@ livenessProbe:
 readinessProbe:
   tcpSocket:
     port: 5353
-  initialDelaySeconds: 10
-  periodSeconds: 5
+  initialDelaySeconds: 2
+  periodSeconds: 2
   timeoutSeconds: 3
   failureThreshold: 3
 ```

@@ -1479,10 +1479,12 @@ mod tests {
         assert_eq!(liveness.timeout_seconds, Some(5));
         assert_eq!(liveness.failure_threshold, Some(3));
 
-        // Readiness probe
+        // Readiness probe: probed early and often, because a replacement pod
+        // reaches its Service only once Ready (and through the zones-loaded
+        // gate), so this sets how fast a lost pod is replaced in service.
         let readiness = container.readiness_probe.as_ref().unwrap();
-        assert_eq!(readiness.initial_delay_seconds, Some(10));
-        assert_eq!(readiness.period_seconds, Some(5));
+        assert_eq!(readiness.initial_delay_seconds, Some(2));
+        assert_eq!(readiness.period_seconds, Some(2));
         assert_eq!(readiness.timeout_seconds, Some(3));
         assert_eq!(readiness.failure_threshold, Some(3));
     }

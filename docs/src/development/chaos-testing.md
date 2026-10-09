@@ -5,16 +5,29 @@ state once. They do not prove it gets back there after pods, containers and
 operator replicas die in the middle of its work, which is where release
 candidates kept breaking on real clusters. The chaos suite
 (`tests/e2e/chaos_test.sh`, roadmap 18) is that proof: it builds a realistic
-topology on kind, breaks it fifteen ways, and after every break checks that
-DNS is served correctly from every BIND9 pod, that every status tells the
-truth, and that the operator then goes quiet.
+topology on kind, breaks it, and after every break checks that DNS is served
+correctly from every BIND9 pod, that every status tells the truth, and that
+the operator then goes quiet.
+
+It has two profiles:
+
+- **quick** (`make e2e-chaos`, the CI job): a single-node cluster; delete
+  primary-0, then primary-1, then the secondary, then every BIND9 pod at
+  once (steps 16, 17, 5, 6), each followed by a full recovery check, and one
+  quiet window at the end. About four to five minutes; the CI job has a
+  10-minute timeout.
+- **full** (`make e2e-chaos-full`): the fifteen steps below in a fixed and a
+  shuffled order on a three-node cluster, with a quiet window after every
+  step. Hours; run it by hand or on a schedule, not on every PR.
 
 ## Running it
 
 ```bash
-# Build the operator image, create the kind cluster (deploy/kind-config-chaos.yaml:
-# one control plane, two workers, no host ports) and run both passes
+# Quick profile (single-node cluster, deploy/kind-config-e2e.yaml)
 make e2e-chaos
+
+# Full profile (deploy/kind-config-chaos.yaml: one control plane, two workers)
+make e2e-chaos-full
 
 # Against a prebuilt image
 make e2e-chaos E2E_IMAGE=ghcr.io/firestoned/bindy:<tag>
@@ -27,17 +40,17 @@ CHAOS_STEPS=4,5,7 CHAOS_PASSES=1 CLUSTER_NAME=bindy-e2e-chaos \
 
 The kind credentials go to the dedicated kind kubeconfig, never to the one
 your shell uses (see the [Testing Guide](testing-guide.md)). On a podman host
-set `KIND_EXPERIMENTAL_PROVIDER=podman`. A full run (baseline, fifteen steps
-in a fixed order, the same fifteen in a shuffled order) takes about two and
-a half hours.
+set `KIND_EXPERIMENTAL_PROVIDER=podman`. Set `CHAOS_TRACE=1` to print, on every
+poll, how long the check took and what still blocks convergence.
 
 | Knob | Default | Meaning |
 |---|---|---|
-| `CHAOS_STEPS` | all | Comma list of step numbers to run |
-| `CHAOS_PASSES` | `2` | `1` runs only the fixed order |
+| `CHAOS_PROFILE` | `quick` | `quick` or `full` (see above) |
+| `CHAOS_STEPS` | profile's list | Comma list of step numbers to run (repeats allowed) |
+| `CHAOS_PASSES` | `1` quick, `2` full | `1` runs only the fixed order |
 | `CHAOS_SEED` | `20261007` | Seed of the shuffled order (printed with the order) |
 | `CONVERGE_TIMEOUT` | `120` | Seconds every invariant has to hold after a step |
-| `QUIET_WINDOW` | `60` | Seconds the operator must stay quiet after convergence |
+| `QUIET_WINDOW` | `10` quick, `60` full | Seconds the operator must stay quiet (quick: once at the end; full: after every step) |
 | `ALSO_NOTIFY_MODE` | `clusterip` | Expected `also-notify` form (ADR-0019) |
 
 ## The fixture

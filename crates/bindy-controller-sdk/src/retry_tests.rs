@@ -388,4 +388,29 @@ mod reconcile_backoff_tests {
         );
         clear_rejected_write(key);
     }
+
+    #[test]
+    fn bounded_fast_retry_uses_the_short_interval_then_the_backoff() {
+        use super::super::{
+            bounded_fast_retry, reset_reconcile_backoff, RECONCILE_BACKOFF_INITIAL,
+        };
+        let key = "test/fast-retry/budget";
+        reset_reconcile_backoff(key);
+        let interval = Duration::from_millis(1500);
+        let budget = 3;
+
+        for _ in 0..budget {
+            assert_eq!(bounded_fast_retry(key, interval, budget), interval);
+        }
+        // Budget spent: the normal backoff takes over and never goes back to
+        // the short interval while the object keeps failing.
+        let after = bounded_fast_retry(key, interval, budget);
+        assert!(after >= RECONCILE_BACKOFF_INITIAL, "{after:?}");
+        assert_ne!(after, interval);
+
+        // Converging resets it: the next wait starts fast again.
+        reset_reconcile_backoff(key);
+        assert_eq!(bounded_fast_retry(key, interval, budget), interval);
+        reset_reconcile_backoff(key);
+    }
 }

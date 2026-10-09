@@ -769,7 +769,7 @@ pub async fn reconcile_dnszone(
     .await?;
 
     Ok(status_helpers::zone_outcome(
-        status_updater.has_degraded_condition(),
+        status_updater.degraded_reason(),
         cleanup_incomplete,
         status_updater.dnssec(),
         k8s_openapi::jiff::Timestamp::now(),

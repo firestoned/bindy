@@ -671,4 +671,17 @@ mod tests {
 
         assert!(updater.has_changes());
     }
+
+    #[test]
+    fn degraded_reason_is_none_until_degraded_is_set_this_reconcile() {
+        let dnszone = create_test_dnszone("test-zone", "bindy-system");
+        let mut updater = DNSZoneStatusUpdater::new(&dnszone);
+        assert_eq!(updater.degraded_reason(), None);
+
+        updater.set_condition("Degraded", "True", "SecondaryNotLoaded", "pending");
+        assert_eq!(updater.degraded_reason(), Some("SecondaryNotLoaded"));
+
+        updater.clear_degraded_condition();
+        assert_eq!(updater.degraded_reason(), None);
+    }
 }
