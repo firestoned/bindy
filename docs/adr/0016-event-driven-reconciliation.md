@@ -4,6 +4,7 @@
 - **Date:** 2026-10-06
 - **Deciders:** Erick Bourgeois
 - **Amended:** 2026-10-07 (Decision 2: a `Bind9Cluster` or `ClusterBind9Provider` is also woken by instances that only reference it through `clusterRef`; found by the chaos e2e suite as a cluster left at "3/4 instances are ready")
+- **Amended:** 2026-10-09 (Decision 3: a zone whose only problem is a secondary still loading the zone is rechecked every 3 s, at most 20 times, then on the backoff; a transfer completing raises no Kubernetes event, and on the plain backoff status lagged a recovered secondary by up to a minute)
 - **Related:** Builds on [ADR-0009](0009-workspace-crate-split-and-shared-watch-layer.md) §3 (one shared watch per kind) and §4 (self-trigger policy), and on [ADR-0015](0015-bounded-api-cost-of-dns-writes.md) (resolver, cached lookups)
 
 ## Context
@@ -87,7 +88,8 @@ the only thing that reverted those, and only within five minutes.
    writes do not fan out. The record mapper reads the record store and does
    no I/O (ADR-0009 §5).
 
-3. **A failure is a retry, not a resync.** A Kubernetes API error returns
+3. **A failure is a retry, not a resync.** *(Amended 2026-10-09: one bounded
+   exception for waits no event ends, below.)* A Kubernetes API error returns
    `Err` and goes through `error_policy`'s per-object exponential backoff
    (2 s doubling to 60 s). An outcome that is `Ok` but failed against BIND9
    or bindcar retries through the same backoff, from the reconcile, with
@@ -102,6 +104,18 @@ the only thing that reverted those, and only within five minutes.
    than `REJECTED_WRITE_COOLDOWN` (30 s), and a reconcile woken inside the
    cooldown requeues for the remaining time instead of writing. A converged
    reconcile clears the object's backoff counter.
+
+   **Amended 2026-10-09: transfer pending.** A `DNSZone` whose only
+   `Degraded` reason is `SecondaryNotLoaded` (a secondary has the zone
+   configured and is transferring it) returns the outcome `TransferPending`.
+   It is rechecked every `TRANSFER_PENDING_RECHECK` (3 s), at most
+   `TRANSFER_PENDING_FAST_RETRIES` (20) consecutive times, then on the normal
+   backoff (`sdk::retry::bounded_fast_retry`, `sdk::error::fast_retry_action`;
+   the count shares the backoff counter, so converging resets it). A zone
+   transfer completing happens inside BIND9 and raises no Kubernetes event;
+   on the backoff alone, measured on kind, a zone stayed `Degraded` for up to
+   60 s after its secondary already served the right serial. The bound keeps
+   a transfer that never completes from keeping the operator busy.
 
 4. **Two scheduled wakes, for instants the API cannot announce.** A
    `Bind9Instance` with RNDC auto-rotation requeues for the moment its key

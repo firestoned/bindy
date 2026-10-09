@@ -95,6 +95,30 @@ pub fn retry_action<T: kube::ResourceExt>(resource: &T) -> Action {
     )))
 }
 
+/// Retry this object on a short interval for a bounded number of times, then
+/// on its backoff (see [`crate::retry::bounded_fast_retry`]).
+///
+/// For a wait that no Kubernetes event ends, such as a secondary's zone
+/// transfer completing inside BIND9.
+///
+/// # Arguments
+///
+/// * `resource` - The object to recheck
+/// * `interval` - The short recheck interval
+/// * `budget` - How many consecutive rechecks may use `interval`
+#[must_use]
+pub fn fast_retry_action<T: kube::ResourceExt>(
+    resource: &T,
+    interval: Duration,
+    budget: u32,
+) -> Action {
+    Action::requeue(crate::retry::bounded_fast_retry(
+        &backoff_key(resource),
+        interval,
+        budget,
+    ))
+}
+
 /// [`retry_action`], but never sooner than `floor`.
 ///
 /// A record write BIND9 rejected must not be re-issued inside its cooldown

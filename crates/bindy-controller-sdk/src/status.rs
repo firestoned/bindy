@@ -594,6 +594,21 @@ impl DNSZoneStatusUpdater {
         self.degraded_set_this_reconciliation
     }
 
+    /// The reason of the Degraded condition set during **this** reconciliation,
+    /// if any.
+    ///
+    /// When several problems set Degraded in one reconcile, the last one set
+    /// wins, as it does for the condition itself.
+    #[must_use]
+    pub fn degraded_reason(&self) -> Option<&str> {
+        if !self.degraded_set_this_reconciliation {
+            return None;
+        }
+        find_condition(self.conditions(), "Degraded")
+            .filter(|c| c.status == "True")
+            .and_then(|c| c.reason.as_deref())
+    }
+
     /// Clear any Degraded condition by setting it to False (in-memory only, no API call).
     ///
     /// This method should be called when reconciliation succeeds to ensure stale

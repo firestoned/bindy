@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: Apache-2.0
 
-.PHONY: kind-kubeconfig kind-dump-diagnostics pin-release-images help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny cargo-machete gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh tls-transport-test ci-e2e e2e-image e2e-image-load e2e-lifecycle e2e-idempotency e2e-restart e2e-rust e2e-multi-tenancy e2e-regression e2e-zone-spread e2e-tls e2e-chaos e2e-all e2e-clean calm-validate calm-docs calm-docs-check sbom-generate sbom-stage sbom-annotate sbom-check cbom-generate cbom-check cbom-stage provenance-subjects slsa-verifier-install verify-provenance verify-image-provenance verify-sbom-attestation image-digest-record image-digests-matrix
+.PHONY: kind-kubeconfig kind-dump-diagnostics pin-release-images help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny cargo-machete gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh tls-transport-test ci-e2e e2e-image e2e-image-load e2e-lifecycle e2e-idempotency e2e-restart e2e-rust e2e-multi-tenancy e2e-regression e2e-zone-spread e2e-tls e2e-chaos e2e-chaos-full e2e-all e2e-clean calm-validate calm-docs calm-docs-check sbom-generate sbom-stage sbom-annotate sbom-check cbom-generate cbom-check cbom-stage provenance-subjects slsa-verifier-install verify-provenance verify-image-provenance verify-sbom-attestation image-digest-record image-digests-matrix
 
 # Detect host architecture and derive the matching Linux cross-compilation target.
 # `uname -m` reports arm64 on Apple Silicon macOS but aarch64 on Linux ARM, so
@@ -860,7 +860,8 @@ tls-transport-test: ## Run the bindcar TLS e2e (cert-manager issues the sidecar 
 #   make e2e-regression     admission policies + operand pod shape + liveness
 #   make e2e-zone-spread    spec.placement topology spread on a 3-zone cluster
 #   make e2e-tls            cert-manager-issued sidecar cert (audit P2-4)
-#   make e2e-chaos          15 chaos steps x 2 passes, invariants + DNS prober (3-node kind)
+#   make e2e-chaos          quick chaos: delete each primary, the secondary, then all BIND9 pods; all recover
+#   make e2e-chaos-full     full chaos: 15 steps x 2 passes on a 3-node cluster (hours; not in CI)
 #   make e2e-all            all of the above, sequentially
 #
 # Options:
@@ -929,8 +930,11 @@ e2e-zone-spread: ## E2E: spec.placement topology spread on a three-zone cluster
 e2e-tls: ## E2E: cert-manager-issued bindcar sidecar certificate (audit P2-4)
 	$(call run-e2e-suite,tests/tls_transport_test.sh,$(TLS_TRANSPORT_CLUSTER))
 
-e2e-chaos: ## E2E: chaos steps (operator/pod/container kills, rollouts, churn) with invariants and a DNS prober
+e2e-chaos: ## E2E: quick chaos (delete each primary, the secondary, then all BIND9 pods; all must recover)
 	$(call run-e2e-suite,tests/e2e/chaos_test.sh,$(E2E_CHAOS_CLUSTER))
+
+e2e-chaos-full: ## E2E: full chaos, 15 steps x 2 passes on a 3-node cluster (hours; run by hand or on a schedule)
+	@CHAOS_PROFILE=full $(MAKE) --no-print-directory e2e-chaos
 
 E2E_SUITES = e2e-rust e2e-lifecycle e2e-idempotency e2e-restart e2e-multi-tenancy \
              e2e-scout e2e-regression e2e-zone-spread e2e-tls e2e-chaos

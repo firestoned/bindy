@@ -126,11 +126,17 @@ pub const LIVENESS_TIMEOUT_SECS: i32 = 5;
 /// Liveness probe failure threshold
 pub const LIVENESS_FAILURE_THRESHOLD: i32 = 3;
 
-/// Readiness probe initial delay
-pub const READINESS_INITIAL_DELAY_SECS: i32 = 10;
+/// Readiness probe initial delay.
+///
+/// Short on purpose: a replacement BIND9 pod reaches its Service only once
+/// Ready (and through the zones-loaded gate, ADR-0017), so this bounds how
+/// fast a lost pod is back in service. A failed readiness probe restarts
+/// nothing, so probing early costs only a TCP connect / local HTTP call.
+pub const READINESS_INITIAL_DELAY_SECS: i32 = 2;
 
-/// Readiness probe period
-pub const READINESS_PERIOD_SECS: i32 = 5;
+/// Readiness probe period. With [`READINESS_FAILURE_THRESHOLD`] it also sets
+/// how fast a failing pod leaves its Service (3 x 2 s).
+pub const READINESS_PERIOD_SECS: i32 = 2;
 
 /// Readiness probe timeout
 pub const READINESS_TIMEOUT_SECS: i32 = 3;

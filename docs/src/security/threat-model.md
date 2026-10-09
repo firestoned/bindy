@@ -1,7 +1,7 @@
 # Threat Model - Bindy DNS Operator
 
-**Version:** 1.20
-**Last Updated:** 2026-10-07
+**Version:** 1.21
+**Last Updated:** 2026-10-09
 **Owner:** Security Team
 **Compliance:** SOX 404, PCI-DSS 6.4.1, Basel III Cyber Risk
 
@@ -9,6 +9,16 @@
 > ADR-0009 as amended 2026-10-05, fully implemented; ADR-0013 stages 1 to 3,
 > ADR-0014, ADR-0015, ADR-0016, ADR-0017 as amended and corrected 2026-10-07
 > and by ADR-0019, ADR-0018 as amended 2026-10-07 and ADR-0019 implemented).
+>
+> **Revision note (v1.21):** Amendments to ADR-0016 (a zone waiting only on
+> a secondary's zone transfer is rechecked every 3 s, at most 20 times, then on
+> the backoff) and ADR-0017 (readiness probes start after 2 s and run every
+> 2 s). Both shorten recovery (D6: a replaced pod is back in its Service about
+> 10 s sooner; a failing pod leaves it after 6 s instead of 15 s; status
+> follows a recovered secondary within seconds) and are bounded (D2: at most
+> 20 fast rechecks per transfer wait; readiness probes are a local TCP connect
+> and HTTP call and restart nothing). No new component, actor, asset, trust
+> boundary, RBAC grant or dependency; other sections re-walked, unchanged.
 >
 > **Revision note (v1.20):** Full pass for ADR-0019 (zone transfer peers
 > follow the zone's pods) and two operator defects found by the new chaos

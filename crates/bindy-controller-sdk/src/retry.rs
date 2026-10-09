@@ -596,6 +596,46 @@ pub fn write_cooldown_remaining_at(key: &str, spec_hash: &str, now: Instant) -> 
         .filter(|remaining| !remaining.is_zero())
 }
 
+/// A short, bounded retry for a wait that no Kubernetes event announces.
+///
+/// Some recoveries happen inside BIND9 with no watch event, e.g. a secondary
+/// finishing its zone transfer. The exponential backoff would grow to
+/// [`RECONCILE_BACKOFF_MAX`] while waiting, so status lagged an already
+/// recovered zone by up to a minute. This returns `interval` for the first
+/// `budget` consecutive retries of `key`, then hands over to
+/// [`reconcile_error_backoff`], so a wait that never ends cannot keep the
+/// object busy. The count shares the backoff's counter: converging
+/// ([`reset_reconcile_backoff`]) starts the next wait fast again.
+///
+/// # Arguments
+///
+/// * `key` - Stable identity for the object, e.g. `"namespace/name"`
+/// * `interval` - The short recheck interval
+/// * `budget` - How many consecutive retries may use `interval`
+///
+/// # Returns
+///
+/// The requeue delay for this retry.
+#[must_use]
+pub fn bounded_fast_retry(key: &str, interval: Duration, budget: u32) -> Duration {
+    let now = Instant::now();
+    {
+        let Ok(mut failures) = RECONCILE_FAILURES.lock() else {
+            return interval;
+        };
+        let entry = failures.entry(key.to_string()).or_insert((0, now));
+        if now.duration_since(entry.1) >= RECONCILE_BACKOFF_RESET_AFTER {
+            entry.0 = 0;
+        }
+        if entry.0 < budget {
+            entry.0 += 1;
+            entry.1 = now;
+            return interval;
+        }
+    }
+    reconcile_error_backoff(key)
+}
+
 /// Clears the failure counter for `key`, so its next failure requeues promptly.
 ///
 /// # Arguments

@@ -179,6 +179,23 @@ mod event_driven_tests {
     }
 
     #[test]
+    fn a_zone_waiting_on_a_secondary_transfer_rechecks_on_the_short_interval() {
+        let z = zone("dns", "transfer-pending", "example.com", false);
+        reset_reconcile_backoff(&bindy_controller_sdk::error::backoff_key(&z));
+
+        assert_eq!(
+            action_for_zone_outcome(
+                &z,
+                &ZoneOutcome::Retry {
+                    reason: crate::dnszone::types::REASON_TRANSFER_PENDING
+                }
+            ),
+            Action::requeue(super::super::TRANSFER_PENDING_RECHECK)
+        );
+        reset_reconcile_backoff(&bindy_controller_sdk::error::backoff_key(&z));
+    }
+
+    #[test]
     fn a_scheduled_wake_is_honoured_and_capped() {
         let z = zone("dns", "signed", "example.com", false);
         let soon = Duration::from_secs(60);

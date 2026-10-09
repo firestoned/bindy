@@ -1,3 +1,23 @@
+## [2026-10-09 10:00] - Quick chaos suite for CI; status and readiness follow recovery faster (ADR-0016, ADR-0017 amended)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `tests/e2e/chaos_test.sh`, `tests/lib/chaos.sh`: `CHAOS_PROFILE=quick` (default, `make e2e-chaos`): a single-node cluster; delete primary-0, then primary-1 (new deterministic steps 16 and 17), then the secondary, then every BIND9 pod at once, each followed by a full recovery check, one quiet window at the end. About 3.5 minutes of test, about 4.5 to 5 minutes of job. `CHAOS_PROFILE=full` (`make e2e-chaos-full`) keeps the fifteen-step suite, by hand or on a schedule. The checker stops at the first failing stage and runs the per-pod `rndc` checks in parallel; `CHAOS_TRACE=1` prints what blocks convergence.
+- `.github/workflows/e2e.yaml`: the chaos row runs the quick profile with a 10-minute timeout; every other suite gets 30 minutes.
+- `crates/bindy-controller-zone`: a zone whose only `Degraded` reason is `SecondaryNotLoaded` returns `TransferPending` and is rechecked every 3 s, at most 20 times, then on the backoff (`sdk::retry::bounded_fast_retry`, `sdk::error::fast_retry_action`, `DNSZoneStatusUpdater::degraded_reason`). Measured: recovery from deleting every BIND9 pod went from about 110 s to about 50 s.
+- `crates/bindy-api/src/constants.rs`: readiness probes start after 2 s and run every 2 s (were 10 s and 5 s). A replacement pod is back in its Service sooner; a failing pod leaves it after 6 s instead of 15 s. Liveness unchanged. The pod template changes, so BIND9 pods roll once on upgrade.
+- Docs: ADR-0016 and ADR-0017 amended, threat model v1.21, chaos-testing and testing-guide pages, failure-behaviour page.
+
+### Why
+The full chaos suite took about 2.5 hours, far too long for CI. Profiling the quick profile showed the slow recoveries were real: a zone's status lagged a recovered secondary by up to a minute, and readiness probing delayed every replacement pod.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (operator binary; BIND9 pods roll once for the probe timing)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-08 12:40] - Roadmaps 25 and 20 closed: bindcar v0.8.0 verified live, hickory revisit done
 
 **Author:** Erick Bourgeois

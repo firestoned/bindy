@@ -28,11 +28,13 @@ use crate::crd::{
     AAAARecord, ARecord, Bind9Instance, CAARecord, CNAMERecord, DNSZone, MXRecord, NSRecord,
     PTRRecord, SRVRecord, TXTRecord,
 };
-use crate::dnszone::types::{ZoneOutcome, REASON_DUPLICATE_ZONE};
+use crate::dnszone::types::{ZoneOutcome, REASON_DUPLICATE_ZONE, REASON_TRANSFER_PENDING};
 use crate::dnszone::{delete_dnszone, discovery::zones_configured_on_instance, reconcile_dnszone};
 use crate::labels::FINALIZER_DNS_ZONE;
 use bindy_controller_sdk::context::{Context, RecordKind};
-use bindy_controller_sdk::error::{converged_action, error_policy, retry_action, ReconcileError};
+use bindy_controller_sdk::error::{
+    converged_action, error_policy, fast_retry_action, retry_action, ReconcileError,
+};
 use bindy_controller_sdk::metrics;
 use bindy_controller_sdk::namespace_scope::owned_targets;
 use bindy_controller_sdk::reconcile::{finalizer_error, scheduled_action};
@@ -106,6 +108,18 @@ pub(crate) fn zones_contending_for_name(
         .collect()
 }
 
+/// How often a zone waiting only on a secondary's zone transfer is rechecked.
+///
+/// The transfer finishing raises no Kubernetes event; on the plain backoff
+/// the zone's status lagged an already recovered secondary by up to a minute.
+pub(crate) const TRANSFER_PENDING_RECHECK: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How many consecutive short rechecks a transfer-pending zone gets before it
+/// falls back to the normal backoff: one minute's worth, far longer than a
+/// zone transfer takes, so a transfer that never completes does not keep the
+/// operator busy.
+pub(crate) const TRANSFER_PENDING_FAST_RETRIES: u32 = 20;
+
 /// The controller `Action` for a zone reconcile's outcome (ADR-0016).
 ///
 /// # Arguments
@@ -117,7 +131,8 @@ pub(crate) fn zones_contending_for_name(
 ///
 /// `await_change` for a converged zone (clearing its backoff) or a waiting
 /// one; a capped scheduled wake for a converged zone with a pending KSK
-/// rollover; a backing-off requeue for a retry.
+/// rollover; a short bounded recheck while only a secondary's transfer is
+/// pending; a backing-off requeue for any other retry.
 #[must_use]
 pub(crate) fn action_for_zone_outcome(zone: &DNSZone, outcome: &ZoneOutcome) -> Action {
     match outcome {
@@ -129,6 +144,13 @@ pub(crate) fn action_for_zone_outcome(zone: &DNSZone, outcome: &ZoneOutcome) -> 
             scheduled_action(*delay)
         }
         ZoneOutcome::Waiting { .. } => Action::await_change(),
+        ZoneOutcome::Retry {
+            reason: REASON_TRANSFER_PENDING,
+        } => fast_retry_action(
+            zone,
+            TRANSFER_PENDING_RECHECK,
+            TRANSFER_PENDING_FAST_RETRIES,
+        ),
         ZoneOutcome::Retry { .. } => retry_action(zone),
     }
 }

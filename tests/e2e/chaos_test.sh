@@ -72,14 +72,46 @@
 # CONVERGE_TIMEOUT, QUIET_WINDOW, ALSO_NOTIFY_MODE=clusterip|podip, plus the
 # bounds above. Flags: --image REF, --skip-deploy (reuse the cluster as is).
 #
+# Profiles (CHAOS_PROFILE):
+#   quick (default, `make e2e-chaos`, CI): one pass on a single-node cluster:
+#     delete primary-0, then primary-1, then the secondary, then every BIND9 pod
+#     at once (steps 16, 17, 5, 6); each must fully recover (every pod serves
+#     every zone, the secondary re-transfers, status truthful), then the
+#     operator must stay quiet for 10 s. About five minutes.
+#   full (`make e2e-chaos-full`): the fifteen steps above, a fixed and a
+#     randomized pass, on a three-node cluster, 60 s quiet windows. Hours;
+#     run by hand or on a schedule, not on every PR.
+#
 # Usage: tests/e2e/chaos_test.sh [--image REF] [--skip-deploy]
-#        make e2e-chaos [E2E_IMAGE=REF]
+#        make e2e-chaos [E2E_IMAGE=REF]      (quick)
+#        make e2e-chaos-full [E2E_IMAGE=REF] (full)
 
 # Not -e: the invariant checker and the steps report failures and keep going;
 # every command whose failure matters is checked explicitly.
 set -uo pipefail
 
 CLUSTER_NAME="${CLUSTER_NAME:-bindy-e2e-chaos}"
+CHAOS_PROFILE="${CHAOS_PROFILE:-quick}"
+case "${CHAOS_PROFILE}" in
+    quick)
+        # Set before the library is sourced: it reads QUIET_WINDOW at load.
+        QUIET_WINDOW="${QUIET_WINDOW:-10}"
+        # One quiet window after the last step instead of one per step: a
+        # loop that persists still shows, and four windows are not paid for.
+        CHAOS_QUIET_EACH_STEP=false
+        CHAOS_KIND_CONFIG=deploy/kind-config-e2e.yaml
+        CHAOS_DEFAULT_PASSES=1
+        ;;
+    full)
+        CHAOS_QUIET_EACH_STEP=true
+        CHAOS_KIND_CONFIG=deploy/kind-config-chaos.yaml
+        CHAOS_DEFAULT_PASSES=2
+        ;;
+    *)
+        echo "CHAOS_PROFILE must be quick or full, got '${CHAOS_PROFILE}'" >&2
+        exit 2
+        ;;
+esac
 # shellcheck disable=SC2034  # read by the libraries sourced below
 KUBECTL="kubectl --context kind-${CLUSTER_NAME}"
 
@@ -89,11 +121,13 @@ source "${LIB_DIR}/chaos.sh"
 parse_common_args "$@"
 
 CHAOS_SEED="${CHAOS_SEED:-20261007}"
-CHAOS_PASSES="${CHAOS_PASSES:-2}"
+CHAOS_PASSES="${CHAOS_PASSES:-${CHAOS_DEFAULT_PASSES}}"
 RANDOM=${CHAOS_SEED}
 
 if [ -n "${CHAOS_STEPS:-}" ]; then
     IFS=',' read -r -a STEP_LIST <<< "${CHAOS_STEPS}"
+elif [ "${CHAOS_PROFILE}" = quick ]; then
+    STEP_LIST=(16 17 5 6)
 else
     STEP_LIST=("${CHAOS_STEP_IDS[@]}")
 fi
@@ -110,7 +144,7 @@ RESULTS=()
 RESULTS_NOTES=()
 FAILED_STEPS=0
 
-info "E2E: chaos (cluster '${CLUSTER_NAME}', seed ${CHAOS_SEED}, passes ${CHAOS_PASSES})"
+info "E2E: chaos (profile ${CHAOS_PROFILE}, cluster '${CLUSTER_NAME}', seed ${CHAOS_SEED}, passes ${CHAOS_PASSES})"
 info "  fixed order:      ${STEP_LIST[*]}"
 [ "${CHAOS_PASSES}" -ge 2 ] && info "  randomized order: ${SHUFFLED[*]}"
 info "  state dir:        ${CHAOS_STATE_DIR}"
@@ -118,7 +152,7 @@ info "  state dir:        ${CHAOS_STATE_DIR}"
 # ── Setup ────────────────────────────────────────────────────────────────────
 
 phase "Setting up cluster and operator"
-bindy_setup deploy/kind-config-chaos.yaml
+bindy_setup "${CHAOS_KIND_CONFIG}"
 ${KUBECTL} scale deployment/bindy -n "${NAMESPACE}" --replicas="${OPERATOR_REPLICAS}" >/dev/null
 if ! wait_operator_ready "${OPERATOR_REPLICAS}"; then
     fail "operator never reached ${OPERATOR_REPLICAS} ready replicas"
@@ -252,7 +286,7 @@ run_step() {
 
     # Quiet window, only meaningful once converged.
     local quiet="-"
-    if [ "${CONVERGED_SECS}" -ge 0 ]; then
+    if [ "${CONVERGED_SECS}" -ge 0 ] && { ${CHAOS_QUIET_EACH_STEP} || [ "${id}" = 0 ]; }; then
         QUIET_RECONCILES=0
         if check_quiet; then
             quiet="${QUIET_RECONCILES}"
@@ -330,6 +364,19 @@ if [ "${CHAOS_PASSES}" -ge 2 ]; then
     for id in "${SHUFFLED[@]}"; do
         run_step random "${id}"
     done
+fi
+
+if ! ${CHAOS_QUIET_EACH_STEP}; then
+    phase "Operator quiet after the last step"
+    QUIET_RECONCILES=0
+    if check_quiet; then
+        pass "operator quiet for ${QUIET_WINDOW}s (${QUIET_RECONCILES} reconciles)"
+    else
+        FAILED_STEPS=$(( FAILED_STEPS + 1 ))
+        fail "operator not quiet after the last step:"
+        sed 's/^/      /' "${VIOLATIONS_FILE}"
+        dump_step_diagnostics "final-quiet"
+    fi
 fi
 
 print_results

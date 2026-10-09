@@ -219,11 +219,14 @@ Testing all DNS record types...
 
 ## Chaos Suite
 
-`make e2e-chaos` breaks a two-primary, one-secondary topology on kind fifteen
-ways (operator, pod, container and rollout failures) and checks after every
-step that each BIND9 pod serves the exact expected records, that the zone
-transfer peers name exactly the current pods, that every status is truthful,
-and that the operator goes quiet. See [Chaos Testing](chaos-testing.md).
+`make e2e-chaos` (the CI job, about four to five minutes) deletes each primary
+of a two-primary, one-secondary topology in turn, then the secondary, then
+every BIND9 pod at once, and checks after every step that each BIND9 pod
+serves the exact expected records, that the zone transfer peers name exactly
+the current pods, that every status is truthful, and that the operator goes
+quiet. `make e2e-chaos-full` runs fifteen kinds of failure (operator, pod,
+container, rollout, churn) twice and takes hours. See
+[Chaos Testing](chaos-testing.md).
 
 ## Makefile Targets
 

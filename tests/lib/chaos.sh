@@ -629,12 +629,29 @@ check_rndc() {
     secondary_ips=$(for ip in $(live_ips_of_role secondary); do echo "${ip}:53"; done | sort -u)
     notify_want=$(expected_also_notify)
     deleted=$(sort -u "${DELETED_ZONES_FILE}" | grep -vxF "${CHAOS_CURRENT_EXTRA_ZONE}" || true)
+
+    # One rndc exec per pod, all in parallel (they were the slowest part of a
+    # check); wait only on these jobs, not on any other background job.
+    local rdir="${CHAOS_STATE_DIR}/rndc" targets="" pids=()
+    rm -rf "${rdir}"; mkdir -p "${rdir}"
     for inst in $(all_instances); do
         while read -r pod ip; do
             [ -n "${pod}" ] || continue
+            targets+="${inst} ${pod} ${ip}"$'\n'
             # shellcheck disable=SC2046
-            report=$(rndc_report "${pod}" $(zone_names) ${deleted}) || {
-                violation "rndc: exec into ${inst} (${pod}) failed"; continue; }
+            ( rndc_report "${pod}" $(zone_names) ${deleted} > "${rdir}/${pod}" 2>/dev/null \
+                || : > "${rdir}/${pod}.failed" ) &
+            pids+=($!)
+        done <<< "$(live_pods_of "${inst}")"
+    done
+    [ "${#pids[@]}" -gt 0 ] && wait "${pids[@]}"
+
+    while read -r inst pod ip; do
+            [ -n "${pod}" ] || continue
+            if [ -e "${rdir}/${pod}.failed" ]; then
+                violation "rndc: exec into ${inst} (${pod}) failed"; continue
+            fi
+            report=$(cat "${rdir}/${pod}")
             for zone in $(zone_names); do
                 block=$(awk -v z="${zone}" '$1 == "@@" {on = ($2 == z)} on' <<< "${report}")
                 rc=$(sed -n 's/^@@rc //p' <<< "${block}")
@@ -660,8 +677,7 @@ check_rndc() {
                 grep -q 'serial:' <<< "${block}" \
                     && violation "rndc: deleted zone ${zone} still on ${inst} (${ip})"
             done
-        done <<< "$(live_pods_of "${inst}")"
-    done
+    done <<< "${targets}"
 }
 
 # Ready / Degraded / RolloutQueued over every chaos CR.
@@ -726,8 +742,13 @@ check_pods() {
 # One full pass of every invariant. Returns 0 when nothing is violated.
 check_invariants_once() {
     : > "${VIOLATIONS_FILE}"
+    # Cheapest first, stopping at the first stage that fails: while pods are
+    # not Ready the DNS and rndc stages cannot pass and cost most of a poll.
+    # A converged check still runs every stage.
     check_pods
+    [ -s "${VIOLATIONS_FILE}" ] && return 1
     check_status
+    [ -s "${VIOLATIONS_FILE}" ] && return 1
     check_dns
     check_rndc
     [ ! -s "${VIOLATIONS_FILE}" ]
@@ -741,10 +762,16 @@ wait_converged() {
     local from=$1 deadline
     deadline=$(( from + CONVERGE_TIMEOUT ))
     CONVERGED_SECS=-1
+    local t0
     while true; do
+        t0=$(now)
         if check_invariants_once; then
             CONVERGED_SECS=$(( $(now) - from ))
             return 0
+        fi
+        # CHAOS_TRACE=1: show what is still blocking convergence on each poll.
+        if [ "${CHAOS_TRACE:-0}" = 1 ]; then
+            echo "      [trace +$(( $(now) - from ))s, check took $(( $(now) - t0 ))s] $(wc -l < "${VIOLATIONS_FILE}") violation(s): $(head -3 "${VIOLATIONS_FILE}" | cut -c1-170 | paste -sd'|' -)"
         fi
         [ "$(now)" -ge "${deadline}" ] && return 1
         sleep "${CHAOS_POLL}"
@@ -999,6 +1026,8 @@ declare -A CHAOS_STEP_NAMES=(
     [13]="kill the operator mid-rollout"
     [14]="pod rescheduled to another node"
     [15]="delete records while a primary's bindcar, then named, is down"
+    [16]="delete primary-0"
+    [17]="delete primary-1"
 )
 
 # Sets PICKED to one of the cluster's primaries. Called in the suite's own
@@ -1040,6 +1069,10 @@ step_3() {
 step_4() { local p; next_primary; p=${PICKED}; STEP_TARGETS="${p}"; delete_pod_of "${p}"; }
 
 step_5() { STEP_TARGETS="${SECONDARY}"; delete_pod_of "${SECONDARY}"; }
+
+# The quick profile's deterministic primary deletions: each primary in turn.
+step_16() { local p="${CHAOS_CLUSTER_CR}-primary-0"; STEP_TARGETS="${p}"; delete_pod_of "${p}"; }
+step_17() { local p="${CHAOS_CLUSTER_CR}-primary-1"; STEP_TARGETS="${p}"; delete_pod_of "${p}"; }
 
 step_6() {
     STEP_ALL_DOWN=true
