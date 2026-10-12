@@ -38,113 +38,13 @@ mod tests {
         assert_eq!(REASON_NO_CHILDREN, "NoChildren");
     }
 
-    #[test]
-    fn test_reason_progressing_constant() {
-        assert_eq!(REASON_PROGRESSING, "Progressing");
-    }
-
-    // ============================================================================
-    // Test Error-Related Reason Constants
-    // ============================================================================
-
-    #[test]
-    fn test_reason_rndc_authentication_failed_constant() {
-        assert_eq!(
-            REASON_RNDC_AUTHENTICATION_FAILED,
-            "RNDCAuthenticationFailed"
-        );
-    }
-
-    #[test]
-    fn test_reason_bindcar_unreachable_constant() {
-        assert_eq!(REASON_BINDCAR_UNREACHABLE, "BindcarUnreachable");
-    }
-
-    #[test]
-    fn test_reason_zone_transfer_complete_constant() {
-        assert_eq!(REASON_ZONE_TRANSFER_COMPLETE, "ZoneTransferComplete");
-    }
-
-    #[test]
-    fn test_reason_zone_transfer_failed_constant() {
-        assert_eq!(REASON_ZONE_TRANSFER_FAILED, "ZoneTransferFailed");
-    }
-
-    #[test]
-    fn test_reason_pods_pending_constant() {
-        assert_eq!(REASON_PODS_PENDING, "PodsPending");
-    }
-
-    #[test]
-    fn test_reason_pods_crashing_constant() {
-        assert_eq!(REASON_PODS_CRASHING, "PodsCrashing");
-    }
-
     // ============================================================================
     // Test HTTP Error Mapping Reason Constants
     // ============================================================================
 
     #[test]
-    fn test_reason_bindcar_bad_request_constant() {
-        assert_eq!(REASON_BINDCAR_BAD_REQUEST, "BindcarBadRequest");
-    }
-
-    #[test]
-    fn test_reason_bindcar_auth_failed_constant() {
-        assert_eq!(REASON_BINDCAR_AUTH_FAILED, "BindcarAuthFailed");
-    }
-
-    #[test]
     fn test_reason_zone_not_found_constant() {
         assert_eq!(REASON_ZONE_NOT_FOUND, "ZoneNotFound");
-    }
-
-    #[test]
-    fn test_reason_bindcar_internal_error_constant() {
-        assert_eq!(REASON_BINDCAR_INTERNAL_ERROR, "BindcarInternalError");
-    }
-
-    #[test]
-    fn test_reason_bindcar_not_implemented_constant() {
-        assert_eq!(REASON_BINDCAR_NOT_IMPLEMENTED, "BindcarNotImplemented");
-    }
-
-    #[test]
-    fn test_reason_gateway_error_constant() {
-        assert_eq!(REASON_GATEWAY_ERROR, "GatewayError");
-    }
-
-    // ============================================================================
-    // Test Bind9Cluster Specific Reason Constants
-    // ============================================================================
-
-    #[test]
-    fn test_reason_instances_created_constant() {
-        assert_eq!(REASON_INSTANCES_CREATED, "InstancesCreated");
-    }
-
-    #[test]
-    fn test_reason_instances_scaling_constant() {
-        assert_eq!(REASON_INSTANCES_SCALING, "InstancesScaling");
-    }
-
-    #[test]
-    fn test_reason_instances_pending_constant() {
-        assert_eq!(REASON_INSTANCES_PENDING, "InstancesPending");
-    }
-
-    // ============================================================================
-    // Test ClusterBind9Provider Specific Reason Constants
-    // ============================================================================
-
-    #[test]
-    fn test_reason_clusters_ready_constant() {
-        assert_eq!(REASON_CLUSTERS_READY, "ClustersReady");
-    }
-
-    #[test]
-    fn test_reason_clusters_progressing_constant() {
-        assert_eq!(REASON_CLUSTERS_PROGRESSING, "ClustersProgressing");
     }
 
     // ============================================================================
@@ -255,7 +155,6 @@ mod tests {
             REASON_PARTIALLY_READY,
             REASON_NOT_READY,
             REASON_NO_CHILDREN,
-            REASON_PROGRESSING,
         ];
 
         for (i, reason1) in reasons.iter().enumerate() {
@@ -273,15 +172,7 @@ mod tests {
     #[test]
     fn test_http_error_reasons_are_unique() {
         // Verify HTTP error reason constants have unique values
-        let reasons = [
-            REASON_BINDCAR_BAD_REQUEST,
-            REASON_BINDCAR_AUTH_FAILED,
-            REASON_ZONE_NOT_FOUND,
-            REASON_BINDCAR_INTERNAL_ERROR,
-            REASON_BINDCAR_NOT_IMPLEMENTED,
-            REASON_GATEWAY_ERROR,
-            REASON_BINDCAR_UNREACHABLE,
-        ];
+        let reasons = [REASON_ZONE_NOT_FOUND];
 
         for (i, reason1) in reasons.iter().enumerate() {
             for (j, reason2) in reasons.iter().enumerate() {
@@ -308,9 +199,6 @@ mod tests {
             REASON_PARTIALLY_READY,
             REASON_NOT_READY,
             REASON_NO_CHILDREN,
-            REASON_PROGRESSING,
-            REASON_BINDCAR_BAD_REQUEST,
-            REASON_BINDCAR_AUTH_FAILED,
         ];
 
         for reason in reasons {

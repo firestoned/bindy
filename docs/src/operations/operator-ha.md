@@ -217,17 +217,17 @@ Key log messages indicating leader election status:
 
 ### Prometheus Metrics
 
-Monitor leader election health (if metrics enabled):
+Monitor leader election health (see [Metrics](metrics.md#leader-election-metrics)):
 
 ```promql
-# Number of leadership changes (should be low)
-increase(bindy_leader_elections_total[1h])
+# Number of leadership acquisitions (should be low)
+increase(bindy_firestoned_io_leader_elections_total{status="acquired"}[1h])
 
-# Time since last leadership change
-time() - bindy_leader_election_timestamp
+# Leases lost (each one drains and restarts a replica)
+increase(bindy_firestoned_io_leader_elections_total{status="lost"}[1h])
 
-# Current leader status (1 = leader, 0 = standby)
-bindy_is_leader
+# Current leader status per replica (1 = leader, 0 = standby)
+bindy_firestoned_io_leader_status
 ```
 
 ## Testing Failover

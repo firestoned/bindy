@@ -52,7 +52,6 @@ fn compare_ptr_rrset(existing_records: &[Record], target: &str, desired_ttl: u32
 /// - TSIG signer creation fails
 /// - DNS update is rejected by the server
 /// - Invalid domain name or target
-#[allow(clippy::too_many_arguments)]
 pub async fn add_ptr_record(
     zone_name: &str,
     name: &str,

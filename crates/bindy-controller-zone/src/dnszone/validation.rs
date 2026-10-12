@@ -4,7 +4,7 @@
 //! Validation logic for DNS zones.
 //!
 //! This module contains functions for validating zone configurations,
-//! checking for duplicate zones, and filtering instances.
+//! checking for duplicate zones.
 
 use kube::ResourceExt;
 use tracing::{debug, warn};
@@ -145,33 +145,6 @@ pub fn check_for_duplicate_zones(
             conflicting_zones,
         })
     }
-}
-
-/// Filters instances that need reconciliation based on their `last_reconciled_at` timestamp.
-///
-/// Returns instances where:
-/// - `last_reconciled_at` is `None` (never reconciled)
-/// - `last_reconciled_at` exists but we need to verify pod IPs haven't changed
-///
-/// # Arguments
-///
-/// * `instances` - All instances assigned to the zone
-///
-/// # Returns
-///
-/// List of instances that need reconciliation (zone configuration)
-#[must_use]
-pub fn filter_instances_needing_reconciliation(
-    instances: &[crate::crd::InstanceReference],
-) -> Vec<crate::crd::InstanceReference> {
-    instances
-        .iter()
-        .filter(|instance| {
-            // If never reconciled, needs reconciliation
-            instance.last_reconciled_at.is_none()
-        })
-        .cloned()
-        .collect()
 }
 
 #[cfg(test)]

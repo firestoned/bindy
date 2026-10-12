@@ -81,7 +81,7 @@ where
     }
 
     // Convert back to YAML
-    let yaml = serde_yaml::to_string(&crd_json)?;
+    let yaml = bindy_api::yaml::to_string(&crd_json)?;
 
     // Add copyright header
     let content = format!("{COPYRIGHT_HEADER}{yaml}");

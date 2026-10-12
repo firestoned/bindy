@@ -6,11 +6,10 @@
 
 #[cfg(test)]
 mod tests {
-    use super::super::{RecordKind, RecordRef, RecordStores, Stores, RECORD_KINDS};
+    use super::super::{RecordStores, Stores, RECORD_KINDS};
     use crate::watch::MultiStore;
     use bindy_api::crd::{
-        ARecord, Bind9Cluster, Bind9Instance, ClusterBind9Provider, DNSZone, LabelSelector,
-        PTRRecord,
+        ARecord, Bind9Cluster, Bind9Instance, ClusterBind9Provider, DNSZone, PTRRecord,
     };
     use k8s_openapi::api::apps::v1::Deployment;
     use k8s_openapi::api::core::v1::{Endpoints, Pod};
@@ -96,18 +95,6 @@ mod tests {
         object("DNSZone", name, ns, &[], spec)
     }
 
-    fn selector(labels: &[(&str, &str)]) -> LabelSelector {
-        LabelSelector {
-            match_labels: Some(
-                labels
-                    .iter()
-                    .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-                    .collect(),
-            ),
-            match_expressions: None,
-        }
-    }
-
     /// Stores with the given zones and A/PTR records; every other record kind
     /// registered but empty.
     fn stores(zones: Vec<DNSZone>, a: Vec<ARecord>, ptr: Vec<PTRRecord>) -> Stores {
@@ -144,41 +131,6 @@ mod tests {
                 "SRVRecord",
                 "CAARecord",
                 "PTRRecord"
-            ]
-        );
-    }
-
-    #[test]
-    fn record_kind_builds_its_record_ref_variant() {
-        assert_eq!(
-            ARecord::record_ref("a".into(), "ns".into()),
-            RecordRef::A("a".into(), "ns".into())
-        );
-        assert_eq!(
-            PTRRecord::record_ref("p".into(), "ns".into()),
-            RecordRef::PTR("p".into(), "ns".into())
-        );
-    }
-
-    #[test]
-    fn records_matching_selector_finds_matching_records_of_every_kind() {
-        let s = stores(
-            vec![],
-            vec![
-                a_record("a1", "ns1", &[("app", "web")]),
-                a_record("a2", "ns1", &[("app", "db")]),
-            ],
-            vec![ptr_record("p1", "ns1", &[("app", "web")])],
-        );
-
-        let found = s.records_matching_selector(&selector(&[("app", "web")]), "ns1");
-
-        // Kinds come back in RECORD_KINDS order: A before PTR.
-        assert_eq!(
-            found,
-            [
-                RecordRef::A("a1".into(), "ns1".into()),
-                RecordRef::PTR("p1".into(), "ns1".into())
             ]
         );
     }
@@ -255,18 +207,6 @@ mod tests {
     }
 
     #[test]
-    fn records_matching_selector_is_namespace_isolated() {
-        let s = stores(
-            vec![],
-            vec![a_record("a1", "other", &[("app", "web")])],
-            vec![],
-        );
-        assert!(s
-            .records_matching_selector(&selector(&[("app", "web")]), "ns1")
-            .is_empty());
-    }
-
-    #[test]
     fn dnszones_selecting_record_matches_records_from_in_the_same_namespace() {
         let s = stores(
             vec![
@@ -300,21 +240,12 @@ mod tests {
         let records = RecordStores::default();
         let _ = records.get::<ARecord>();
     }
-
-    #[test]
-    fn record_ref_accessors() {
-        let r = RecordRef::SRV("svc".into(), "ns".into());
-        assert_eq!(r.name(), "svc");
-        assert_eq!(r.namespace(), "ns");
-        assert_eq!(r.record_type(), "SRV");
-    }
 }
 
 /// Carried over from `bindy`'s `context_tests.rs` when `context` moved here
 /// (roadmap 01 Phase B step B3).
 #[cfg(test)]
-mod multistore_and_record_ref {
-    use super::super::RecordRef;
+mod multistore {
     use crate::watch::MultiStore;
     use bindy_api::crd::Bind9Instance;
 
@@ -422,83 +353,6 @@ mod multistore_and_record_ref {
         // An empty view would make every lookup return nothing while the operator
         // reported healthy, so fail loudly at startup instead.
         let _ = MultiStore::<Bind9Instance>::new(vec![]);
-    }
-
-    #[test]
-    fn test_record_ref_name() {
-        let record = RecordRef::A("test-record".to_string(), "default".to_string());
-        assert_eq!(record.name(), "test-record");
-
-        let record = RecordRef::AAAA("ipv6-record".to_string(), "default".to_string());
-        assert_eq!(record.name(), "ipv6-record");
-    }
-
-    #[test]
-    fn test_record_ref_namespace() {
-        let record = RecordRef::A("test-record".to_string(), "bindy-system".to_string());
-        assert_eq!(record.namespace(), "bindy-system");
-
-        let record = RecordRef::TXT("txt-record".to_string(), "other-ns".to_string());
-        assert_eq!(record.namespace(), "other-ns");
-    }
-
-    #[test]
-    fn test_record_ref_record_type() {
-        assert_eq!(
-            RecordRef::A("test".to_string(), "default".to_string()).record_type(),
-            "A"
-        );
-        assert_eq!(
-            RecordRef::AAAA("test".to_string(), "default".to_string()).record_type(),
-            "AAAA"
-        );
-        assert_eq!(
-            RecordRef::CNAME("test".to_string(), "default".to_string()).record_type(),
-            "CNAME"
-        );
-        assert_eq!(
-            RecordRef::TXT("test".to_string(), "default".to_string()).record_type(),
-            "TXT"
-        );
-        assert_eq!(
-            RecordRef::MX("test".to_string(), "default".to_string()).record_type(),
-            "MX"
-        );
-        assert_eq!(
-            RecordRef::NS("test".to_string(), "default".to_string()).record_type(),
-            "NS"
-        );
-        assert_eq!(
-            RecordRef::SRV("test".to_string(), "default".to_string()).record_type(),
-            "SRV"
-        );
-        assert_eq!(
-            RecordRef::CAA("test".to_string(), "default".to_string()).record_type(),
-            "CAA"
-        );
-    }
-
-    #[test]
-    fn test_record_ref_equality() {
-        let record1 = RecordRef::A("test".to_string(), "default".to_string());
-        let record2 = RecordRef::A("test".to_string(), "default".to_string());
-        let record3 = RecordRef::A("other".to_string(), "default".to_string());
-        let record4 = RecordRef::AAAA("test".to_string(), "default".to_string());
-
-        assert_eq!(record1, record2);
-        assert_ne!(record1, record3);
-        assert_ne!(record1, record4);
-    }
-
-    #[test]
-    fn test_record_ref_clone() {
-        let record = RecordRef::A("test".to_string(), "default".to_string());
-        let cloned = record.clone();
-
-        assert_eq!(record, cloned);
-        assert_eq!(record.name(), cloned.name());
-        assert_eq!(record.namespace(), cloned.namespace());
-        assert_eq!(record.record_type(), cloned.record_type());
     }
 }
 

@@ -4,12 +4,8 @@
 //! Unit tests for `status.rs`
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
-    use crate::status::{
-        condition_changed, create_condition, find_condition, get_last_transition_time,
-        DNSZoneStatusUpdater,
-    };
+    use crate::status::{create_condition, find_condition, DNSZoneStatusUpdater};
     use bindy_api::crd::{Condition, DNSZone, DNSZoneSpec};
 
     const CONDITION_TYPE_READY: &str = "Ready";
@@ -68,97 +64,6 @@ mod tests {
         // Should be RFC3339 format
         assert!(timestamp.contains('T'));
         assert!(timestamp.contains('Z') || timestamp.contains('+') || timestamp.contains('-'));
-    }
-
-    #[test]
-    fn test_condition_changed_detects_type_change() {
-        let existing = Some(create_condition("Ready", STATUS_TRUE, "Ready", "Ready"));
-        let new_cond = create_condition("Progressing", STATUS_TRUE, "Ready", "Ready");
-
-        assert!(condition_changed(&existing, &new_cond));
-    }
-
-    #[test]
-    fn test_condition_changed_detects_status_change() {
-        let existing = Some(create_condition("Ready", STATUS_TRUE, "Ready", "Ready"));
-        let new_cond = create_condition("Ready", STATUS_FALSE, "NotReady", "Not ready");
-
-        assert!(condition_changed(&existing, &new_cond));
-    }
-
-    #[test]
-    fn test_condition_changed_detects_message_change() {
-        let existing = Some(create_condition(
-            "Ready",
-            STATUS_TRUE,
-            "Ready",
-            "Old message",
-        ));
-        let new_cond = create_condition("Ready", STATUS_TRUE, "Ready", "New message");
-
-        assert!(condition_changed(&existing, &new_cond));
-    }
-
-    #[test]
-    fn test_condition_changed_returns_true_when_no_existing() {
-        let existing = None;
-        let new_cond = create_condition("Ready", STATUS_TRUE, "Ready", "Ready");
-
-        assert!(condition_changed(&existing, &new_cond));
-    }
-
-    #[test]
-    fn test_condition_unchanged_when_same() {
-        let existing = Some(create_condition("Ready", STATUS_TRUE, "Ready", "Message"));
-        let new_cond = create_condition("Ready", STATUS_TRUE, "DifferentReason", "Message");
-
-        // Should be unchanged because type, status, and message are the same
-        // (reason is not compared)
-        assert!(!condition_changed(&existing, &new_cond));
-    }
-
-    #[test]
-    fn test_get_last_transition_time_with_existing_condition() {
-        let timestamp = "2025-01-01T00:00:00Z";
-        let existing_conditions = vec![Condition {
-            r#type: "Ready".to_string(),
-            status: STATUS_TRUE.to_string(),
-            reason: Some("Ready".to_string()),
-            message: Some("Ready".to_string()),
-            last_transition_time: Some(timestamp.to_string()),
-        }];
-
-        let result = get_last_transition_time(&existing_conditions, "Ready");
-        assert_eq!(result, timestamp);
-    }
-
-    #[test]
-    fn test_get_last_transition_time_without_existing_condition() {
-        let existing_conditions = vec![];
-
-        let result = get_last_transition_time(&existing_conditions, "Ready");
-
-        // Should return current time (RFC3339 format)
-        assert!(result.contains('T'));
-    }
-
-    #[test]
-    fn test_get_last_transition_time_with_different_condition_type() {
-        let timestamp = "2025-01-01T00:00:00Z";
-        let existing_conditions = vec![Condition {
-            r#type: "Progressing".to_string(),
-            status: STATUS_TRUE.to_string(),
-            reason: Some("Rolling".to_string()),
-            message: Some("Rolling".to_string()),
-            last_transition_time: Some(timestamp.to_string()),
-        }];
-
-        // Looking for "Ready" but only "Progressing" exists
-        let result = get_last_transition_time(&existing_conditions, "Ready");
-
-        // Should return current time since "Ready" doesn't exist
-        assert!(result.contains('T'));
-        assert_ne!(result, timestamp);
     }
 
     #[test]
@@ -286,72 +191,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_get_last_transition_time_with_multiple_conditions() {
-        let timestamp1 = "2025-01-01T00:00:00Z";
-        let timestamp2 = "2025-01-02T00:00:00Z";
-
-        let existing_conditions = vec![
-            Condition {
-                r#type: "Ready".to_string(),
-                status: STATUS_TRUE.to_string(),
-                reason: Some("Ready".to_string()),
-                message: Some("Ready".to_string()),
-                last_transition_time: Some(timestamp1.to_string()),
-            },
-            Condition {
-                r#type: "Progressing".to_string(),
-                status: STATUS_FALSE.to_string(),
-                reason: Some("Complete".to_string()),
-                message: Some("Complete".to_string()),
-                last_transition_time: Some(timestamp2.to_string()),
-            },
-        ];
-
-        let ready_time = get_last_transition_time(&existing_conditions, "Ready");
-        let progressing_time = get_last_transition_time(&existing_conditions, "Progressing");
-
-        assert_eq!(ready_time, timestamp1);
-        assert_eq!(progressing_time, timestamp2);
-    }
-
-    #[test]
-    fn test_condition_changed_ignores_reason_change() {
-        let existing = Some(create_condition(
-            "Ready",
-            STATUS_TRUE,
-            "OldReason",
-            "Message",
-        ));
-        let new_cond = create_condition("Ready", STATUS_TRUE, "NewReason", "Message");
-
-        // Should NOT be changed because type, status, and message are the same
-        assert!(!condition_changed(&existing, &new_cond));
-    }
-
-    #[test]
-    fn test_condition_changed_ignores_timestamp_change() {
-        let existing = Some(Condition {
-            r#type: "Ready".to_string(),
-            status: STATUS_TRUE.to_string(),
-            reason: Some("Ready".to_string()),
-            message: Some("Message".to_string()),
-            last_transition_time: Some("2025-01-01T00:00:00Z".to_string()),
-        });
-
-        let new_cond = Condition {
-            r#type: "Ready".to_string(),
-            status: STATUS_TRUE.to_string(),
-            reason: Some("Ready".to_string()),
-            message: Some("Message".to_string()),
-            last_transition_time: Some("2025-01-02T00:00:00Z".to_string()),
-        };
-
-        // Should NOT be changed because type, status, and message are the same
-        assert!(!condition_changed(&existing, &new_cond));
-    }
-
-    // Helper function to create a test DNSZone
+    // Helper function to create a test DNSZone. The struct literal must name
+    // the deprecated `name_server_ips` field.
+    #[allow(deprecated)]
     fn create_test_dnszone(name: &str, namespace: &str) -> DNSZone {
         use bindy_api::crd::SOARecord;
         use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;

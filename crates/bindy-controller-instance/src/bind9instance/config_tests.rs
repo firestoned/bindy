@@ -125,7 +125,6 @@ mod tests {
             algorithm: RndcAlgorithm::HmacSha512,
         });
 
-        #[allow(deprecated)]
         let rndc_secret_ref = Some(RndcSecretRef {
             name: "old-secret".to_string(),
             algorithm: RndcAlgorithm::HmacSha256,
@@ -148,7 +147,6 @@ mod tests {
     #[test]
     fn test_resolve_rndc_config_from_deprecated_fallback_to_old() {
         // Should fall back to deprecated rndc_secret_ref when rndc_key is None
-        #[allow(deprecated)]
         let rndc_secret_ref = Some(RndcSecretRef {
             name: "old-secret".to_string(),
             algorithm: RndcAlgorithm::HmacSha256,
@@ -209,7 +207,6 @@ mod tests {
     #[test]
     fn test_resolve_rndc_config_with_secret_ref() {
         // Config with secret_ref should preserve it
-        #[allow(deprecated)]
         let instance_config = Some(RndcKeyConfig {
             auto_rotate: false, // Rotation doesn't apply to secret_ref
             rotate_after: "720h".to_string(),

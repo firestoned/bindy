@@ -39,7 +39,7 @@ use kube::config::{KubeConfigOptions, Kubeconfig};
 /// `std::error::Error` bound required by `kube::runtime::Controller::run`.
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
-pub struct ScoutError(#[from] anyhow::Error);
+pub(crate) struct ScoutError(#[from] anyhow::Error);
 use futures::StreamExt;
 use k8s_openapi::api::networking::v1::Ingress;
 use kube::{
@@ -72,7 +72,7 @@ use tracing::{debug, error, info, warn};
 /// and an omitted `kind` means `Gateway`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ParentReference {
+pub(crate) struct ParentReference {
     /// API group of the parent. Defaults to `gateway.networking.k8s.io` when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
@@ -89,7 +89,7 @@ pub struct ParentReference {
 /// Minimal HTTPRoute spec for Scout's use case.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HTTPRouteSpec {
+pub(crate) struct HTTPRouteSpec {
     /// Hostnames matching this HTTPRoute
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hostnames: Option<Vec<String>>,
@@ -101,7 +101,7 @@ pub struct HTTPRouteSpec {
 
 /// Minimal HTTPRoute definition for Scout's use case.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct HTTPRoute {
+pub(crate) struct HTTPRoute {
     #[serde(rename = "apiVersion")]
     pub api_version: String,
     pub kind: String,
@@ -113,7 +113,7 @@ pub struct HTTPRoute {
 /// Minimal TLSRoute spec for Scout's use case.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TLSRouteSpec {
+pub(crate) struct TLSRouteSpec {
     /// Hostnames matching this TLSRoute
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hostnames: Option<Vec<String>>,
@@ -128,7 +128,7 @@ pub struct TLSRouteSpec {
 
 /// Minimal TLSRoute definition for Scout's use case.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct TLSRoute {
+pub(crate) struct TLSRoute {
     #[serde(rename = "apiVersion")]
     pub api_version: String,
     pub kind: String,
@@ -140,7 +140,7 @@ pub struct TLSRoute {
 /// Minimal TCPRoute spec for Scout's use case.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TCPRouteSpec {
+pub(crate) struct TCPRouteSpec {
     /// Rules for this TCPRoute (kept for schema compatibility with the
     /// Gateway API). Scout does not currently parse individual rule contents
     /// for TCPRoute (L4), but keeping the field avoids schema drift when the
@@ -155,7 +155,7 @@ pub struct TCPRouteSpec {
 
 /// Minimal TCPRoute definition for Scout's use case.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct TCPRoute {
+pub(crate) struct TCPRoute {
     #[serde(rename = "apiVersion")]
     pub api_version: String,
     pub kind: String,
@@ -224,17 +224,17 @@ impl k8s_openapi::Resource for TCPRoute {
 }
 
 /// Gateway API group used for `parentRefs` and Gateway lookups.
-pub const GATEWAY_API_GROUP: &str = "gateway.networking.k8s.io";
+pub(crate) const GATEWAY_API_GROUP: &str = "gateway.networking.k8s.io";
 
 /// Gateway API `kind` for a Gateway parent reference.
-pub const GATEWAY_KIND: &str = "Gateway";
+pub(crate) const GATEWAY_KIND: &str = "Gateway";
 
 /// A namespaced object reference (`namespace` + `name`).
 ///
 /// Used both for the operator-configured `gatewayClass → LoadBalancer Service`
 /// map and for the Gateways a route's `parentRefs` point at.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NamespacedName {
+pub(crate) struct NamespacedName {
     /// Object namespace.
     pub namespace: String,
     /// Object name.
@@ -247,7 +247,7 @@ pub struct NamespacedName {
 /// by an explicit `namespace/name`, or by a label selector scoped to a namespace
 /// (useful when the Service name is generated but carries stable labels).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GatewayServiceTarget {
+pub(crate) enum GatewayServiceTarget {
     /// A specific LoadBalancer Service, addressed by namespace and name.
     Name(NamespacedName),
     /// A LoadBalancer Service found by label selector within a namespace.
@@ -261,21 +261,10 @@ pub enum GatewayServiceTarget {
     },
 }
 
-impl GatewayServiceTarget {
-    /// Namespace the target Service lives in.
-    #[must_use]
-    pub fn namespace(&self) -> &str {
-        match self {
-            Self::Name(nn) => &nn.namespace,
-            Self::Labeled { namespace, .. } => namespace,
-        }
-    }
-}
-
 /// Minimal Gateway spec — only `gatewayClassName`, used to match the running class.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GatewaySpec {
+pub(crate) struct GatewaySpec {
     /// Name of the GatewayClass implementing this Gateway.
     pub gateway_class_name: String,
 }
@@ -283,7 +272,7 @@ pub struct GatewaySpec {
 /// A single entry in `Gateway.status.addresses`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GatewayStatusAddress {
+pub(crate) struct GatewayStatusAddress {
     /// Address type, e.g. `IPAddress` or `Hostname`. Absent is treated as unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub r#type: Option<String>,
@@ -294,7 +283,7 @@ pub struct GatewayStatusAddress {
 /// Minimal Gateway status — only the assigned addresses.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct GatewayStatus {
+pub(crate) struct GatewayStatus {
     /// Addresses the controller has assigned to this Gateway (often empty when
     /// the controller publishes the external IP only on its LoadBalancer Service).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -303,7 +292,7 @@ pub struct GatewayStatus {
 
 /// Minimal Gateway definition for Scout's chain-following.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct Gateway {
+pub(crate) struct Gateway {
     #[serde(rename = "apiVersion")]
     pub api_version: String,
     pub kind: String,
@@ -338,18 +327,18 @@ impl k8s_openapi::Resource for Gateway {
 
 /// Annotation specifying the DNS record kind Scout should create for this Ingress.
 /// Set to `"ARecord"` to create an A record. Any other value (or absent) is ignored.
-pub const ANNOTATION_RECORD_KIND: &str = "bindy.firestoned.io/recordKind";
+pub(crate) const ANNOTATION_RECORD_KIND: &str = "bindy.firestoned.io/recordKind";
 
 /// Expected value of [`ANNOTATION_RECORD_KIND`] for A record creation.
-pub const RECORD_KIND_ARECORD: &str = "ARecord";
+pub(crate) const RECORD_KIND_ARECORD: &str = "ARecord";
 
 /// Annotation specifying which DNS zone owns this Ingress host
-pub const ANNOTATION_ZONE: &str = "bindy.firestoned.io/zone";
+pub(crate) const ANNOTATION_ZONE: &str = "bindy.firestoned.io/zone";
 
 /// Simplified opt-in annotation — set to `"true"` to enable Scout for this Ingress.
 /// Takes precedence over (and is preferred to) [`ANNOTATION_RECORD_KIND`] for new users.
 /// Both annotations are accepted for backward compatibility.
-pub const ANNOTATION_SCOUT_ENABLED: &str = "bindy.firestoned.io/scout-enabled";
+pub(crate) const ANNOTATION_SCOUT_ENABLED: &str = "bindy.firestoned.io/scout-enabled";
 
 /// Annotation for explicitly overriding the IP(s) used in the ARecord.
 ///
@@ -358,11 +347,11 @@ pub const ANNOTATION_SCOUT_ENABLED: &str = "bindy.firestoned.io/scout-enabled";
 /// `ARecord`, in the order given. Whitespace around each entry is trimmed and
 /// empty entries are skipped. When set, takes precedence over `--default-ips`
 /// and any LoadBalancer status IP.
-pub const ANNOTATION_IP: &str = "bindy.firestoned.io/ip";
+pub(crate) const ANNOTATION_IP: &str = "bindy.firestoned.io/ip";
 
 /// Annotation for overriding the TTL (in seconds) on the created ARecord.
 /// When absent, the ARecord inherits the TTL from the DNSZone spec.
-pub const ANNOTATION_TTL: &str = "bindy.firestoned.io/ttl";
+pub(crate) const ANNOTATION_TTL: &str = "bindy.firestoned.io/ttl";
 
 /// Annotation for overriding the DNS record name (`spec.name`) on the created ARecord.
 ///
@@ -372,32 +361,32 @@ pub const ANNOTATION_TTL: &str = "bindy.firestoned.io/ttl";
 ///
 /// On multi-host resources (Ingress / HTTPRoute / TLSRoute) the override is applied to
 /// every ARecord produced from that resource, so it is intended for single-host use cases.
-pub const ANNOTATION_RECORD_NAME: &str = "bindy.firestoned.io/record-name";
+pub(crate) const ANNOTATION_RECORD_NAME: &str = "bindy.firestoned.io/record-name";
 
 /// Finalizer added to Ingresses managed by Scout to ensure cleanup on deletion
-pub const FINALIZER_SCOUT: &str = "bindy.firestoned.io/arecord-finalizer";
+pub(crate) const FINALIZER_SCOUT: &str = "bindy.firestoned.io/arecord-finalizer";
 
 /// Label placed on created ARecords identifying Scout as the manager
-pub const LABEL_MANAGED_BY: &str = "bindy.firestoned.io/managed-by";
+pub(crate) const LABEL_MANAGED_BY: &str = "bindy.firestoned.io/managed-by";
 
 /// Label value for ARecords created by Scout
-pub const LABEL_MANAGED_BY_SCOUT: &str = "scout";
+pub(crate) const LABEL_MANAGED_BY_SCOUT: &str = "scout";
 
 /// Label identifying the source cluster on created ARecords
-pub const LABEL_SOURCE_CLUSTER: &str = "bindy.firestoned.io/source-cluster";
+pub(crate) const LABEL_SOURCE_CLUSTER: &str = "bindy.firestoned.io/source-cluster";
 
 /// Label identifying the source namespace on created ARecords
-pub const LABEL_SOURCE_NAMESPACE: &str = "bindy.firestoned.io/source-namespace";
+pub(crate) const LABEL_SOURCE_NAMESPACE: &str = "bindy.firestoned.io/source-namespace";
 
 /// Label identifying the source resource name on created ARecords.
 /// Used for all resource kinds (Ingress, Service, HTTPRoute, TLSRoute).
-pub const LABEL_SOURCE_NAME: &str = "bindy.firestoned.io/source-name";
+pub(crate) const LABEL_SOURCE_NAME: &str = "bindy.firestoned.io/source-name";
 
 /// Label carrying the DNS zone name on created ARecords (for DNSZone selector matching)
-pub const LABEL_ZONE: &str = "bindy.firestoned.io/zone";
+pub(crate) const LABEL_ZONE: &str = "bindy.firestoned.io/zone";
 
 /// Default namespace where ARecords are created when `BINDY_SCOUT_NAMESPACE` is not set
-pub const DEFAULT_SCOUT_NAMESPACE: &str = "bindy-system";
+pub(crate) const DEFAULT_SCOUT_NAMESPACE: &str = "bindy-system";
 
 /// Maximum Kubernetes resource name length in characters
 const MAX_K8S_NAME_LEN: usize = 253;
@@ -436,7 +425,7 @@ pub(crate) const REMOTE_CLEANUP_GRACE_SECS: i64 = 300;
 // ============================================================================
 
 /// Shared context passed to every reconciler invocation.
-pub struct ScoutContext {
+pub(crate) struct ScoutContext {
     /// Local Kubernetes client — Ingress watching and finalizer management.
     /// Always the in-cluster client regardless of mode.
     pub client: Client,
@@ -564,7 +553,7 @@ pub(crate) fn cleanup_grace_expired(deletion_timestamp: Option<&Time>, now: Time
 ///
 /// The annotation `bindy.firestoned.io/recordKind` must have the value `"ARecord"` (case-sensitive).
 /// Any other value (or absence of the annotation) returns `false`.
-pub fn is_arecord_enabled(annotations: &BTreeMap<String, String>) -> bool {
+pub(crate) fn is_arecord_enabled(annotations: &BTreeMap<String, String>) -> bool {
     annotations
         .get(ANNOTATION_RECORD_KIND)
         .map(|v| v == RECORD_KIND_ARECORD)
@@ -580,7 +569,7 @@ pub fn is_arecord_enabled(annotations: &BTreeMap<String, String>) -> bool {
 /// - `bindy.firestoned.io/recordKind: "ARecord"`
 ///
 /// The record kind always defaults to `ARecord` — no further annotation is needed.
-pub fn is_scout_opted_in(annotations: &BTreeMap<String, String>) -> bool {
+pub(crate) fn is_scout_opted_in(annotations: &BTreeMap<String, String>) -> bool {
     annotations
         .get(ANNOTATION_SCOUT_ENABLED)
         .map(|v| v == "true")
@@ -594,7 +583,7 @@ pub fn is_scout_opted_in(annotations: &BTreeMap<String, String>) -> bool {
 /// 2. `default_zone` — operator-configured default zone (e.g. `"example.com"`)
 ///
 /// Returns `None` if neither is available. When `None`, Scout logs a warning and skips the Ingress.
-pub fn resolve_zone(
+pub(crate) fn resolve_zone(
     annotations: &BTreeMap<String, String>,
     default_zone: Option<&str>,
 ) -> Option<String> {
@@ -604,7 +593,7 @@ pub fn resolve_zone(
 /// Returns the DNS zone specified by the `bindy.firestoned.io/zone` annotation.
 ///
 /// Returns `None` if the annotation is absent or has an empty value.
-pub fn get_zone_annotation(annotations: &BTreeMap<String, String>) -> Option<String> {
+pub(crate) fn get_zone_annotation(annotations: &BTreeMap<String, String>) -> Option<String> {
     annotations
         .get(ANNOTATION_ZONE)
         .filter(|v| !v.is_empty())
@@ -622,7 +611,7 @@ pub fn get_zone_annotation(annotations: &BTreeMap<String, String>) -> Option<Str
 /// # Errors
 ///
 /// Returns an error if `host` does not end with the zone suffix.
-pub fn derive_record_name(host: &str, zone: &str) -> Result<String> {
+pub(crate) fn derive_record_name(host: &str, zone: &str) -> Result<String> {
     // Strip trailing dot if present (some Ingress controllers append it)
     let host = host.trim_end_matches('.');
 
@@ -830,7 +819,7 @@ pub(crate) fn stale_cleanup_zones(
 ///
 /// The annotation value is trimmed of surrounding whitespace. Returns `None` if the
 /// annotation is absent, empty, or whitespace-only.
-pub fn get_record_name_annotation(annotations: &BTreeMap<String, String>) -> Option<String> {
+pub(crate) fn get_record_name_annotation(annotations: &BTreeMap<String, String>) -> Option<String> {
     annotations
         .get(ANNOTATION_RECORD_NAME)
         .map(|v| v.trim().to_string())
@@ -852,7 +841,7 @@ pub fn get_record_name_annotation(annotations: &BTreeMap<String, String>) -> Opt
 /// Returns an error when the override is present but is not a legal DNS name, or — when no
 /// override is set — the error from [`derive_record_name`] if the host does not belong to
 /// the zone.
-pub fn resolve_record_name(
+pub(crate) fn resolve_record_name(
     annotations: &BTreeMap<String, String>,
     host: &str,
     zone: &str,
@@ -910,7 +899,9 @@ pub(crate) fn tcproute_record_name(
 /// (rather than an empty `Vec`) matters: it lets [`resolve_ips`] fall through to
 /// `default_ips` and then the load-balancer status, whereas `Some(vec![])` would
 /// create a record with no addresses.
-pub fn resolve_ips_from_annotation(annotations: &BTreeMap<String, String>) -> Option<Vec<String>> {
+pub(crate) fn resolve_ips_from_annotation(
+    annotations: &BTreeMap<String, String>,
+) -> Option<Vec<String>> {
     let raw = annotations.get(ANNOTATION_IP)?;
     let ips: Vec<String> = raw
         .split(',')
@@ -949,7 +940,7 @@ pub fn resolve_ips_from_annotation(annotations: &BTreeMap<String, String>) -> Op
 /// served (a confused-deputy cross-tenant DNS hijack), because Scout writes
 /// with a cluster-privileged remote client.
 #[must_use]
-pub fn zone_allows_source_namespace(zone: &DNSZone, source_namespace: &str) -> bool {
+pub(crate) fn zone_allows_source_namespace(zone: &DNSZone, source_namespace: &str) -> bool {
     let grant = zone_namespace_grant(zone, source_namespace);
 
     // P3-3: `*` re-opens the cross-tenant path that H1 closed. It stays supported —
@@ -975,7 +966,7 @@ pub fn zone_allows_source_namespace(zone: &DNSZone, source_namespace: &str) -> b
 /// Kept separate from the boolean so a wildcard grant can be distinguished from an
 /// explicit one — they authorize identically but have very different blast radius.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NamespaceGrant {
+pub(crate) enum NamespaceGrant {
     /// The zone lives in the source's own namespace — no cross-namespace access.
     SameNamespace,
     /// The source namespace is named explicitly in the allow-list.
@@ -1000,7 +991,7 @@ impl NamespaceGrant {
 /// present: the grant would have been made regardless of the `*`, so it is not the
 /// wildcard's doing and should not raise a cross-namespace warning.
 #[must_use]
-pub fn zone_namespace_grant(zone: &DNSZone, source_namespace: &str) -> NamespaceGrant {
+pub(crate) fn zone_namespace_grant(zone: &DNSZone, source_namespace: &str) -> NamespaceGrant {
     if zone.namespace().as_deref() == Some(source_namespace) {
         return NamespaceGrant::SameNamespace;
     }
@@ -1156,7 +1147,7 @@ pub(crate) async fn check_zone_authorization_live(
 /// 3. Ingress LoadBalancer status — first non-empty IP
 ///
 /// Returns `None` if no IP can be determined from any source.
-pub fn resolve_ips(
+pub(crate) fn resolve_ips(
     annotations: &BTreeMap<String, String>,
     default_ips: &[String],
     ingress: &Ingress,
@@ -1174,7 +1165,7 @@ pub fn resolve_ips(
 ///
 /// Returns the first non-empty `ip` field found in `status.loadBalancer.ingress`.
 /// Hostname-only entries (no IP) are ignored; a warning is logged for each.
-pub fn resolve_ip_from_lb_status(ingress: &Ingress) -> Option<String> {
+pub(crate) fn resolve_ip_from_lb_status(ingress: &Ingress) -> Option<String> {
     let lb_ingresses = ingress
         .status
         .as_ref()?
@@ -1206,7 +1197,7 @@ pub fn resolve_ip_from_lb_status(ingress: &Ingress) -> Option<String> {
 /// All characters are lowercased. Underscores and any non-alphanumeric characters
 /// (other than hyphens) are replaced with hyphens. The result is truncated to
 /// 253 characters to stay within the Kubernetes name limit.
-pub fn arecord_cr_name(
+pub(crate) fn arecord_cr_name(
     cluster: &str,
     namespace: &str,
     ingress_name: &str,
@@ -1266,7 +1257,7 @@ fn sanitize_k8s_name(s: &str) -> String {
 }
 
 /// Returns `true` if the Scout finalizer is present on the Ingress.
-pub fn has_finalizer(ingress: &Ingress) -> bool {
+pub(crate) fn has_finalizer(ingress: &Ingress) -> bool {
     ingress
         .metadata
         .finalizers
@@ -1276,7 +1267,7 @@ pub fn has_finalizer(ingress: &Ingress) -> bool {
 }
 
 /// Returns `true` if the Ingress has been marked for deletion.
-pub fn is_being_deleted(ingress: &Ingress) -> bool {
+pub(crate) fn is_being_deleted(ingress: &Ingress) -> bool {
     ingress.metadata.deletion_timestamp.is_some()
 }
 
@@ -1286,13 +1277,23 @@ pub fn is_being_deleted(ingress: &Ingress) -> bool {
 /// Selects on `managed-by=scout`, `source-cluster`, `source-namespace`, and
 /// `source-name` to precisely target only the records owned by this Ingress.
 pub fn arecord_label_selector(cluster: &str, namespace: &str, ingress_name: &str) -> String {
+    source_arecord_label_selector(cluster, namespace, ingress_name)
+}
+
+/// The label selector matching every ARecord Scout created for one source
+/// object, whatever its kind: `managed-by=scout,source-cluster=<cluster>,
+/// source-namespace=<namespace>,source-name=<name>`.
+fn source_arecord_label_selector(cluster: &str, namespace: &str, source_name: &str) -> String {
     format!(
-        "{}={},{cluster_key}={cluster},{ns_key}={namespace},{name_key}={ingress_name}",
+        "{}={},{}={},{}={},{}={}",
         LABEL_MANAGED_BY,
         LABEL_MANAGED_BY_SCOUT,
-        cluster_key = LABEL_SOURCE_CLUSTER,
-        ns_key = LABEL_SOURCE_NAMESPACE,
-        name_key = LABEL_SOURCE_NAME,
+        LABEL_SOURCE_CLUSTER,
+        cluster,
+        LABEL_SOURCE_NAMESPACE,
+        namespace,
+        LABEL_SOURCE_NAME,
+        source_name,
     )
 }
 
@@ -1381,7 +1382,7 @@ pub fn stale_arecord_label_selector(
 // ============================================================================
 
 /// Parameters for building an ARecord CR.
-pub struct ARecordParams<'a> {
+pub(crate) struct ARecordParams<'a> {
     /// Kubernetes resource name for the ARecord CR
     pub name: &'a str,
     /// Namespace where the ARecord CR will be created
@@ -1403,7 +1404,7 @@ pub struct ARecordParams<'a> {
 }
 
 /// Builds the ARecord CR that Scout will create on the target cluster.
-pub fn build_arecord(params: ARecordParams<'_>) -> ARecord {
+pub(crate) fn build_arecord(params: ARecordParams<'_>) -> ARecord {
     let mut labels = BTreeMap::new();
     labels.insert(
         LABEL_MANAGED_BY.to_string(),
@@ -1449,7 +1450,7 @@ pub fn build_arecord(params: ARecordParams<'_>) -> ARecord {
 ///
 /// `ClusterIP` and `NodePort` services have no routable external IP, so
 /// Scout silently skips them without warning.
-pub fn is_loadbalancer_service(svc: &Service) -> bool {
+pub(crate) fn is_loadbalancer_service(svc: &Service) -> bool {
     svc.spec
         .as_ref()
         .and_then(|s| s.type_.as_deref())
@@ -1462,7 +1463,7 @@ pub fn is_loadbalancer_service(svc: &Service) -> bool {
 /// Returns `None` if the status has no entries, or the first entry has no IP
 /// (hostname-only entries are ignored). Scout re-queues and waits for the
 /// cloud provider to assign an external IP.
-pub fn resolve_ip_from_service_lb_status(svc: &Service) -> Option<String> {
+pub(crate) fn resolve_ip_from_service_lb_status(svc: &Service) -> Option<String> {
     svc.status
         .as_ref()?
         .load_balancer
@@ -1478,7 +1479,7 @@ pub fn resolve_ip_from_service_lb_status(svc: &Service) -> Option<String> {
 /// Whitespace around each segment is trimmed. Returns `None` unless the input
 /// has exactly two non-empty segments separated by a single `/`.
 #[must_use]
-pub fn service_ref_from_str(s: &str) -> Option<NamespacedName> {
+pub(crate) fn service_ref_from_str(s: &str) -> Option<NamespacedName> {
     let mut parts = s.split('/');
     let namespace = parts.next()?.trim();
     let name = parts.next()?.trim();
@@ -1499,7 +1500,7 @@ pub fn service_ref_from_str(s: &str) -> Option<NamespacedName> {
 /// `/`, so a label selector's own `/` (e.g. `app.kubernetes.io/name=x`) is
 /// preserved. Returns `None` for empty namespace or empty target.
 #[must_use]
-pub fn gateway_service_target_from_str(s: &str) -> Option<GatewayServiceTarget> {
+pub(crate) fn gateway_service_target_from_str(s: &str) -> Option<GatewayServiceTarget> {
     let (namespace, rest) = s.split_once('/')?;
     let namespace = namespace.trim();
     let rest = rest.trim();
@@ -1524,7 +1525,7 @@ pub fn gateway_service_target_from_str(s: &str) -> Option<GatewayServiceTarget> 
 /// the repeatable `--gateway-service` CLI flag can carry multi-label selectors
 /// (which contain commas) without them being mistaken for entry separators.
 #[must_use]
-pub fn parse_gateway_service_entry(entry: &str) -> Option<(String, GatewayServiceTarget)> {
+pub(crate) fn parse_gateway_service_entry(entry: &str) -> Option<(String, GatewayServiceTarget)> {
     let (class, target) = entry.trim().split_once('=')?;
     let class = class.trim();
     if class.is_empty() {
@@ -1545,7 +1546,7 @@ pub fn parse_gateway_service_entry(entry: &str) -> Option<(String, GatewayServic
 /// `--gateway-service` CLI flag instead. The map's keys double as the allow-list
 /// of gateway classes Scout will follow.
 #[must_use]
-pub fn parse_gateway_services(raw: &str) -> BTreeMap<String, GatewayServiceTarget> {
+pub(crate) fn parse_gateway_services(raw: &str) -> BTreeMap<String, GatewayServiceTarget> {
     raw.split(',')
         .filter(|e| !e.trim().is_empty())
         .filter_map(parse_gateway_service_entry)
@@ -1559,7 +1560,7 @@ pub fn parse_gateway_services(raw: &str) -> BTreeMap<String, GatewayServiceTarge
 /// `Hostname`-typed entries are ignored. Returns an empty vec when the Gateway
 /// has no addresses (the common case that forces the LoadBalancer-Service hop).
 #[must_use]
-pub fn gateway_addresses_as_ips(gw: &Gateway) -> Vec<String> {
+pub(crate) fn gateway_addresses_as_ips(gw: &Gateway) -> Vec<String> {
     let Some(addresses) = gw.status.as_ref().and_then(|s| s.addresses.as_ref()) else {
         return Vec::new();
     };
@@ -1581,7 +1582,7 @@ pub fn gateway_addresses_as_ips(gw: &Gateway) -> Vec<String> {
 /// its `group` is absent or `gateway.networking.k8s.io` AND its `kind` is absent
 /// or `Gateway`. Each ref's namespace defaults to `route_namespace` when omitted.
 #[must_use]
-pub fn gateway_parent_refs(
+pub(crate) fn gateway_parent_refs(
     parent_refs: &[ParentReference],
     route_namespace: &str,
 ) -> Vec<NamespacedName> {
@@ -1680,7 +1681,7 @@ async fn resolve_ip_from_gateway_service(
 /// * `parent_refs` - The route's `spec.parentRefs`
 /// * `gateway_services` - Optional fallback map: `gatewayClass → Service` used only when
 ///   `status.addresses` is absent
-pub async fn resolve_ips_from_gateways(
+pub(crate) async fn resolve_ips_from_gateways(
     client: &Client,
     route_namespace: &str,
     parent_refs: &[ParentReference],
@@ -1740,7 +1741,11 @@ pub async fn resolve_ips_from_gateways(
 ///
 /// No index suffix — unlike Ingress, a Service produces exactly one ARecord.
 /// Applies the same sanitisation and 253-char truncation as Ingress CR names.
-pub fn service_arecord_cr_name(cluster: &str, namespace: &str, service_name: &str) -> String {
+pub(crate) fn service_arecord_cr_name(
+    cluster: &str,
+    namespace: &str,
+    service_name: &str,
+) -> String {
     let raw = format!("{ARECORD_NAME_PREFIX}-{cluster}-{namespace}-{service_name}");
     let sanitized = sanitize_k8s_name(&raw);
     sanitized[..sanitized.len().min(MAX_K8S_NAME_LEN)].to_string()
@@ -1748,25 +1753,18 @@ pub fn service_arecord_cr_name(cluster: &str, namespace: &str, service_name: &st
 
 /// Builds a Kubernetes label selector matching all ARecords created by Scout
 /// for a specific Service.
-pub fn service_arecord_label_selector(
+pub(crate) fn service_arecord_label_selector(
     cluster: &str,
     namespace: &str,
     service_name: &str,
 ) -> String {
-    format!(
-        "{}={},{cluster_key}={cluster},{ns_key}={namespace},{name_key}={service_name}",
-        LABEL_MANAGED_BY,
-        LABEL_MANAGED_BY_SCOUT,
-        cluster_key = LABEL_SOURCE_CLUSTER,
-        ns_key = LABEL_SOURCE_NAMESPACE,
-        name_key = LABEL_SOURCE_NAME,
-    )
+    source_arecord_label_selector(cluster, namespace, service_name)
 }
 
 /// Builds a label selector string matching ARecords for the given Service that
 /// belong to **any cluster other than `current_cluster`, in the same DNS zone**.
 /// See [`stale_arecord_label_selector`].
-pub fn stale_service_arecord_label_selector(
+pub(crate) fn stale_service_arecord_label_selector(
     current_cluster: &str,
     namespace: &str,
     service_name: &str,
@@ -1791,7 +1789,7 @@ pub(crate) fn service_publishes_dns(
 }
 
 /// Parameters for building a Service-sourced ARecord CR.
-pub struct ServiceARecordParams<'a> {
+pub(crate) struct ServiceARecordParams<'a> {
     /// Kubernetes resource name for the ARecord CR
     pub name: &'a str,
     /// Namespace where the ARecord CR will be created
@@ -1813,7 +1811,7 @@ pub struct ServiceARecordParams<'a> {
 }
 
 /// Builds the ARecord CR that Scout will create for a `LoadBalancer` Service.
-pub fn build_service_arecord(params: ServiceARecordParams<'_>) -> ARecord {
+pub(crate) fn build_service_arecord(params: ServiceARecordParams<'_>) -> ARecord {
     let mut labels = BTreeMap::new();
     labels.insert(
         LABEL_MANAGED_BY.to_string(),
@@ -1862,7 +1860,7 @@ pub fn build_service_arecord(params: ServiceARecordParams<'_>) -> ARecord {
 /// One ARecord per hostname in `spec.hostnames[]`. Index tracks which hostname
 /// this ARecord is for. Applies the same sanitisation and 253-char truncation
 /// as Ingress CR names.
-pub fn httproute_arecord_cr_name(
+pub(crate) fn httproute_arecord_cr_name(
     cluster: &str,
     namespace: &str,
     route_name: &str,
@@ -1879,7 +1877,7 @@ pub fn httproute_arecord_cr_name(
 ///
 /// One ARecord per hostname in `spec.hostnames[]`. Index tracks which hostname
 /// this ARecord is for. Applies the same sanitisation and 253-char truncation.
-pub fn tlsroute_arecord_cr_name(
+pub(crate) fn tlsroute_arecord_cr_name(
     cluster: &str,
     namespace: &str,
     route_name: &str,
@@ -1892,36 +1890,26 @@ pub fn tlsroute_arecord_cr_name(
 
 /// Builds a Kubernetes label selector matching all ARecords created by Scout
 /// for a specific HTTPRoute.
-pub fn httproute_arecord_label_selector(
+pub(crate) fn httproute_arecord_label_selector(
     cluster: &str,
     namespace: &str,
     route_name: &str,
 ) -> String {
-    format!(
-        "{}={},{cluster_key}={cluster},{ns_key}={namespace},{name_key}={route_name}",
-        LABEL_MANAGED_BY,
-        LABEL_MANAGED_BY_SCOUT,
-        cluster_key = LABEL_SOURCE_CLUSTER,
-        ns_key = LABEL_SOURCE_NAMESPACE,
-        name_key = LABEL_SOURCE_NAME,
-    )
+    source_arecord_label_selector(cluster, namespace, route_name)
 }
 
 /// Builds a Kubernetes label selector matching all ARecords created by Scout
 /// for a specific TLSRoute.
-pub fn tlsroute_arecord_label_selector(cluster: &str, namespace: &str, route_name: &str) -> String {
-    format!(
-        "{}={},{cluster_key}={cluster},{ns_key}={namespace},{name_key}={route_name}",
-        LABEL_MANAGED_BY,
-        LABEL_MANAGED_BY_SCOUT,
-        cluster_key = LABEL_SOURCE_CLUSTER,
-        ns_key = LABEL_SOURCE_NAMESPACE,
-        name_key = LABEL_SOURCE_NAME,
-    )
+pub(crate) fn tlsroute_arecord_label_selector(
+    cluster: &str,
+    namespace: &str,
+    route_name: &str,
+) -> String {
+    source_arecord_label_selector(cluster, namespace, route_name)
 }
 
 /// Derives the ARecord CR name for a TCPRoute.
-pub fn tcproute_arecord_cr_name(
+pub(crate) fn tcproute_arecord_cr_name(
     cluster: &str,
     namespace: &str,
     route_name: &str,
@@ -1934,15 +1922,12 @@ pub fn tcproute_arecord_cr_name(
 
 /// Builds a Kubernetes label selector matching all ARecords created by Scout
 /// for a specific TCPRoute.
-pub fn tcproute_arecord_label_selector(cluster: &str, namespace: &str, route_name: &str) -> String {
-    format!(
-        "{}={},{cluster_key}={cluster},{ns_key}={namespace},{name_key}={route_name}",
-        LABEL_MANAGED_BY,
-        LABEL_MANAGED_BY_SCOUT,
-        cluster_key = LABEL_SOURCE_CLUSTER,
-        ns_key = LABEL_SOURCE_NAMESPACE,
-        name_key = LABEL_SOURCE_NAME,
-    )
+pub(crate) fn tcproute_arecord_label_selector(
+    cluster: &str,
+    namespace: &str,
+    route_name: &str,
+) -> String {
+    source_arecord_label_selector(cluster, namespace, route_name)
 }
 
 /// Builds a label selector string matching ARecords for the given HTTPRoute that
@@ -1987,7 +1972,7 @@ pub fn stale_tcproute_arecord_label_selector(
 }
 
 /// Parameters for building an ARecord CR from an HTTPRoute.
-pub struct HTTPRouteARecordParams<'a> {
+pub(crate) struct HTTPRouteARecordParams<'a> {
     /// Kubernetes resource name for the ARecord CR
     pub name: &'a str,
     /// Namespace where the ARecord CR will be created
@@ -2009,7 +1994,7 @@ pub struct HTTPRouteARecordParams<'a> {
 }
 
 /// Builds the ARecord CR that Scout will create for an HTTPRoute.
-pub fn build_httproute_arecord(params: HTTPRouteARecordParams<'_>) -> ARecord {
+pub(crate) fn build_httproute_arecord(params: HTTPRouteARecordParams<'_>) -> ARecord {
     let mut labels = BTreeMap::new();
     labels.insert(
         LABEL_MANAGED_BY.to_string(),
@@ -2045,7 +2030,7 @@ pub fn build_httproute_arecord(params: HTTPRouteARecordParams<'_>) -> ARecord {
 }
 
 /// Parameters for building an ARecord CR from a TLSRoute.
-pub struct TLSRouteARecordParams<'a> {
+pub(crate) struct TLSRouteARecordParams<'a> {
     /// Kubernetes resource name for the ARecord CR
     pub name: &'a str,
     /// Namespace where the ARecord CR will be created
@@ -2067,7 +2052,7 @@ pub struct TLSRouteARecordParams<'a> {
 }
 
 /// Builds the ARecord CR that Scout will create for a TLSRoute.
-pub fn build_tlsroute_arecord(params: TLSRouteARecordParams<'_>) -> ARecord {
+pub(crate) fn build_tlsroute_arecord(params: TLSRouteARecordParams<'_>) -> ARecord {
     let mut labels = BTreeMap::new();
     labels.insert(
         LABEL_MANAGED_BY.to_string(),
@@ -2103,7 +2088,7 @@ pub fn build_tlsroute_arecord(params: TLSRouteARecordParams<'_>) -> ARecord {
 }
 
 /// Parameters for building an ARecord CR from a TCPRoute.
-pub struct TCPRouteARecordParams<'a> {
+pub(crate) struct TCPRouteARecordParams<'a> {
     /// Kubernetes resource name for the ARecord CR
     pub name: &'a str,
     /// Namespace where the ARecord CR will be created
@@ -2125,7 +2110,7 @@ pub struct TCPRouteARecordParams<'a> {
 }
 
 /// Builds the ARecord CR that Scout will create for a TCPRoute.
-pub fn build_tcproute_arecord(params: TCPRouteARecordParams<'_>) -> ARecord {
+pub(crate) fn build_tcproute_arecord(params: TCPRouteARecordParams<'_>) -> ARecord {
     let mut labels = BTreeMap::new();
     labels.insert(
         LABEL_MANAGED_BY.to_string(),
@@ -4472,16 +4457,6 @@ fn tcproute_error_policy(
 // Remote client builder (Phase 2)
 // ============================================================================
 
-/// Builds a Kubernetes client from a kubeconfig stored in a Kubernetes Secret.
-///
-/// The Secret must contain a `kubeconfig` key in `.data` with a valid kubeconfig
-/// YAML document. Used in Phase 2 to connect Scout (running in the workload cluster)
-/// to the remote Bindy cluster where ARecords and DNSZones live.
-///
-/// # Errors
-///
-/// Returns an error if the Secret cannot be read, the `kubeconfig` key is absent,
-/// the YAML is malformed, or the resulting client configuration is invalid.
 /// How Scout reaches the cluster that holds `ARecord`s and `DNSZone`s (ADR-0008).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RemoteTransport {
@@ -4642,6 +4617,16 @@ pub(crate) async fn build_remote_client_from_endpoint(
         .map_err(|e| anyhow!("Failed to create remote Kubernetes client for {endpoint}: {e}"))
 }
 
+/// Builds a Kubernetes client from a kubeconfig stored in a Kubernetes Secret.
+///
+/// The Secret must contain a `kubeconfig` key in `.data` with a valid kubeconfig
+/// YAML document. Used in Phase 2 to connect Scout (running in the workload cluster)
+/// to the remote Bindy cluster where ARecords and DNSZones live.
+///
+/// # Errors
+///
+/// Returns an error if the Secret cannot be read, the `kubeconfig` key is absent,
+/// the YAML is malformed, or the resulting client configuration is invalid.
 async fn build_remote_client(
     local_client: &Client,
     secret_name: &str,
@@ -5125,7 +5110,7 @@ pub async fn run_scout(
 ///
 /// The probe runs ONCE, at startup. Installing the CRDs later requires a Scout
 /// restart before the corresponding controller begins watching.
-pub async fn kind_served<R>(api: &Api<R>) -> bool
+pub(crate) async fn kind_served<R>(api: &Api<R>) -> bool
 where
     R: Clone + DeserializeOwned + Debug + k8s_openapi::Resource,
 {

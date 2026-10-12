@@ -10,17 +10,6 @@
 mod tests {
     use crate::crd::InstanceReference;
 
-    #[tokio::test]
-    async fn test_cleanup_deleted_instances_no_instances() {
-        // This test requires mocking the Kubernetes API
-        // For now, we document the expected behavior:
-        //
-        // Given: A zone with no instances in status
-        // When: cleanup_deleted_instances is called
-        // Then: Should return Ok(0) immediately
-        //       AND log debug message "No instances in status - skipping cleanup"
-    }
-
     #[test]
     fn test_instance_reference_equality() {
         let inst1 = InstanceReference {

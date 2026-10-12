@@ -18,7 +18,7 @@ workspace = true
 [features]
 # Builds the crdgen / crddoc binaries. Off by default so the operator's
 # build never compiles them.
-crdgen = ["dep:serde_yaml"]
+crdgen = []
 
 [dependencies]
 kube.workspace = true
@@ -29,7 +29,7 @@ serde_json.workspace = true
 hickory-proto.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-serde_yaml = { workspace = true, optional = true }
+serde-saphyr.workspace = true
 
 [[bin]]
 name = "crdgen"

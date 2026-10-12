@@ -997,16 +997,16 @@ sequenceDiagram
 
 #### 1. Bootstrap credentials on the Queen Bee cluster
 
-Run `bindy bootstrap mc` **against the Queen Bee cluster** (the cluster running the Bindy operator). It creates a dedicated service account, the minimal RBAC Role and RoleBinding, waits for the SA token, and outputs a `bindy.firestoned.io/remote-kubeconfig` Secret as YAML to **stdout**:
+Run `bindy bootstrap mc` **against the Queen Bee cluster** (the cluster running the Bindy operator). It creates a dedicated service account, the minimal RBAC Role and RoleBinding, waits for the SA token, and writes a `bindy.firestoned.io/remote-kubeconfig` Secret as YAML to a file readable only by you (mode `0600`), because the Secret carries the service account token:
 
 ```bash
-# Run against the Queen Bee cluster — outputs Secret YAML to stdout
+# Run against the Queen Bee cluster; writes ./bindy-scout-remote-kubeconfig.yaml
 bindy bootstrap mc \
   --service-account bindy-scout-remote \
   --namespace bindy-system
 ```
 
-Expected output (stderr — progress only):
+Expected output (stderr, progress only):
 
 ```
 ✓ Applied ServiceAccount bindy-scout-remote
@@ -1016,40 +1016,19 @@ Expected output (stderr — progress only):
 ⏳ Waiting for SA token to be populated...
 ✓ SA token ready
 
-✓ Apply the above Secret to each child cluster:
-    bindy bootstrap mc | kubectl --context=<child-cluster> apply -f -
+✓ Wrote the kubeconfig Secret to bindy-scout-remote-kubeconfig.yaml (mode 0600; it holds the token)
+Apply it to each child cluster, then delete it:
+    kubectl --context=<child-cluster> apply -f bindy-scout-remote-kubeconfig.yaml
+    rm bindy-scout-remote-kubeconfig.yaml
 Then set BINDY_SCOUT_REMOTE_SECRET=bindy-scout-remote-kubeconfig on the scout Deployment.
 ```
 
-The YAML written to **stdout** is a Secret of type `bindy.firestoned.io/remote-kubeconfig` containing a `kubeconfig` key with the Queen Bee cluster credentials.
+The file holds a Secret of type `bindy.firestoned.io/remote-kubeconfig` with a `kubeconfig` key containing the Queen Bee cluster credentials. Choose another path with `--output <path>` (`-o`). An existing file is restricted to `0600` before it is overwritten.
 
 !!! tip "Use the default service account name"
     The default `--service-account` is `bindy-scout-remote`, which matches the RBAC manifests in `deploy/scout/remote-cluster-rbac.yaml`. Use a unique SA name per child cluster if you want independent credential revocation.
 
 #### 2. Apply the kubeconfig Secret to each child cluster
-
-Pipe directly, or save to a file first:
-
-=== "Pipe directly"
-
-    ```bash
-    # Point KUBECONFIG at the Queen Bee cluster first
-    export KUBECONFIG=~/.kube/queen-bee.yaml
-
-    bindy bootstrap mc | kubectl --context=child-cluster-a apply -f -
-    ```
-
-=== "Save then apply"
-
-    ```bash
-    export KUBECONFIG=~/.kube/queen-bee.yaml
-    bindy bootstrap mc > /tmp/scout-kubeconfig.yaml
-
-    kubectl --context=child-cluster-a apply -f /tmp/scout-kubeconfig.yaml
-    kubectl --context=child-cluster-b apply -f /tmp/scout-kubeconfig.yaml
-    # Note: each cluster uses the same credentials (same SA on Queen Bee cluster)
-    # Use a unique --service-account per child cluster for independent revocation
-    ```
 
 === "Per-child-cluster (recommended)"
 
@@ -1057,13 +1036,28 @@ Pipe directly, or save to a file first:
     export KUBECONFIG=~/.kube/queen-bee.yaml
 
     # Cluster A gets its own SA on the Queen Bee cluster
-    bindy bootstrap mc --service-account bindy-scout-remote-cluster-a \
-      | kubectl --context=child-cluster-a apply -f -
+    bindy bootstrap mc --service-account bindy-scout-remote-cluster-a -o cluster-a.yaml
+    kubectl --context=child-cluster-a apply -f cluster-a.yaml && rm cluster-a.yaml
 
     # Cluster B gets its own SA
-    bindy bootstrap mc --service-account bindy-scout-remote-cluster-b \
-      | kubectl --context=child-cluster-b apply -f -
+    bindy bootstrap mc --service-account bindy-scout-remote-cluster-b -o cluster-b.yaml
+    kubectl --context=child-cluster-b apply -f cluster-b.yaml && rm cluster-b.yaml
     ```
+
+=== "One SA for several clusters"
+
+    ```bash
+    export KUBECONFIG=~/.kube/queen-bee.yaml
+    bindy bootstrap mc -o scout-kubeconfig.yaml
+
+    kubectl --context=child-cluster-a apply -f scout-kubeconfig.yaml
+    kubectl --context=child-cluster-b apply -f scout-kubeconfig.yaml
+    rm scout-kubeconfig.yaml
+    # Each cluster uses the same credentials (same SA on the Queen Bee cluster);
+    # use a unique --service-account per child cluster for independent revocation
+    ```
+
+The Secret is never printed to stdout: `--output -` is refused, so the token cannot end up in terminal scrollback, a CI log or a session recording.
 
 #### 3. Configure Scout on the child cluster
 

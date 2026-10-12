@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: Apache-2.0
 
-//! Tests for zone operations (`add_zones`, `add_primary_zone`, `add_secondary_zone`, `delete_zone`, `reload_zone`, `zone_exists`).
+//! Tests for zone operations (`add_zones`, `add_primary_zone`, `add_secondary_zone`, `delete_zone`, `zone_exists`).
 
 #[cfg(test)]
 mod tests {
@@ -24,13 +24,13 @@ mod tests {
 
     #[test]
     fn test_build_api_url_with_http() {
-        let url = Bind9Manager::build_api_url("http://localhost:8080");
+        let url = super::super::build_api_url("http://localhost:8080");
         assert_eq!(url, "http://localhost:8080");
     }
 
     #[test]
     fn test_build_api_url_without_scheme() {
-        let url = Bind9Manager::build_api_url("localhost:8080");
+        let url = super::super::build_api_url("localhost:8080");
         assert_eq!(url, "http://localhost:8080");
     }
 
@@ -70,114 +70,62 @@ mod tests {
 
     #[test]
     fn test_build_api_url_with_https() {
-        let url = Bind9Manager::build_api_url("https://api.example.com:8443");
+        let url = super::super::build_api_url("https://api.example.com:8443");
         assert_eq!(url, "https://api.example.com:8443");
     }
 
     #[test]
     fn test_build_api_url_trailing_slash() {
-        let url = Bind9Manager::build_api_url("http://localhost:8080/");
+        let url = super::super::build_api_url("http://localhost:8080/");
         assert_eq!(url, "http://localhost:8080");
     }
 
     #[test]
     fn test_build_api_url_ipv4() {
-        let url = Bind9Manager::build_api_url("192.168.1.1:8080");
+        let url = super::super::build_api_url("192.168.1.1:8080");
         assert_eq!(url, "http://192.168.1.1:8080");
     }
 
     #[test]
     fn test_build_api_url_ipv6() {
-        let url = Bind9Manager::build_api_url("[::1]:8080");
+        let url = super::super::build_api_url("[::1]:8080");
         assert_eq!(url, "http://[::1]:8080");
     }
 
     #[test]
     fn test_build_api_url_dns_name() {
-        let url = Bind9Manager::build_api_url("bind9-api.bindy-system.svc.cluster.local:8080");
+        let url = super::super::build_api_url("bind9-api.bindy-system.svc.cluster.local:8080");
         assert_eq!(url, "http://bind9-api.bindy-system.svc.cluster.local:8080");
     }
 
     #[test]
     fn test_build_api_url_empty_string() {
-        let url = Bind9Manager::build_api_url("");
+        let url = super::super::build_api_url("");
         // Should handle empty string gracefully
         assert!(url.is_empty() || url == "http://");
     }
 
     #[test]
     fn test_build_api_url_only_port() {
-        let url = Bind9Manager::build_api_url(":8080");
+        let url = super::super::build_api_url(":8080");
         assert_eq!(url, "http://:8080");
     }
 
     #[test]
     fn test_build_api_url_no_port() {
-        let url = Bind9Manager::build_api_url("localhost");
+        let url = super::super::build_api_url("localhost");
         assert_eq!(url, "http://localhost");
     }
 
     #[test]
     fn test_build_api_url_multiple_slashes() {
-        let url = Bind9Manager::build_api_url("http://localhost:8080///");
+        let url = super::super::build_api_url("http://localhost:8080///");
         assert_eq!(url, "http://localhost:8080");
     }
 
     // =====================================================
     // Negative Test Cases for HTTP API
     // =====================================================
-
-    #[tokio::test]
-    #[ignore = "Requires mock HTTP server or real server returning errors"]
-    async fn test_reload_zone_not_found() {
-        let manager = Bind9Manager::new();
-
-        // Should return error when zone doesn't exist
-        let result = manager
-            .reload_zone("nonexistent.com", "localhost:8080")
-            .await;
-
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("not found") || err_msg.contains("404"));
-    }
-
-    #[tokio::test]
-    #[ignore = "Requires mock HTTP server returning 500 error"]
-    async fn test_server_status_500_error() {
-        let manager = Bind9Manager::new();
-
-        // Should handle 500 errors gracefully
-        let result = manager.server_status("localhost:8080").await;
-
-        assert!(result.is_err());
-    }
-
-    #[tokio::test]
-    #[ignore = "Requires mock HTTP server with timeout"]
-    async fn test_http_request_timeout() {
-        let manager = Bind9Manager::new();
-
-        // Should timeout if server is unresponsive
-        let result = manager
-            .reload_zone("example.com", "10.255.255.1:8080") // Non-routable IP
-            .await;
-
-        assert!(result.is_err());
-        let err_msg = result.unwrap_err().to_string();
-        assert!(err_msg.contains("timeout") || err_msg.contains("connect"));
-    }
-
-    #[tokio::test]
-    #[ignore = "Requires mock HTTP server returning invalid JSON"]
-    async fn test_invalid_json_response() {
-        let manager = Bind9Manager::new();
-
-        // Should handle malformed JSON responses
-        let result = manager.server_status("localhost:8080").await;
-
-        assert!(result.is_err());
-    }
 
     #[tokio::test]
     #[ignore = "Requires mock HTTP server"]
@@ -619,127 +567,12 @@ mod tests {
         .expect("an existing zone is not an error");
     }
 
-    // =====================================================
-    // create_zone_http via the shared retry path
-    // =====================================================
-
     fn test_key_data() -> RndcKeyData {
         RndcKeyData {
             name: "test-key".to_string(),
             algorithm: crate::crd::RndcAlgorithm::HmacSha256,
             secret: "dGVzdHNlY3JldA==".to_string(),
         }
-    }
-
-    fn test_zone_config() -> bindcar::ZoneConfig {
-        use bindcar::{SoaRecord, ZoneConfig};
-        use std::collections::HashMap;
-
-        ZoneConfig {
-            ttl: 3600,
-            soa: SoaRecord {
-                primary_ns: "ns1.example.com.".to_string(),
-                admin_email: "admin.example.com.".to_string(),
-                serial: 1,
-                refresh: 3600,
-                retry: 600,
-                expire: 604_800,
-                negative_ttl: 86400,
-            },
-            name_servers: vec!["ns1.example.com.".to_string()],
-            name_server_ips: HashMap::new(),
-            records: vec![],
-            also_notify: None,
-            allow_transfer: None,
-            primaries: None,
-            dnssec_policy: None,
-            inline_signing: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn test_create_zone_http_success() {
-        ensure_crypto_provider();
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/v1/zones"))
-            .respond_with(
-                ResponseTemplate::new(201).set_body_string(
-                    r#"{"success": true, "message": "Zone created successfully"}"#,
-                ),
-            )
-            .mount(&server)
-            .await;
-
-        let client = Arc::new(reqwest::Client::new());
-        let result = super::super::create_zone_http(
-            &client,
-            None,
-            "new.example.com",
-            ZONE_TYPE_PRIMARY,
-            test_zone_config(),
-            &server.uri(),
-            &test_key_data(),
-        )
-        .await;
-
-        assert!(
-            result.is_ok(),
-            "successful creation must return Ok: {result:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_create_zone_http_treats_409_as_success() {
-        ensure_crypto_provider();
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/v1/zones"))
-            .respond_with(ResponseTemplate::new(409).set_body_string("zone already exists"))
-            .mount(&server)
-            .await;
-
-        let client = Arc::new(reqwest::Client::new());
-        let result = super::super::create_zone_http(
-            &client,
-            None,
-            "dup.example.com",
-            ZONE_TYPE_PRIMARY,
-            test_zone_config(),
-            &server.uri(),
-            &test_key_data(),
-        )
-        .await;
-
-        assert!(
-            result.is_ok(),
-            "409 Conflict means the zone already exists and must be idempotent: {result:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_create_zone_http_fails_on_bad_request() {
-        ensure_crypto_provider();
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/api/v1/zones"))
-            .respond_with(ResponseTemplate::new(400).set_body_string("invalid zone name"))
-            .mount(&server)
-            .await;
-
-        let client = Arc::new(reqwest::Client::new());
-        let result = super::super::create_zone_http(
-            &client,
-            None,
-            "bad zone",
-            ZONE_TYPE_PRIMARY,
-            test_zone_config(),
-            &server.uri(),
-            &test_key_data(),
-        )
-        .await;
-
-        assert!(result.is_err(), "a 400 must not be swallowed");
     }
 
     // =====================================================

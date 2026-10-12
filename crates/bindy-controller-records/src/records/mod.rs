@@ -27,7 +27,6 @@ pub use bindy_bind9::record_push::{
     RecordOperation,
 };
 
-// Removed ANNOTATION_ZONE_OWNER - using status.zoneRef instead (event-driven architecture)
 use crate::crd::DNSZone;
 use anyhow::{Context, Result};
 

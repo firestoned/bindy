@@ -283,7 +283,9 @@ After both clusters are running, use `bindy bootstrap mc` to generate credential
 kubectl config use-context kind-bindy-test
 
 # Generate credentials and pipe directly to the Scout cluster
-bindy bootstrap mc | kubectl --context kind-bindy-scout apply -f -
+bindy bootstrap mc -o scout-kubeconfig.yaml
+kubectl --context kind-bindy-scout apply -f scout-kubeconfig.yaml
+rm scout-kubeconfig.yaml
 
 # Then patch the Scout Deployment to enable remote mode
 kubectl --context kind-bindy-scout set env deployment/bindy-scout \

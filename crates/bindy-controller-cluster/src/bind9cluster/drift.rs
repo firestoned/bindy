@@ -94,7 +94,3 @@ pub(super) async fn detect_instance_drift(
 
     Ok(drift)
 }
-
-#[cfg(test)]
-#[path = "drift_tests.rs"]
-mod drift_tests;

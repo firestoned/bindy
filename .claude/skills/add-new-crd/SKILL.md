@@ -46,7 +46,7 @@ architecturally significant: ADR first, CALM model update
 Learned from PTRRecord (#475):
 
 - `crates/bindy-api/src/crd.rs`: `DNSRecordKind` enum + `as_str`/`all`/`to_hickory_record_type`/`TryFrom` + `UnknownDNSRecordKind` error msg + spec struct
-- `crates/bindy-controller-sdk/src/context.rs`: a `RecordRef` variant (plus its `name`/`namespace`/`record_type` arms), a `record_kind!(Type, "Kind", Variant)` line, and an `ops::<Type>()` entry in `RECORD_KINDS` (that one list drives the WatchSet registration, the store and selector matching)
+- `crates/bindy-controller-sdk/src/context.rs`: a `record_kind!(Type, "Kind")` line and an `ops::<Type>()` entry in `RECORD_KINDS` (that one list drives the WatchSet registration, the store and the startup readiness wait)
 - `crates/bindy-api/src/constants.rs` (`KIND_*`), `crates/bindy-api/src/labels.rs` (`FINALIZER_*`)
 - `crates/bindy-bind9/src/bind9/types.rs` (`*RecordData`), `crates/bindy-bind9/src/bind9/mod.rs` (manager method), `crates/bindy-bind9/src/bind9/records/{mod.rs,<type>.rs,<type>_tests.rs}`
 - `crates/bindy-bind9/src/record_push.rs`: the `*RecordOp` struct, its `RecordOperation` impl, the type's `ReconcilableRecord` impl, and a `replay_dispatch` arm

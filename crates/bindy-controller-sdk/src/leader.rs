@@ -127,9 +127,10 @@ impl LeaderElectionConfig {
 pub struct Leadership {
     /// `true` while this replica leads; flips to `false` when the lease is lost
     pub leader_rx: watch::Receiver<bool>,
-    /// The lease renewal task. Dropping it does not release the lease; it is
-    /// kept so the task's outcome stays observable.
-    pub lease_task: JoinHandle<Result<LeaseManager, LeaseManagerError>>,
+    /// The lease renewal task, held for as long as the leadership is. Nothing
+    /// reads it: dropping a `JoinHandle` only detaches the task, and the task
+    /// reports the loss of the lease through [`Self::leader_rx`].
+    _lease_task: JoinHandle<Result<LeaseManager, LeaseManagerError>>,
 }
 
 /// Start the lease manager and wait until this replica holds the lease.
@@ -162,7 +163,7 @@ pub async fn acquire_leadership(
 
     Ok(Leadership {
         leader_rx,
-        lease_task,
+        _lease_task: lease_task,
     })
 }
 

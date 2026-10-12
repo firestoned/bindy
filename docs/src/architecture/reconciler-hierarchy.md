@@ -200,7 +200,7 @@ Creates: ServiceAccount, Secret, ConfigMap, Deployment, Service for `my-cluster-
 2. Loads RNDC key for each instance (from Secret `{instance}-rndc-key`)
 3. Calls `zone_manager.add_zones()` via HTTP API on **all primary endpoints**
 4. Finds **all secondary instances** for the cluster
-5. Calls `zone_manager.add_secondary_zone()` via HTTP API on **all secondary endpoints**
+5. Calls `zone_manager.add_zones()` (secondary type) via HTTP API on **all secondary endpoints**
 6. Notifies secondaries via `zone_manager.notify_zone()` to trigger zone transfer
 
 "All endpoints" means every pod that can take a write: Ready pods, and pods

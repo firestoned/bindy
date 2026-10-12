@@ -6,7 +6,6 @@
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use crate::bind9::{Bind9Manager, PTRRecordData, RndcKeyData};
 
     const TEST_TTL: u32 = 300;
     const OTHER_TTL: u32 = 600;
@@ -60,33 +59,5 @@ mod tests {
             "host10.example.com.",
             TEST_TTL
         ));
-    }
-
-    #[tokio::test]
-    #[ignore = "Requires running BIND9 server with TSIG key configured for dynamic DNS updates"]
-    async fn test_add_ptr_record_placeholder() {
-        let manager = Bind9Manager::new();
-        let key_data = RndcKeyData {
-            name: "test".to_string(),
-            algorithm: crate::crd::RndcAlgorithm::HmacSha256,
-            secret: "dGVzdA==".to_string(),
-        };
-
-        let ptr_data = PTRRecordData {
-            target: "host10.example.com.".to_string(),
-            ttl: Some(3600),
-        };
-
-        let result = manager
-            .add_ptr_record(
-                "0.168.192.in-addr.arpa",
-                "10",
-                &ptr_data,
-                "localhost:9530",
-                &key_data,
-            )
-            .await;
-
-        assert!(result.is_ok());
     }
 }

@@ -6,8 +6,6 @@
 //! This module provides common type re-exports and shared utilities
 //! used across the bind9instance reconciliation modules.
 
-#![allow(clippy::wildcard_imports)]
-
 // Re-export commonly used types from parent modules
 pub use crate::context::Context;
 pub use crate::crd::{

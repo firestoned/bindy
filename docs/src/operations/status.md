@@ -192,15 +192,10 @@ status:
 ```yaml
 status:
   conditions:
-    - type: Progressing
-      status: "True"
-      reason: Progressing
-      message: "Deployment is rolling out"
-      lastTransitionTime: "2024-11-26T10:00:00Z"
     - type: Ready
       status: "False"
-      reason: Progressing
-      message: "Waiting for deployment to complete"
+      reason: PartiallyReady
+      message: "1/2 pods are ready"
       lastTransitionTime: "2024-11-26T10:00:00Z"
   observedGeneration: 2
   replicas: 2

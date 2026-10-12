@@ -29,7 +29,7 @@ Total number of reconciliation attempts by resource type and outcome.
 
 Labels:
 - `resource_type`: Kind of resource (`Bind9Cluster`, `Bind9Instance`, `DNSZone`, `ARecord`, `AAAARecord`, `TXTRecord`, `CNAMERecord`, `MXRecord`, `NSRecord`, `SRVRecord`, `CAARecord`, `PTRRecord`)
-- `status`: Outcome (`success`, `error`, `requeue`)
+- `status`: Outcome (`success`, `error`)
 
 ```promql
 # Reconciliation success rate
@@ -56,50 +56,18 @@ rate(bindy_firestoned_io_reconciliation_duration_seconds_sum[5m])
 histogram_quantile(0.95, bindy_firestoned_io_reconciliation_duration_seconds_bucket)
 ```
 
-**`bindy_firestoned_io_requeues_total`** (Counter)
-Total number of requeue operations.
-
-Labels:
-- `resource_type`: Kind of resource
-- `reason`: Reason for requeue (`error`, `rate_limit`, `dependency_wait`)
-
-```promql
-# Requeue rate by reason
-rate(bindy_firestoned_io_requeues_total[5m])
-```
-
 #### Resource Lifecycle Metrics
 
-**`bindy_firestoned_io_resources_created_total`** (Counter)
-Total number of resources created.
-
-Labels:
-- `resource_type`: Kind of resource
-
-**`bindy_firestoned_io_resources_updated_total`** (Counter)
-Total number of resources updated.
-
-Labels:
-- `resource_type`: Kind of resource
-
 **`bindy_firestoned_io_resources_deleted_total`** (Counter)
-Total number of resources deleted.
-
-Labels:
-- `resource_type`: Kind of resource
-
-**`bindy_firestoned_io_resources_active`** (Gauge)
-Currently active resources being tracked.
+Total number of resources deleted (counted when the operator finishes
+cleaning up a `DNSZone` or DNS record that is being deleted).
 
 Labels:
 - `resource_type`: Kind of resource
 
 ```promql
-# Resource creation rate
-rate(bindy_firestoned_io_resources_created_total[5m])
-
-# Active resources by type
-bindy_firestoned_io_resources_active
+# Deletion rate by type
+sum(rate(bindy_firestoned_io_resources_deleted_total[5m])) by (resource_type)
 ```
 
 #### Error Metrics
@@ -122,16 +90,21 @@ sum(rate(bindy_firestoned_io_errors_total[5m])) by (resource_type)
 #### Leader Election Metrics
 
 **`bindy_firestoned_io_leader_elections_total`** (Counter)
-Total number of leader election events.
+Total number of leader election events: `acquired` each time this replica
+takes the lease, `lost` when it loses it (the replica then drains its
+controllers and restarts as a follower). With leader election disabled no
+event is counted.
 
 Labels:
-- `status`: Event type (`acquired`, `lost`, `renewed`)
+- `status`: Event type (`acquired`, `lost`)
 
 **`bindy_firestoned_io_leader_status`** (Gauge)
-Current leader election status (1 = leader, 0 = follower).
+Current leader election status (1 = leader, 0 = follower). A replica reports
+0 while it waits for the lease and 1 once it holds it. With leader election
+disabled the single replica reports 1.
 
 Labels:
-- `pod_name`: Name of the pod
+- `pod_name`: The replica's identity (`POD_NAME`, else `HOSTNAME`)
 
 ```promql
 # Current leader
@@ -139,22 +112,6 @@ bindy_firestoned_io_leader_status == 1
 
 # Leader election rate
 rate(bindy_firestoned_io_leader_elections_total[5m])
-```
-
-#### Performance Metrics
-
-**`bindy_firestoned_io_generation_observation_lag_seconds`** (Histogram)
-Lag between resource spec generation change and operator observation.
-
-Labels:
-- `resource_type`: Kind of resource
-
-Buckets: 0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0
-
-```promql
-# Average observation lag
-rate(bindy_firestoned_io_generation_observation_lag_seconds_sum[5m])
-/ rate(bindy_firestoned_io_generation_observation_lag_seconds_count[5m])
 ```
 
 #### Kubernetes API Client Metrics
@@ -258,12 +215,6 @@ histogram_quantile(0.95,
 topk(10,
   sum(rate(bindy_firestoned_io_errors_total[1h])) by (resource_type)
 )
-
-# Active resources per type
-sum(bindy_firestoned_io_resources_active) by (resource_type)
-
-# Requeue backlog
-sum(rate(bindy_firestoned_io_requeues_total[5m])) by (resource_type, reason)
 ```
 
 ### Grafana Dashboard
@@ -279,9 +230,8 @@ It includes panels for:
 1. **Reconciliation Rate** - Total reconciliations/sec by resource type
 2. **Reconciliation Latency** - P50, P95, P99 latencies
 3. **Error Rate** - Errors/sec by resource type and error category
-4. **Active Resources** - Gauge showing current active resources
-5. **Leader Status** - Current leader pod and election events
-6. **Resource Lifecycle** - Created/Updated/Deleted rates
+4. **Leader Status** - Current leader pod and election events
+5. **Resource Deletions** - Deletion rate by resource type
 
 A companion dashboard for the [bindcar sidecar](#sidecar-bindcar-metrics) ships at
 [`docs/grafana-dashboard-bindcar.json`](https://github.com/firestoned/bindy/blob/main/docs/grafana-dashboard-bindcar.json).

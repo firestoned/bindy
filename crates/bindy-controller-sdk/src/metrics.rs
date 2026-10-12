@@ -9,10 +9,11 @@
 //! # Metrics Categories
 //!
 //! - **Reconciliation Metrics** - Track reconciliation operations and their outcomes
-//! - **Resource Lifecycle Metrics** - Track resource creation, updates, and deletions
+//! - **Resource Lifecycle Metrics** - Track resource deletions
 //! - **Error Metrics** - Track error conditions and types
 //! - **Leader Election Metrics** - Track leadership state changes
-//! - **Performance Metrics** - Track duration and latency
+//! - **Kubernetes API Client Metrics** - Track API requests, retries and pagination
+//! - **Watch Metrics** - Track the shared watch layer
 //!
 //! # Example
 //!
@@ -36,6 +37,18 @@ use std::time::Duration;
 /// Namespace prefix for all Bindy metrics (prometheus-safe)
 const METRICS_NAMESPACE: &str = "bindy_firestoned_io";
 
+/// `status` label of [`LEADER_ELECTIONS_TOTAL`] when this replica takes the lease
+const LEADER_EVENT_ACQUIRED: &str = "acquired";
+
+/// `status` label of [`LEADER_ELECTIONS_TOTAL`] when this replica loses the lease
+const LEADER_EVENT_LOST: &str = "lost";
+
+/// [`LEADER_STATUS`] value while this replica runs the controllers
+const LEADER_STATUS_LEADING: f64 = 1.0;
+
+/// [`LEADER_STATUS`] value while this replica does not run the controllers
+const LEADER_STATUS_FOLLOWING: f64 = 0.0;
+
 // ============================================================================
 // Global Metrics Registry
 // ============================================================================
@@ -53,7 +66,7 @@ pub static METRICS_REGISTRY: LazyLock<Registry> = LazyLock::new(Registry::new);
 ///
 /// Labels:
 /// - `resource_type`: Kind of resource (e.g., `DNSZone`, `ARecord`)
-/// - `status`: Outcome (`success`, `error`, `requeue`)
+/// - `status`: Outcome (`success`, `error`)
 pub static RECONCILIATION_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
     let opts = Opts::new(
         format!("{METRICS_NAMESPACE}_reconciliations_total"),
@@ -83,58 +96,9 @@ pub static RECONCILIATION_DURATION_SECONDS: LazyLock<HistogramVec> = LazyLock::n
     histogram
 });
 
-/// Total number of requeue operations
-///
-/// Labels:
-/// - `resource_type`: Kind of resource
-/// - `reason`: Reason for requeue (`error`, `rate_limit`, `dependency_wait`)
-pub static REQUEUE_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
-    let opts = Opts::new(
-        format!("{METRICS_NAMESPACE}_requeues_total"),
-        "Total number of requeue operations by resource type and reason",
-    );
-    let counter = CounterVec::new(opts, &["resource_type", "reason"]).unwrap();
-    METRICS_REGISTRY
-        .register(Box::new(counter.clone()))
-        .unwrap();
-    counter
-});
-
 // ============================================================================
 // Resource Lifecycle Metrics
 // ============================================================================
-
-/// Total number of resources created
-///
-/// Labels:
-/// - `resource_type`: Kind of resource created
-pub static RESOURCES_CREATED_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
-    let opts = Opts::new(
-        format!("{METRICS_NAMESPACE}_resources_created_total"),
-        "Total number of resources created by type",
-    );
-    let counter = CounterVec::new(opts, &["resource_type"]).unwrap();
-    METRICS_REGISTRY
-        .register(Box::new(counter.clone()))
-        .unwrap();
-    counter
-});
-
-/// Total number of resources updated
-///
-/// Labels:
-/// - `resource_type`: Kind of resource updated
-pub static RESOURCES_UPDATED_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
-    let opts = Opts::new(
-        format!("{METRICS_NAMESPACE}_resources_updated_total"),
-        "Total number of resources updated by type",
-    );
-    let counter = CounterVec::new(opts, &["resource_type"]).unwrap();
-    METRICS_REGISTRY
-        .register(Box::new(counter.clone()))
-        .unwrap();
-    counter
-});
 
 /// Total number of resources deleted
 ///
@@ -150,20 +114,6 @@ pub static RESOURCES_DELETED_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
         .register(Box::new(counter.clone()))
         .unwrap();
     counter
-});
-
-/// Number of currently active resources being tracked
-///
-/// Labels:
-/// - `resource_type`: Kind of resource
-pub static RESOURCES_ACTIVE: LazyLock<GaugeVec> = LazyLock::new(|| {
-    let opts = Opts::new(
-        format!("{METRICS_NAMESPACE}_resources_active"),
-        "Number of currently active resources by type",
-    );
-    let gauge = GaugeVec::new(opts, &["resource_type"]).unwrap();
-    METRICS_REGISTRY.register(Box::new(gauge.clone())).unwrap();
-    gauge
 });
 
 // ============================================================================
@@ -194,7 +144,7 @@ pub static ERRORS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
 /// Total number of leader election events
 ///
 /// Labels:
-/// - `status`: Event type (`acquired`, `lost`, `renewed`)
+/// - `status`: Event type (`acquired`, `lost`)
 pub static LEADER_ELECTIONS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
     let opts = Opts::new(
         format!("{METRICS_NAMESPACE}_leader_elections_total"),
@@ -221,27 +171,6 @@ pub static LEADER_STATUS: LazyLock<GaugeVec> = LazyLock::new(|| {
     let gauge = GaugeVec::new(opts, &["pod_name"]).unwrap();
     METRICS_REGISTRY.register(Box::new(gauge.clone())).unwrap();
     gauge
-});
-
-// ============================================================================
-// Performance Metrics
-// ============================================================================
-
-/// Lag between resource generation change and observation
-///
-/// Labels:
-/// - `resource_type`: Kind of resource
-pub static GENERATION_OBSERVATION_LAG_SECONDS: LazyLock<HistogramVec> = LazyLock::new(|| {
-    let opts = HistogramOpts::new(
-        format!("{METRICS_NAMESPACE}_generation_observation_lag_seconds"),
-        "Lag between spec generation change and controller observation",
-    )
-    .buckets(vec![0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0]);
-    let histogram = HistogramVec::new(opts, &["resource_type"]).unwrap();
-    METRICS_REGISTRY
-        .register(Box::new(histogram.clone()))
-        .unwrap();
-    histogram
 });
 
 // ============================================================================
@@ -411,45 +340,7 @@ pub fn record_reconciliation_error(resource_type: &str, duration: Duration) {
         .observe(duration.as_secs_f64());
 }
 
-/// Record a reconciliation requeue
-///
-/// # Arguments
-/// * `resource_type` - The kind of resource reconciled
-/// * `reason` - Reason for requeue (e.g., `error`, `rate_limit`)
-pub fn record_reconciliation_requeue(resource_type: &str, reason: &str) {
-    RECONCILIATION_TOTAL
-        .with_label_values(&[resource_type, "requeue"])
-        .inc();
-    REQUEUE_TOTAL
-        .with_label_values(&[resource_type, reason])
-        .inc();
-}
-
-/// Record resource creation
-///
-/// # Arguments
-/// * `resource_type` - The kind of resource created
-pub fn record_resource_created(resource_type: &str) {
-    RESOURCES_CREATED_TOTAL
-        .with_label_values(&[resource_type])
-        .inc();
-    RESOURCES_ACTIVE.with_label_values(&[resource_type]).inc();
-}
-
-/// Record resource update
-///
-/// # Arguments
-/// * `resource_type` - The kind of resource updated
-pub fn record_resource_updated(resource_type: &str) {
-    RESOURCES_UPDATED_TOTAL
-        .with_label_values(&[resource_type])
-        .inc();
-}
-
 /// Record resource deletion
-///
-/// Only counts the deletion. It does not decrement `RESOURCES_ACTIVE`:
-/// nothing increments that gauge, so a decrement would drive it negative.
 ///
 /// # Arguments
 /// * `resource_type` - The kind of resource deleted
@@ -457,6 +348,47 @@ pub fn record_resource_deleted(resource_type: &str) {
     RESOURCES_DELETED_TOTAL
         .with_label_values(&[resource_type])
         .inc();
+}
+
+/// Set [`LEADER_STATUS`] for this replica without counting an election.
+///
+/// Used when leader election is disabled: the single replica runs the
+/// controllers, so it reports itself as leading, but no lease changed hands.
+///
+/// # Arguments
+/// * `pod_name` - This replica's identity
+/// * `leading` - Whether this replica runs the controllers
+pub fn record_leader_status(pod_name: &str, leading: bool) {
+    let value = if leading {
+        LEADER_STATUS_LEADING
+    } else {
+        LEADER_STATUS_FOLLOWING
+    };
+    LEADER_STATUS.with_label_values(&[pod_name]).set(value);
+}
+
+/// Record that this replica acquired the leader lease: one `acquired`
+/// election, and [`LEADER_STATUS`] set to leading.
+///
+/// # Arguments
+/// * `pod_name` - This replica's identity
+pub fn record_leadership_acquired(pod_name: &str) {
+    LEADER_ELECTIONS_TOTAL
+        .with_label_values(&[LEADER_EVENT_ACQUIRED])
+        .inc();
+    record_leader_status(pod_name, true);
+}
+
+/// Record that this replica lost the leader lease: one `lost` election, and
+/// [`LEADER_STATUS`] set to following.
+///
+/// # Arguments
+/// * `pod_name` - This replica's identity
+pub fn record_leadership_lost(pod_name: &str) {
+    LEADER_ELECTIONS_TOTAL
+        .with_label_values(&[LEADER_EVENT_LOST])
+        .inc();
+    record_leader_status(pod_name, false);
 }
 
 /// Record an error
@@ -584,62 +516,3 @@ pub fn record_watch_restart(kind: &str, namespace: &str) {
 #[cfg(test)]
 #[path = "metrics_tests.rs"]
 mod metrics_tests;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_record_reconciliation_success() {
-        let resource_type = "TestResource";
-        let duration = Duration::from_millis(500);
-
-        // Record success
-        record_reconciliation_success(resource_type, duration);
-
-        // Verify counter incremented
-        let counter = RECONCILIATION_TOTAL.with_label_values(&[resource_type, "success"]);
-        assert!(counter.get() > 0.0);
-
-        // Verify histogram recorded
-        let histogram = RECONCILIATION_DURATION_SECONDS.with_label_values(&[resource_type]);
-        assert!(histogram.get_sample_count() > 0);
-    }
-
-    #[test]
-    fn test_record_reconciliation_error() {
-        let resource_type = "TestResourceError";
-        let duration = Duration::from_millis(250);
-
-        // Record error
-        record_reconciliation_error(resource_type, duration);
-
-        // Verify counter incremented
-        let counter = RECONCILIATION_TOTAL.with_label_values(&[resource_type, "error"]);
-        assert!(counter.get() > 0.0);
-
-        // Verify histogram recorded
-        let histogram = RECONCILIATION_DURATION_SECONDS.with_label_values(&[resource_type]);
-        assert!(histogram.get_sample_count() > 0);
-    }
-
-    #[test]
-    fn test_gather_metrics() {
-        // Record some metrics to initialize them
-        record_reconciliation_success("GatherTest", Duration::from_millis(100));
-
-        // Gather metrics
-        let result = gather_metrics();
-        assert!(result.is_ok(), "Gathering metrics should succeed");
-
-        let metrics_text = result.unwrap();
-        assert!(
-            metrics_text.contains("bindy_firestoned_io"),
-            "Metrics should contain namespace prefix"
-        );
-        assert!(
-            metrics_text.contains("reconciliations_total"),
-            "Metrics should contain reconciliation counter"
-        );
-    }
-}

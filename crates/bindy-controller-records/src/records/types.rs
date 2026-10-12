@@ -3,8 +3,6 @@
 
 //! Shared types and imports for DNS record reconciliation.
 
-#![allow(clippy::wildcard_imports)]
-
 // Re-export commonly used types
 pub use crate::crd::{Condition, RecordStatus};
 pub use anyhow::{Context as AnyhowContext, Result};

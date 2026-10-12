@@ -1,7 +1,7 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: Apache-2.0
 
-//! Tests for BIND9 data types (`RndcKeyData`, `SRVRecordData`, `PTRRecordData`, `RndcError`).
+//! Tests for BIND9 data types (`RndcKeyData`, `SRVRecordData`, `PTRRecordData`).
 
 #[cfg(test)]
 mod tests {

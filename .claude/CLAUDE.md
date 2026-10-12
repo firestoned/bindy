@@ -249,7 +249,7 @@ crates/
 │   └── src/ context.rs (Context::new, Stores, RecordKind, RECORD_KINDS), watch.rs (WatchSet,
 │       primary_predicate), shutdown.rs (trigger, supervise), leader.rs, finalizers.rs,
 │       reconcile.rs, error.rs, requeue.rs, retry.rs, status.rs, pagination.rs, resources.rs,
-│       rate_limit.rs, namespace_scope.rs, http_errors.rs, metrics.rs  (+ *_tests.rs siblings)
+│       rate_limit.rs, namespace_scope.rs, metrics.rs  (+ *_tests.rs siblings)
 ├── bindy-bind9/                 ← BIND9 domain logic, no controllers, no kube::runtime
 │   └── src/ bind9/ (mod.rs, rndc.rs, zone_ops.rs, records/, ...), bind9_resources.rs,
 │       placement.rs, instances.rs, primary.rs, record_push.rs, context.rs (StoresBind9Ext), ...

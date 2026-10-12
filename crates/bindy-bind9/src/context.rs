@@ -3,14 +3,14 @@
 
 //! Shared context for all operators with reflector stores.
 //!
-//! The context itself (`Context`, `Stores`, `RecordRef`, the record-kind
+//! The context itself (`Context`, `Stores`, the record-kind
 //! registry) lives in `bindy-controller-sdk` (ADR-0009, roadmap 01 Phase B
 //! step B3) and is re-exported here. This crate adds the BIND9-domain half:
 //! building a [`crate::bind9::Bind9Manager`] for an instance and resolving its
 //! sidecar TLS, as the [`StoresBind9Ext`] trait.
 
 pub use bindy_controller_sdk::context::{
-    Context, Metrics, RecordKind, RecordKindOps, RecordRef, RecordStores, Stores, RECORD_KINDS,
+    Context, RecordKind, RecordKindOps, RecordStores, Stores, RECORD_KINDS,
 };
 pub use bindy_controller_sdk::watch::MultiStore;
 

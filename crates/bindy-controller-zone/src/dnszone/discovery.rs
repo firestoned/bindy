@@ -6,12 +6,10 @@
 //! This module handles discovering DNS record resources that match zone label selectors,
 //! tagging/untagging records, and checking record readiness.
 
-#![allow(unused_imports)] // Some imports used in macro-generated code
-
 use anyhow::{Context as AnyhowContext, Result};
 use kube::{
-    api::{ListParams, Patch, PatchParams},
-    Api, Client, ResourceExt,
+    api::{Patch, PatchParams},
+    Client, ResourceExt,
 };
 use serde_json::json;
 use std::collections::HashSet;

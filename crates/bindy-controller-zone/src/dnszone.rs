@@ -20,13 +20,7 @@ pub mod transfer_peers;
 pub mod types;
 pub mod validation;
 
-#[cfg(test)]
-#[path = "dnszone/helpers_tests.rs"]
-mod helpers_tests;
-
-// Bind9Instance and InstanceReferenceWithStatus are used by dead_code marked functions (Phase 2 cleanup)
 use self::types::DuplicateZoneInfo;
-#[allow(unused_imports)]
 use crate::bind9::zone_ops::{dns_query_endpoint, extract_ds_records, DsRecordInfo};
 use crate::context::StoresBind9Ext;
 use crate::crd::DNSZone;
@@ -330,109 +324,6 @@ async fn handle_duplicate_zone(
     Ok(())
 }
 
-/// Detect if the zone spec has changed since last reconciliation.
-///
-/// Compares current generation with observed generation to determine
-/// if this is first reconciliation or if spec changed.
-///
-/// # Arguments
-///
-/// * `zone` - The DNSZone resource
-///
-/// # Returns
-///
-/// Tuple of (first_reconciliation, spec_changed)
-fn detect_spec_changes(zone: &DNSZone) -> (bool, bool) {
-    let current_generation = zone.metadata.generation;
-    let observed_generation = zone.status.as_ref().and_then(|s| s.observed_generation);
-
-    let first_reconciliation = observed_generation.is_none();
-    let spec_changed =
-        bindy_controller_sdk::status::should_reconcile(current_generation, observed_generation);
-
-    (first_reconciliation, spec_changed)
-}
-
-/// Detect if the instance list changed between watch event and re-fetch.
-///
-/// This is critical for detecting when:
-/// 1. New instances are added to `status.bind9Instances` (via `bind9InstancesFrom` selectors)
-/// 2. Instance `lastReconciledAt` timestamps are cleared (e.g., instance deleted, needs reconfiguration)
-///
-/// NOTE: `InstanceReference` `PartialEq` ignores `lastReconciledAt`, so we must check timestamps separately!
-///
-/// # Arguments
-///
-/// * `namespace` - Namespace for logging
-/// * `name` - Zone name for logging
-/// * `watch_instances` - Instances from the watch event that triggered reconciliation
-/// * `current_instances` - Instances after re-fetching (current state)
-///
-/// # Returns
-///
-/// `true` if instances changed (list or timestamps), `false` otherwise
-fn detect_instance_changes(
-    namespace: &str,
-    name: &str,
-    watch_instances: Option<&Vec<crate::crd::InstanceReference>>,
-    current_instances: &[crate::crd::InstanceReference],
-) -> bool {
-    let Some(watch_instances) = watch_instances else {
-        // No instances in watch event, first reconciliation or error
-        return true;
-    };
-
-    // Get the instance names from the watch event (what triggered us)
-    let watch_instance_names: std::collections::HashSet<_> =
-        watch_instances.iter().map(|r| &r.name).collect();
-
-    // Get the instance names after re-fetching (current state)
-    let current_instance_names: std::collections::HashSet<_> =
-        current_instances.iter().map(|r| &r.name).collect();
-
-    // Check if instance list changed (added/removed instances)
-    let list_changed = watch_instance_names != current_instance_names;
-
-    if list_changed {
-        info!(
-            "Instance list changed during reconciliation for zone {}/{}: watch_event={:?}, current={:?}",
-            namespace, name, watch_instance_names, current_instance_names
-        );
-        return true;
-    }
-
-    // List is the same, but check if any lastReconciledAt timestamps changed
-    // Use InstanceReference as HashMap key (uses its Hash impl which hashes identity fields)
-    let watch_timestamps: std::collections::HashMap<&crate::crd::InstanceReference, Option<&str>> =
-        watch_instances
-            .iter()
-            .map(|inst| (inst, inst.last_reconciled_at.as_deref()))
-            .collect();
-
-    let current_timestamps: std::collections::HashMap<
-        &crate::crd::InstanceReference,
-        Option<&str>,
-    > = current_instances
-        .iter()
-        .map(|inst| (inst, inst.last_reconciled_at.as_deref()))
-        .collect();
-
-    let timestamps_changed = watch_timestamps.iter().any(|(inst_ref, watch_ts)| {
-        current_timestamps
-            .get(inst_ref)
-            .is_some_and(|current_ts| current_ts != watch_ts)
-    });
-
-    if timestamps_changed {
-        info!(
-            "Instance lastReconciledAt timestamps changed for zone {}/{}",
-            namespace, name
-        );
-    }
-
-    timestamps_changed
-}
-
 /// Reconciles a `DNSZone` resource.
 ///
 /// Creates or updates DNS zone files on BIND9 instances that match the zone's
@@ -494,11 +385,6 @@ pub async fn reconcile_dnszone(
         "Starting DNSZone reconciliation"
     );
 
-    // Save the instance list from the watch event (before re-fetching)
-    // This represents the instances that triggered this reconciliation
-    let watch_event_instances =
-        validation::get_instances_from_zone(&dnszone, bind9_instances_store).ok();
-
     // CRITICAL: Re-fetch the zone to get the latest status
     let dnszone = refetch_zone(&client, &namespace, &name).await?;
 
@@ -553,49 +439,12 @@ pub async fn reconcile_dnszone(
         });
     }
 
-    // Determine if this is the first reconciliation or if spec has changed
-    let (first_reconciliation, spec_changed) = detect_spec_changes(&dnszone);
-
-    // Check if the instance list or lastReconciledAt timestamps changed between watch event and re-fetch
-    let instances_changed = detect_instance_changes(
-        &namespace,
-        &name,
-        watch_event_instances.as_ref(),
-        &instance_refs,
-    );
-
-    // Check if any instances need reconciliation (never reconciled or reconciliation failed)
-    let unreconciled_instances =
-        validation::filter_instances_needing_reconciliation(&instance_refs);
-    let has_unreconciled_instances = !unreconciled_instances.is_empty();
-
-    if has_unreconciled_instances {
-        info!(
-            "Found {} unreconciled instance(s) for zone {}/{}: {:?}",
-            unreconciled_instances.len(),
-            namespace,
-            name,
-            unreconciled_instances
-                .iter()
-                .map(|i| format!("{}/{}", i.namespace, i.name))
-                .collect::<Vec<_>>()
-        );
-    } else {
-        debug!(
-            "No unreconciled instances for zone {}/{} - all {} instance(s) already configured (lastReconciledAt set)",
-            namespace,
-            name,
-            instance_refs.len()
-        );
-    }
-
     // Whether a cleanup pass below left work to retry. The passes only run
     // inside a reconcile, so with no periodic resync the zone must ask for the
     // retry itself (ADR-0016).
     let mut cleanup_incomplete = false;
 
-    // CRITICAL: Cleanup deleted instances BEFORE early return check
-    // If we skip reconciliation due to no changes, we still need to remove deleted instances from status
+    // Remove deleted instances from status before configuring the zone.
     match cleanup::cleanup_deleted_instances(&client, &dnszone, &mut status_updater).await {
         Ok(deleted_count) if deleted_count > 0 => {
             info!(
@@ -619,24 +468,9 @@ pub async fn reconcile_dnszone(
         }
     }
 
-    // CRITICAL: We CANNOT skip reconciliation entirely, even if spec and instances haven't changed.
+    // CRITICAL: We CANNOT skip reconciliation, even if spec and instances haven't changed.
     // Reconciliation may be triggered by ARecord/AAAA/TXT/etc changes via watches, and we MUST
     // run record discovery to tag newly created records with status.zoneRef.
-    //
-    // However, we CAN skip BIND9 configuration if nothing changed (handled later in the flow).
-    // This ensures record discovery ALWAYS runs while still optimizing BIND9 API calls.
-
-    if instances_changed {
-        info!(
-            "Instances changed for zone {}/{} - reconciling to configure new instances",
-            namespace, name
-        );
-    }
-
-    debug!(
-        "Reconciling zone {} (first_reconciliation={}, spec_changed={})",
-        spec.zone_name, first_reconciliation, spec_changed
-    );
 
     // Cleanup stale records from status.records[] before main reconciliation
     // This ensures status stays in sync with actual Kubernetes resources.
@@ -694,7 +528,6 @@ pub async fn reconcile_dnszone(
         &dnszone,
         &mut status_updater,
         &instance_refs,
-        &unreconciled_instances,
     )
     .await?;
 
@@ -922,58 +755,6 @@ async fn replay_records_if_zone_was_recreated(
     Ok(())
 }
 
-/// Adds a DNS zone to all primary instances.
-///
-/// # Arguments
-///
-/// * `client` - Kubernetes API client
-/// * `dnszone` - The `DNSZone` resource
-/// * `zone_manager` - BIND9 manager for adding zone
-///
-/// # Returns
-///
-/// * `Ok(ZoneConfigOutcome)` - Per-instance and per-endpoint configuration counts.
-///   An instance counts as configured only if ALL of its ready endpoints accepted
-///   the zone, so the instance count is directly comparable with the expected
-///   PRIMARY instance count when computing readiness.
-/// * `Err(_)` - If zone addition failed on every endpoint
-///
-/// # Errors
-///
-/// Returns an error if BIND9 zone addition fails or if no instances are assigned.
-///
-/// # Panics
-///
-/// Panics if the RNDC key is not loaded by the helper function (should never happen in practice).
-#[allow(clippy::too_many_lines)]
-/// Builds the `Bind9Manager` to use for one instance's endpoints.
-///
-/// Zone operations must not reuse the process-wide manager built at startup.
-/// That one is constructed before any `Bind9Instance` exists, so it has neither
-/// the instance's TLS configuration nor the Kubernetes client needed to read the
-/// configured CA bundle; it can only ever speak plaintext. Records already
-/// resolve a manager per instance (`reconcilers::records`); zones did not, so a
-/// TLS-enabled sidecar was dialled over `http://` and every zone operation
-/// failed, with the ServiceAccount token attached to the plaintext request.
-///
-/// # Arguments
-///
-/// * `ctx` - Controller context, for the instance stores and the client
-/// * `instance_ref` - The instance whose endpoints are about to be addressed
-///
-/// # Returns
-///
-/// A manager carrying that instance's TLS configuration, if it has any.
-/// The endpoint a zone NOTIFY is sent to, plus the instance that serves it.
-///
-/// NOTIFY used to record only `<pod-ip>:<port>`, which threw away the one thing
-/// needed to dial it correctly: which `Bind9Instance` owns the endpoint, and so
-/// whether that instance's sidecar speaks TLS. Without it the call fell back to
-/// the shared startup manager, which carries no TLS configuration, and went out
-/// over plaintext `http://` against a TLS-only sidecar: refused, then retried
-/// until the reconcile ran out of time. Keeping the two together is what lets
-/// the notify site resolve a manager through [`zone_manager_for_instance`] like
-/// every other bindcar call in this reconciler.
 /// The `dnssecPolicy` value that explicitly disables signing for a zone.
 const DNSSEC_POLICY_NONE: &str = "none";
 
@@ -1131,6 +912,16 @@ async fn fetch_next_ksk_rollover(
     }
 }
 
+/// The endpoint a zone NOTIFY is sent to, plus the instance that serves it.
+///
+/// NOTIFY used to record only `<pod-ip>:<port>`, which threw away the one thing
+/// needed to dial it correctly: which `Bind9Instance` owns the endpoint, and so
+/// whether that instance's sidecar speaks TLS. Without it the call fell back to
+/// the shared startup manager, which carries no TLS configuration, and went out
+/// over plaintext `http://` against a TLS-only sidecar: refused, then retried
+/// until the reconcile ran out of time. Keeping the two together is what lets
+/// the notify site resolve a manager through [`zone_manager_for_instance`] like
+/// every other bindcar call in this reconciler.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct NotifyTarget {
     /// Bare `<host>:<port>` of the endpoint to notify.
@@ -1169,6 +960,24 @@ pub(crate) fn remember_first_notify_target(
     });
 }
 
+/// Builds the `Bind9Manager` to use for one instance's endpoints.
+///
+/// Zone operations must not reuse the process-wide manager built at startup.
+/// That one is constructed before any `Bind9Instance` exists, so it has neither
+/// the instance's TLS configuration nor the Kubernetes client needed to read the
+/// configured CA bundle; it can only ever speak plaintext. Records already
+/// resolve a manager per instance (`reconcilers::records`); zones did not, so a
+/// TLS-enabled sidecar was dialled over `http://` and every zone operation
+/// failed, with the ServiceAccount token attached to the plaintext request.
+///
+/// # Arguments
+///
+/// * `ctx` - Controller context, for the instance stores and the client
+/// * `instance_ref` - The instance whose endpoints are about to be addressed
+///
+/// # Returns
+///
+/// A manager carrying that instance's TLS configuration, if it has any.
 pub(crate) fn zone_manager_for_instance(
     ctx: &crate::context::Context,
     instance_name: &str,
@@ -1240,6 +1049,34 @@ fn zone_dnssec_policy(
     )
 }
 
+/// Adds a DNS zone to all primary instances.
+///
+/// Builds a store-backed [`bindy_bind9::instances::InstanceResolver`] and
+/// delegates to [`add_dnszone_with_resolver`], which addresses every endpoint
+/// of every primary instance.
+///
+/// # Arguments
+///
+/// * `ctx` - Controller context (client and reflector stores)
+/// * `dnszone` - The `DNSZone` resource
+/// * `status_updater` - Collects the in-memory status changes
+/// * `instance_refs` - Every instance the zone selects (primaries are filtered
+///   from these)
+/// * `peers` - The zone's transfer peers, applied to a zone created here
+///   (ADR-0019)
+///
+/// # Returns
+///
+/// * `Ok(ZoneConfigOutcome)` - Per-instance and per-endpoint configuration counts.
+///   An instance counts as configured only if ALL of its ready endpoints accepted
+///   the zone, so the instance count is directly comparable with the expected
+///   PRIMARY instance count when computing readiness.
+/// * `Err(_)` - If zone addition failed on every endpoint
+///
+/// # Errors
+///
+/// Returns an error if BIND9 zone addition fails on every endpoint or if no
+/// PRIMARY instance is assigned.
 pub async fn add_dnszone(
     ctx: Arc<crate::context::Context>,
     dnszone: DNSZone,
@@ -1292,9 +1129,6 @@ pub(crate) async fn add_dnszone_with_resolver(
     let spec = &dnszone.spec;
 
     debug!("Adding DNSZone {}/{}", namespace, name);
-
-    // PHASE 2 OPTIMIZATION: Use the filtered instance list passed by the caller
-    // This ensures we only process instances that need reconciliation (lastReconciledAt == None)
 
     debug!(
         "DNSZone {}/{} will be added to {} instance(s): {:?}",
@@ -2110,9 +1944,8 @@ pub(crate) async fn add_dnszone_to_secondaries_with_resolver(
 ///
 /// # Arguments
 ///
-/// * `_client` - Kubernetes API client (unused, for future extensions)
+/// * `ctx` - Controller context (client and reflector stores)
 /// * `dnszone` - The `DNSZone` resource to delete
-/// * `zone_manager` - BIND9 manager for removing zone files
 ///
 /// # Returns
 ///

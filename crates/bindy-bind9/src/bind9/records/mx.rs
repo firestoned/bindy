@@ -58,7 +58,6 @@ fn compare_mx_rrset(
 /// # Errors
 ///
 /// Returns an error if the DNS update fails or the server rejects it.
-#[allow(clippy::too_many_arguments)]
 pub async fn add_mx_record(
     zone_name: &str,
     name: &str,

@@ -153,7 +153,7 @@ const CONTAINER_NAME_DNSSEC_KEYS_INIT: &str = "dnssec-keys-init";
 /// `emptyDir` medium for a tmpfs volume.
 const EMPTY_DIR_MEDIUM_MEMORY: &str = "Memory";
 /// BIND's keyword for a key that never rolls; the only lifetime shared keys
-/// may have (ADR-0012).
+/// may have (ADR-0012), and the default KSK and ZSK lifetime.
 const DNSSEC_LIFETIME_UNLIMITED: &str = "unlimited";
 
 /// Shell script the [`CONTAINER_NAME_DNSSEC_KEYS_INIT`] container runs as
@@ -208,8 +208,6 @@ const DEFAULT_DNSSEC_POLICY_NAME: &str = "bindy";
 /// 'none', or 'default'"), so a definition may never use them.
 const BIND_BUILTIN_DNSSEC_POLICIES: [&str; 3] = ["default", "insecure", "none"];
 const DEFAULT_DNSSEC_ALGORITHM: &str = "ECDSAP256SHA256";
-const DEFAULT_KSK_LIFETIME: &str = "unlimited";
-const DEFAULT_ZSK_LIFETIME: &str = "unlimited";
 const DEFAULT_NSEC3_SALT_LENGTH: u8 = 16;
 
 /// Max length of a DNSSEC policy NAME, matching the CRD schema pattern
@@ -334,11 +332,11 @@ pub(crate) fn dnssec_policy_statement(
     let ksk_lifetime = signing
         .ksk_lifetime
         .as_deref()
-        .unwrap_or(DEFAULT_KSK_LIFETIME);
+        .unwrap_or(DNSSEC_LIFETIME_UNLIMITED);
     let zsk_lifetime = signing
         .zsk_lifetime
         .as_deref()
-        .unwrap_or(DEFAULT_ZSK_LIFETIME);
+        .unwrap_or(DNSSEC_LIFETIME_UNLIMITED);
 
     // P2-5: the algorithm and lifetimes are written unquoted. hornet's writer
     // emits them as given, so they are still held to the CRD's grammar here.
@@ -494,33 +492,6 @@ fn key_directory(
 ) -> Option<String> {
     get_dnssec_signing_config(global_config, instance_config)
         .map(|_| BIND_DNSSEC_KEYS_PATH.to_string())
-}
-
-/// Check if DNSSEC signing is enabled in either instance or global config
-///
-/// Instance config takes precedence over global config.
-///
-/// # Arguments
-///
-/// * `global_config` - Optional global cluster configuration
-/// * `instance_config` - Optional instance-specific configuration
-///
-/// # Returns
-///
-/// `true` if DNSSEC signing is enabled, `false` otherwise
-#[allow(dead_code)]
-pub(crate) fn is_dnssec_signing_enabled(
-    global_config: Option<&crate::crd::Bind9Config>,
-    instance_config: Option<&crate::crd::Bind9Config>,
-) -> bool {
-    // Check instance config first, then fall back to global config
-    let dnssec_config = if let Some(instance) = instance_config {
-        instance.dnssec.as_ref().and_then(|d| d.signing.as_ref())
-    } else {
-        global_config.and_then(|g| g.dnssec.as_ref().and_then(|d| d.signing.as_ref()))
-    };
-
-    dnssec_config.is_some_and(|signing| signing.enabled)
 }
 
 /// Get DNSSEC signing configuration from either instance or global config
@@ -3166,7 +3137,6 @@ pub fn build_service(
 /// # Arguments
 ///
 /// * `namespace` - The namespace where the `ServiceAccount` will be created
-/// * `instance` - The `Bind9Instance` that owns this `ServiceAccount`
 ///
 /// # Returns
 ///
@@ -3176,15 +3146,12 @@ pub fn build_service(
 ///
 /// ```rust,no_run
 /// use bindy_bind9::bind9_resources::build_service_account;
-/// use bindy_api::crd::Bind9Instance;
 ///
-/// # fn example(instance: Bind9Instance) {
-/// let service_account = build_service_account("bindy-system", &instance);
+/// let service_account = build_service_account("bindy-system");
 /// assert_eq!(service_account.metadata.name, Some("bind9".to_string()));
-/// # }
 /// ```
 #[must_use]
-pub fn build_service_account(namespace: &str, _instance: &Bind9Instance) -> ServiceAccount {
+pub fn build_service_account(namespace: &str) -> ServiceAccount {
     // IMPORTANT: ServiceAccount is SHARED across all Bind9Instance resources in the namespace.
     // Do NOT set ownerReferences, as multiple instances would conflict (only one can have Controller=true).
     // Do NOT use instance-specific labels like managed-by, as multiple instances would conflict during Server-Side Apply.

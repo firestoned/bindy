@@ -22,7 +22,7 @@
 //! ## `bindy bootstrap scout`
 //! Applies all scout prerequisites to a Kubernetes cluster in order:
 //! 1. Namespace (`bindy-system` by default, or `--namespace`)
-//! 2. CRDs — same 12 CRDs as the operator (shared types)
+//! 2. CRDs: the same 13 CRDs as the operator (shared types)
 //! 3. ServiceAccount (`bindy-scout`)
 //! 4. ClusterRole (`bindy-scout`) — scout cluster-scoped permissions
 //! 5. ClusterRoleBinding (`bindy-scout`) — binds scout SA to scout ClusterRole
@@ -42,12 +42,16 @@
 //!    DNSZones via `Api::namespaced` (not `Api::all`) in the same target namespace.
 //! 3. RoleBinding (`bindy-scout-remote`) — binds the SA to the namespaced Role
 //! 4. SA token Secret — a long-lived token for the SA
-//! 5. Kubeconfig Secret (`bindy-scout-remote-remote-kubeconfig`) — a ready-to-use
-//!    kubeconfig for the SA, printed to **stdout** as YAML
+//! 5. Kubeconfig Secret (`bindy-scout-remote-kubeconfig`): a ready-to-use
+//!    kubeconfig for the SA, written as YAML to a file readable only by its owner
+//!    (mode 0600; `--output`, default `<service-account>-kubeconfig.yaml`).
+//!    It carries the SA token, so it is never printed.
 //!
-//! The stdout output is applied to the **child cluster** where scout runs:
+//! The file is applied to the **child cluster** where scout runs, then deleted:
 //! ```text
-//! bindy bootstrap mc | kubectl --context=<child-cluster> apply -f -
+//! bindy bootstrap mc
+//! kubectl --context=<child-cluster> apply -f bindy-scout-remote-kubeconfig.yaml
+//! rm bindy-scout-remote-kubeconfig.yaml
 //! ```
 //! Then set `BINDY_SCOUT_REMOTE_SECRET=bindy-scout-remote-kubeconfig` on the
 //! scout Deployment so it picks up the remote kubeconfig at startup.
@@ -83,29 +87,29 @@ pub const DEFAULT_NAMESPACE: &str = "bindy-system";
 const FIELD_MANAGER: &str = "bindy-bootstrap";
 
 /// ServiceAccount name created for the operator.
-pub const SERVICE_ACCOUNT_NAME: &str = "bindy";
+pub(crate) const SERVICE_ACCOUNT_NAME: &str = "bindy";
 
 /// ClusterRoleBinding name.
-pub const CLUSTER_ROLE_BINDING_NAME: &str = "bindy-rolebinding";
+pub(crate) const CLUSTER_ROLE_BINDING_NAME: &str = "bindy-rolebinding";
 
 /// Operator ClusterRole name.
-pub const OPERATOR_ROLE_NAME: &str = "bindy-role";
+pub(crate) const OPERATOR_ROLE_NAME: &str = "bindy-role";
 
 /// Namespaced Role granting the operator the mutating verbs on Secrets (B-5 hardening).
 ///
 /// The operator ClusterRole grants only read-only (get/list/watch) on Secrets
 /// cluster-wide; create/update/patch/delete are confined to this namespaced Role,
 /// bound only in the operator namespace.
-pub const SECRETS_WRITER_ROLE_NAME: &str = "bindy-secrets-writer";
+pub(crate) const SECRETS_WRITER_ROLE_NAME: &str = "bindy-secrets-writer";
 
 /// Namespaced RoleBinding name for the secrets-writer Role.
-pub const SECRETS_WRITER_ROLE_BINDING_NAME: &str = "bindy-secrets-writer";
+pub(crate) const SECRETS_WRITER_ROLE_BINDING_NAME: &str = "bindy-secrets-writer";
 
 /// Operator Deployment name.
-pub const OPERATOR_DEPLOYMENT_NAME: &str = "bindy";
+pub(crate) const OPERATOR_DEPLOYMENT_NAME: &str = "bindy";
 
 /// Container image registry and repository (without tag).
-pub const OPERATOR_IMAGE_BASE: &str = "ghcr.io/firestoned/bindy";
+pub(crate) const OPERATOR_IMAGE_BASE: &str = "ghcr.io/firestoned/bindy";
 
 /// Default image tag for operator and scout Deployments.
 ///
@@ -114,29 +118,16 @@ pub const OPERATOR_IMAGE_BASE: &str = "ghcr.io/firestoned/bindy";
 pub const DEFAULT_IMAGE_TAG: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 
 /// Embedded RBAC YAML files — compiled into the binary so bootstrap is self-contained.
-pub const BINDY_ROLE_YAML: &str = include_str!("../../../deploy/operator/rbac/role.yaml");
-pub const BINDY_ADMIN_ROLE_YAML: &str =
+pub(crate) const BINDY_ROLE_YAML: &str = include_str!("../../../deploy/operator/rbac/role.yaml");
+pub(crate) const BINDY_ADMIN_ROLE_YAML: &str =
     include_str!("../../../deploy/operator/rbac/role-admin.yaml");
-
-/// Namespace-scoped split of [`BINDY_ROLE_YAML`]: the irreducible cluster-scoped half.
-///
-/// Used when the operator runs with `BINDY_WATCH_NAMESPACES` set. Contains only
-/// `clusterbind9providers` — the one bindy kind with `scope: Cluster`.
-pub const BINDY_NAMESPACED_CLUSTER_ROLE_YAML: &str =
-    include_str!("../../../deploy/operator/rbac/namespaced/clusterrole.yaml");
-
-/// Namespace-scoped split of [`BINDY_ROLE_YAML`]: the per-namespace half.
-///
-/// Applied once per watched namespace, with `metadata.namespace` substituted.
-pub const BINDY_NAMESPACED_ROLE_YAML: &str =
-    include_str!("../../../deploy/operator/rbac/namespaced/role.yaml");
 
 /// Embedded TokenReview ClusterRole (bindcar `0.7.0` Mode B).
 ///
 /// Grants `create tokenreviews` so the bindcar sidecar (running as the operand
 /// `bind9` ServiceAccount) can validate the operator's bearer token against the
 /// API server. Mirrors `deploy/operator/rbac/tokenreview-clusterrole.yaml`.
-pub const BINDCAR_TOKENREVIEW_CLUSTER_ROLE_YAML: &str =
+pub(crate) const BINDCAR_TOKENREVIEW_CLUSTER_ROLE_YAML: &str =
     include_str!("../../../deploy/operator/rbac/tokenreview-clusterrole.yaml");
 
 /// Embedded TokenReview ClusterRoleBinding (bindcar `0.7.0` Mode B).
@@ -144,14 +135,14 @@ pub const BINDCAR_TOKENREVIEW_CLUSTER_ROLE_YAML: &str =
 /// The static manifest binds the operand `bind9` ServiceAccount in
 /// `bindy-system`; the bootstrap path rewrites the subject namespace to the
 /// requested `--namespace` via [`build_tokenreview_cluster_role_binding`].
-pub const BINDCAR_TOKENREVIEW_CLUSTER_ROLE_BINDING_YAML: &str =
+pub(crate) const BINDCAR_TOKENREVIEW_CLUSTER_ROLE_BINDING_YAML: &str =
     include_str!("../../../deploy/operator/rbac/tokenreview-clusterrolebinding.yaml");
 
 /// Name shared by the TokenReview ClusterRole and ClusterRoleBinding.
-pub const BINDCAR_TOKENREVIEW_NAME: &str = "bindcar-tokenreview";
+pub(crate) const BINDCAR_TOKENREVIEW_NAME: &str = "bindcar-tokenreview";
 
 /// Embedded ClusterRole manifests applied by `bindy bootstrap operator`, in apply order.
-pub const OPERATOR_CLUSTER_ROLE_YAMLS: &[&str] = &[
+pub(crate) const OPERATOR_CLUSTER_ROLE_YAMLS: &[&str] = &[
     BINDY_ROLE_YAML,
     BINDY_ADMIN_ROLE_YAML,
     BINDCAR_TOKENREVIEW_CLUSTER_ROLE_YAML,
@@ -160,23 +151,23 @@ pub const OPERATOR_CLUSTER_ROLE_YAMLS: &[&str] = &[
 /// Volume name for the projected ServiceAccount token carrying the `bindcar` audience.
 ///
 /// Mirrors the `bindcar-token` volume in `deploy/operator/deployment.yaml`.
-pub const BINDCAR_TOKEN_VOLUME_NAME: &str = "bindcar-token";
+pub(crate) const BINDCAR_TOKEN_VOLUME_NAME: &str = "bindcar-token";
 
 /// Mount path of the projected bindcar token volume inside the operator container.
 ///
 /// Together with [`BINDCAR_TOKEN_FILENAME`] this composes
 /// `bindy_bind9::bind9::BINDCAR_TOKEN_PATH` (`/var/run/secrets/bindcar/token`),
 /// the path the operator reads the bearer token from.
-pub const BINDCAR_TOKEN_MOUNT_PATH: &str = "/var/run/secrets/bindcar";
+pub(crate) const BINDCAR_TOKEN_MOUNT_PATH: &str = "/var/run/secrets/bindcar";
 
 /// File name of the projected token inside [`BINDCAR_TOKEN_MOUNT_PATH`].
-pub const BINDCAR_TOKEN_FILENAME: &str = "token";
+pub(crate) const BINDCAR_TOKEN_FILENAME: &str = "token";
 
 /// Expiration (seconds) for the projected bindcar token.
 ///
 /// The kubelet automatically rotates the token before expiry; mirrors
 /// `expirationSeconds: 3600` in `deploy/operator/deployment.yaml`.
-pub const BINDCAR_TOKEN_EXPIRATION_SECONDS: i64 = 3600;
+pub(crate) const BINDCAR_TOKEN_EXPIRATION_SECONDS: i64 = 3600;
 
 /// Downward-API environment variable carrying the operator pod's namespace.
 ///
@@ -184,7 +175,7 @@ pub const BINDCAR_TOKEN_EXPIRATION_SECONDS: i64 = 3600;
 /// `BIND_ALLOWED_SERVICE_ACCOUNTS` value for operand bindcar sidecars; without
 /// it the operator falls back to `bindy-system` and bindcar rejects tokens
 /// from operators installed in any other namespace.
-pub const POD_NAMESPACE_ENV: &str = "POD_NAMESPACE";
+pub(crate) const POD_NAMESPACE_ENV: &str = "POD_NAMESPACE";
 
 /// Environment variable naming the namespace Scout writes `ARecord`s into.
 ///
@@ -192,26 +183,26 @@ pub const POD_NAMESPACE_ENV: &str = "POD_NAMESPACE";
 /// back to `bindy-system`. Bootstrap creates the scout writer Role/RoleBinding
 /// in the `--namespace` it was given, so the Deployment must point the scout at
 /// that same namespace or it writes where it has no RBAC.
-pub const SCOUT_TARGET_NAMESPACE_ENV: &str = "BINDY_SCOUT_NAMESPACE";
+pub(crate) const SCOUT_TARGET_NAMESPACE_ENV: &str = "BINDY_SCOUT_NAMESPACE";
 
 // ---------------------------------------------------------------------------
 // Scout constants
 // ---------------------------------------------------------------------------
 
 /// Scout ServiceAccount name.
-pub const SCOUT_SERVICE_ACCOUNT_NAME: &str = "bindy-scout";
+pub(crate) const SCOUT_SERVICE_ACCOUNT_NAME: &str = "bindy-scout";
 
 /// Scout ClusterRole name.
-pub const SCOUT_CLUSTER_ROLE_NAME: &str = "bindy-scout";
+pub(crate) const SCOUT_CLUSTER_ROLE_NAME: &str = "bindy-scout";
 
 /// Scout ClusterRoleBinding name.
-pub const SCOUT_CLUSTER_ROLE_BINDING_NAME: &str = "bindy-scout";
+pub(crate) const SCOUT_CLUSTER_ROLE_BINDING_NAME: &str = "bindy-scout";
 
 /// Scout namespaced Role name (ARecord write permissions).
-pub const SCOUT_WRITER_ROLE_NAME: &str = "bindy-scout-writer";
+pub(crate) const SCOUT_WRITER_ROLE_NAME: &str = "bindy-scout-writer";
 
 /// Scout namespaced RoleBinding name.
-pub const SCOUT_WRITER_ROLE_BINDING_NAME: &str = "bindy-scout-writer";
+pub(crate) const SCOUT_WRITER_ROLE_BINDING_NAME: &str = "bindy-scout-writer";
 
 /// Scout namespaced Role name (remote-cluster kubeconfig Secret read, Phase 2 only).
 ///
@@ -219,13 +210,13 @@ pub const SCOUT_WRITER_ROLE_BINDING_NAME: &str = "bindy-scout-writer";
 /// deliberately NOT part of the cluster-wide `bindy-scout` ClusterRole, which
 /// previously granted unscoped `secrets: get` across every namespace in the
 /// cluster (closed 2026-07-19).
-pub const SCOUT_SECRETS_READER_ROLE_NAME: &str = "bindy-scout-secrets-reader";
+pub(crate) const SCOUT_SECRETS_READER_ROLE_NAME: &str = "bindy-scout-secrets-reader";
 
 /// Scout namespaced RoleBinding name for [`SCOUT_SECRETS_READER_ROLE_NAME`].
-pub const SCOUT_SECRETS_READER_ROLE_BINDING_NAME: &str = "bindy-scout-secrets-reader";
+pub(crate) const SCOUT_SECRETS_READER_ROLE_BINDING_NAME: &str = "bindy-scout-secrets-reader";
 
 /// Scout Deployment name.
-pub const SCOUT_DEPLOYMENT_NAME: &str = "bindy-scout";
+pub(crate) const SCOUT_DEPLOYMENT_NAME: &str = "bindy-scout";
 
 /// Default ServiceAccount name created by `bootstrap mc` on the queen-ship cluster.
 ///
@@ -275,17 +266,18 @@ const MC_FIELD_MANAGER: &str = "bindy-bootstrap-mc";
 ///
 /// Secrets of this type hold a kubeconfig that the scout controller uses to connect
 /// back to the queen-ship (bindy operator) cluster to create ARecords and read DNSZones.
-pub const REMOTE_KUBECONFIG_SECRET_TYPE: &str = "bindy.firestoned.io/remote-kubeconfig";
+pub(crate) const REMOTE_KUBECONFIG_SECRET_TYPE: &str = "bindy.firestoned.io/remote-kubeconfig";
 
 /// Suffix appended to the service account name when naming the SA token Secret.
 ///
 /// For example, SA `scout` produces token Secret `scout-token`.
-pub const SA_TOKEN_SECRET_SUFFIX: &str = "-token";
+pub(crate) const SA_TOKEN_SECRET_SUFFIX: &str = "-token";
 
 /// Suffix appended to the service account name when naming the remote kubeconfig Secret.
 ///
-/// For example, SA `bindy-scout` produces kubeconfig Secret `bindy-scout-remote-kubeconfig`.
-pub const REMOTE_KUBECONFIG_SECRET_SUFFIX: &str = "-remote-kubeconfig";
+/// The default SA `bindy-scout-remote` produces `bindy-scout-remote-kubeconfig`, the
+/// Secret the static `deploy/scout/secrets-reader-rbac.yaml` lets the scout read.
+pub(crate) const REMOTE_KUBECONFIG_SECRET_SUFFIX: &str = "-kubeconfig";
 
 /// `app.kubernetes.io/component` label value for all resources created by `bootstrap mc`.
 const MC_COMPONENT_LABEL: &str = "scout-remote";
@@ -310,7 +302,7 @@ const SA_TOKEN_WAIT_INTERVAL_MS: u64 = 500;
 /// | `Some("my.reg.io/org")` | `v0.5.0` | `my.reg.io/org/bindy:v0.5.0`        |
 ///
 /// Trailing slashes on `registry` are stripped before composing the reference.
-pub fn resolve_image(registry: Option<&str>, tag: &str) -> String {
+pub(crate) fn resolve_image(registry: Option<&str>, tag: &str) -> String {
     match registry {
         None => format!("{OPERATOR_IMAGE_BASE}:{tag}"),
         Some(reg) => format!("{}/bindy:{}", reg.trim_end_matches('/'), tag),
@@ -495,8 +487,8 @@ fn run_scout_dry_run(namespace: &str, opts: &ScoutDeploymentOptions<'_>) -> Resu
 }
 
 fn print_resource<T: serde::Serialize>(label: &str, resource: &T) -> Result<()> {
-    let yaml =
-        serde_yaml::to_string(resource).with_context(|| format!("Failed to serialize {label}"))?;
+    let yaml = bindy_api::yaml::to_string(resource)
+        .with_context(|| format!("Failed to serialize {label}"))?;
     println!("---\n# {label}");
     print!("{yaml}");
     Ok(())
@@ -778,11 +770,11 @@ async fn apply_scout_deployment(
 }
 
 // ---------------------------------------------------------------------------
-// Resource builders (pub so tests can access them)
+// Resource builders
 // ---------------------------------------------------------------------------
 
 /// Build the operator namespace object.
-pub fn build_namespace(name: &str) -> Namespace {
+pub(crate) fn build_namespace(name: &str) -> Namespace {
     Namespace {
         metadata: ObjectMeta {
             name: Some(name.to_string()),
@@ -798,7 +790,7 @@ pub fn build_namespace(name: &str) -> Namespace {
 }
 
 /// Build the bindy ServiceAccount in the given namespace.
-pub fn build_service_account(namespace: &str) -> ServiceAccount {
+pub(crate) fn build_service_account(namespace: &str) -> ServiceAccount {
     ServiceAccount {
         metadata: ObjectMeta {
             name: Some(SERVICE_ACCOUNT_NAME.to_string()),
@@ -823,7 +815,7 @@ pub fn build_service_account(namespace: &str) -> ServiceAccount {
 /// Build the ClusterRoleBinding that binds the bindy ServiceAccount to `bindy-role`.
 ///
 /// The subject namespace is set to `namespace` so bootstrap works for custom namespaces.
-pub fn build_cluster_role_binding(namespace: &str) -> ClusterRoleBinding {
+pub(crate) fn build_cluster_role_binding(namespace: &str) -> ClusterRoleBinding {
     ClusterRoleBinding {
         metadata: ObjectMeta {
             name: Some(CLUSTER_ROLE_BINDING_NAME.to_string()),
@@ -849,7 +841,7 @@ pub fn build_cluster_role_binding(namespace: &str) -> ClusterRoleBinding {
 /// read-only; `create`/`update`/`patch`/`delete` are confined to this namespaced
 /// Role, bound only in the operator namespace. This prevents a compromised
 /// operator from creating, modifying, or deleting Secrets in other namespaces.
-pub fn build_secrets_writer_role(namespace: &str) -> Role {
+pub(crate) fn build_secrets_writer_role(namespace: &str) -> Role {
     Role {
         metadata: ObjectMeta {
             name: Some(SECRETS_WRITER_ROLE_NAME.to_string()),
@@ -883,7 +875,7 @@ pub fn build_secrets_writer_role(namespace: &str) -> Role {
 
 /// Build the RoleBinding that binds the operator ServiceAccount to the namespaced
 /// `bindy-secrets-writer` Role.
-pub fn build_secrets_writer_role_binding(namespace: &str) -> RoleBinding {
+pub(crate) fn build_secrets_writer_role_binding(namespace: &str) -> RoleBinding {
     RoleBinding {
         metadata: ObjectMeta {
             name: Some(SECRETS_WRITER_ROLE_BINDING_NAME.to_string()),
@@ -919,7 +911,7 @@ pub fn build_secrets_writer_role_binding(namespace: &str) -> RoleBinding {
 ///
 /// The container image defaults to `ghcr.io/firestoned/bindy:<image_tag>`.
 /// Pass `registry` to override the registry/org prefix for air-gapped environments.
-pub fn build_deployment(
+pub(crate) fn build_deployment(
     namespace: &str,
     image_tag: &str,
     registry: Option<&str>,
@@ -1002,13 +994,13 @@ pub fn build_deployment(
 }
 
 /// Parse a ClusterRole from embedded YAML.
-pub fn parse_cluster_role(yaml: &str) -> Result<ClusterRole> {
-    serde_yaml::from_str(yaml).context("Failed to parse ClusterRole YAML")
+pub(crate) fn parse_cluster_role(yaml: &str) -> Result<ClusterRole> {
+    serde_saphyr::from_str(yaml).context("Failed to parse ClusterRole YAML")
 }
 
 /// Parse a ClusterRoleBinding from embedded YAML.
-pub fn parse_cluster_role_binding(yaml: &str) -> Result<ClusterRoleBinding> {
-    serde_yaml::from_str(yaml).context("Failed to parse ClusterRoleBinding YAML")
+pub(crate) fn parse_cluster_role_binding(yaml: &str) -> Result<ClusterRoleBinding> {
+    serde_saphyr::from_str(yaml).context("Failed to parse ClusterRoleBinding YAML")
 }
 
 /// Build the TokenReview ClusterRoleBinding for the requested install namespace.
@@ -1024,7 +1016,9 @@ pub fn parse_cluster_role_binding(yaml: &str) -> Result<ClusterRoleBinding> {
 ///
 /// # Errors
 /// Returns an error if the embedded YAML fails to parse or has no subjects.
-pub fn build_tokenreview_cluster_role_binding(namespace: &str) -> Result<ClusterRoleBinding> {
+pub(crate) fn build_tokenreview_cluster_role_binding(
+    namespace: &str,
+) -> Result<ClusterRoleBinding> {
     let mut crb = parse_cluster_role_binding(BINDCAR_TOKENREVIEW_CLUSTER_ROLE_BINDING_YAML)?;
 
     let Some(subjects) = crb.subjects.as_mut() else {
@@ -1043,7 +1037,7 @@ pub fn build_tokenreview_cluster_role_binding(namespace: &str) -> Result<Cluster
 /// Build a single CRD from a Rust type, ensuring `storage: true` and `served: true`.
 ///
 /// Mirrors the logic in `src/bin/crdgen.rs` so bootstrap and crdgen stay in sync.
-pub fn build_crd<T: CustomResourceExt>() -> Result<CustomResourceDefinition> {
+pub(crate) fn build_crd<T: CustomResourceExt>() -> Result<CustomResourceDefinition> {
     let crd = T::crd();
     let mut crd_json = serde_json::to_value(&crd).context("Failed to serialize CRD to JSON")?;
 
@@ -1058,7 +1052,7 @@ pub fn build_crd<T: CustomResourceExt>() -> Result<CustomResourceDefinition> {
 }
 
 /// Build all 13 CRDs in the same order as `crdgen`.
-pub fn build_all_crds() -> Result<Vec<CustomResourceDefinition>> {
+pub(crate) fn build_all_crds() -> Result<Vec<CustomResourceDefinition>> {
     Ok(vec![
         build_crd::<ARecord>()?,
         build_crd::<AAAARecord>()?,
@@ -1077,11 +1071,11 @@ pub fn build_all_crds() -> Result<Vec<CustomResourceDefinition>> {
 }
 
 // ---------------------------------------------------------------------------
-// Scout resource builders (pub so tests can access them)
+// Scout resource builders
 // ---------------------------------------------------------------------------
 
 /// Build the scout ServiceAccount in the given namespace.
-pub fn build_scout_service_account(namespace: &str) -> ServiceAccount {
+pub(crate) fn build_scout_service_account(namespace: &str) -> ServiceAccount {
     ServiceAccount {
         metadata: ObjectMeta {
             name: Some(SCOUT_SERVICE_ACCOUNT_NAME.to_string()),
@@ -1105,10 +1099,13 @@ pub fn build_scout_service_account(namespace: &str) -> ServiceAccount {
 
 /// Build the scout ClusterRole with cluster-scoped permissions.
 ///
-/// Grants watch/patch/update on Ingresses and Services (kube-rs finalizer patches the
-/// main resource metadata to add/remove finalizers), read on DNSZones, and read on
-/// Secrets (for remote kubeconfig).
-pub fn build_scout_cluster_role() -> ClusterRole {
+/// Grants watch/patch/update on Ingresses, Services and Gateway API routes (the
+/// kube-rs finalizer patches the main resource metadata to add/remove finalizers),
+/// read on Gateways and DNSZones, and get/list on Namespaces (for the namespace
+/// selector). There is no Secret rule: the remote-kubeconfig Secret is read through
+/// the namespaced, `resourceNames`-restricted Role from
+/// [`build_scout_secrets_reader_role`].
+pub(crate) fn build_scout_cluster_role() -> ClusterRole {
     ClusterRole {
         metadata: ObjectMeta {
             name: Some(SCOUT_CLUSTER_ROLE_NAME.to_string()),
@@ -1225,8 +1222,7 @@ pub fn build_scout_cluster_role() -> ClusterRole {
             // Read Namespace labels for --namespace-selector / BINDY_SCOUT_NAMESPACE_SELECTOR:
             // scout checks each source object's namespace against the configured selector
             // before acting, via a List scoped to that single namespace by name. Namespace
-            // metadata (name/labels) is low-sensitivity, unlike the cluster-wide secrets
-            // read above.
+            // metadata (name/labels) is low-sensitivity, unlike Secret contents.
             PolicyRule {
                 api_groups: Some(vec![String::new()]),
                 resources: Some(vec!["namespaces".to_string()]),
@@ -1241,7 +1237,7 @@ pub fn build_scout_cluster_role() -> ClusterRole {
 /// Build the ClusterRoleBinding that binds the scout ServiceAccount to the scout ClusterRole.
 ///
 /// The subject namespace is set to `namespace` so bootstrap works for custom namespaces.
-pub fn build_scout_cluster_role_binding(namespace: &str) -> ClusterRoleBinding {
+pub(crate) fn build_scout_cluster_role_binding(namespace: &str) -> ClusterRoleBinding {
     ClusterRoleBinding {
         metadata: ObjectMeta {
             name: Some(SCOUT_CLUSTER_ROLE_BINDING_NAME.to_string()),
@@ -1273,7 +1269,7 @@ pub fn build_scout_cluster_role_binding(namespace: &str) -> ClusterRoleBinding {
 }
 
 /// Build the scout writer Role (namespaced ARecord write permissions).
-pub fn build_scout_writer_role(namespace: &str) -> Role {
+pub(crate) fn build_scout_writer_role(namespace: &str) -> Role {
     Role {
         metadata: ObjectMeta {
             name: Some(SCOUT_WRITER_ROLE_NAME.to_string()),
@@ -1309,7 +1305,7 @@ pub fn build_scout_writer_role(namespace: &str) -> Role {
 }
 
 /// Build the scout writer RoleBinding (binds scout SA to writer Role).
-pub fn build_scout_writer_role_binding(namespace: &str) -> RoleBinding {
+pub(crate) fn build_scout_writer_role_binding(namespace: &str) -> RoleBinding {
     RoleBinding {
         metadata: ObjectMeta {
             name: Some(SCOUT_WRITER_ROLE_BINDING_NAME.to_string()),
@@ -1348,7 +1344,7 @@ pub fn build_scout_writer_role_binding(namespace: &str) -> RoleBinding {
 /// `secret_name`, so this grants `get` on exactly one Secret object, not "every Secret
 /// in this namespace" and certainly not "every Secret in the cluster" (the previous,
 /// now-removed cluster-wide `bindy-scout` ClusterRole behavior).
-pub fn build_scout_secrets_reader_role(namespace: &str, secret_name: &str) -> Role {
+pub(crate) fn build_scout_secrets_reader_role(namespace: &str, secret_name: &str) -> Role {
     Role {
         metadata: ObjectMeta {
             name: Some(SCOUT_SECRETS_READER_ROLE_NAME.to_string()),
@@ -1378,7 +1374,7 @@ pub fn build_scout_secrets_reader_role(namespace: &str, secret_name: &str) -> Ro
 
 /// Build the RoleBinding pairing [`build_scout_secrets_reader_role`] with the Scout
 /// ServiceAccount.
-pub fn build_scout_secrets_reader_role_binding(namespace: &str) -> RoleBinding {
+pub(crate) fn build_scout_secrets_reader_role_binding(namespace: &str) -> RoleBinding {
     RoleBinding {
         metadata: ObjectMeta {
             name: Some(SCOUT_SECRETS_READER_ROLE_BINDING_NAME.to_string()),
@@ -1480,17 +1476,19 @@ struct BootstrapUser {
 /// Run this command against the **queen-ship** (bindy operator) cluster. It creates a
 /// `ServiceAccount`, namespaced `Role` (ARecord CRUD + DNSZone read), and `RoleBinding`
 /// on the queen-ship, generates a kubeconfig for that service account, and writes a
-/// `bindy.firestoned.io/remote-kubeconfig` Secret manifest to **stdout**.
+/// `bindy.firestoned.io/remote-kubeconfig` Secret manifest to `output`: by default a
+/// file readable only by its owner (mode 0600), because the Secret carries the
+/// ServiceAccount token. Stdout is used only when the caller asks for it (`-`).
 ///
-/// Apply the stdout output to the child (workload) cluster where scout runs:
+/// Apply the file to the child (workload) cluster where scout runs, then delete it:
 ///
 /// ```text
-/// bindy bootstrap mc | kubectl --context=<child-cluster> apply -f -
+/// kubectl --context=<child-cluster> apply -f <service-account>-kubeconfig.yaml
 /// ```
 ///
 /// Then configure the scout Deployment with:
 /// ```text
-/// BINDY_SCOUT_REMOTE_SECRET=<service-account>-remote-kubeconfig
+/// BINDY_SCOUT_REMOTE_SECRET=<service-account>-kubeconfig
 /// ```
 ///
 /// # Arguments
@@ -1502,15 +1500,18 @@ struct BootstrapUser {
 /// * `allow_insecure` - Opt in to emitting `insecure-skip-tls-verify: true` when the
 ///   KUBECONFIG lacks `certificate-authority-data`. Defaults to `false`; the command
 ///   refuses rather than silently distributing MITM-susceptible kubeconfigs.
+/// * `output` - The file the Secret manifest is written to ([`mc_output_path`]).
 ///
 /// # Errors
-/// Returns error if KUBECONFIG is unreadable, the Kubernetes API calls fail, or a
-/// CA bundle is missing and `allow_insecure` is `false`.
+/// Returns error if KUBECONFIG is unreadable, the Kubernetes API calls fail, a
+/// CA bundle is missing and `allow_insecure` is `false`, or the output file
+/// cannot be written.
 pub async fn run_bootstrap_multi_cluster(
     namespace: &str,
     service_account: &str,
     server_override: Option<&str>,
     allow_insecure: bool,
+    output: &std::path::Path,
 ) -> Result<()> {
     let client = Client::try_default()
         .await
@@ -1543,16 +1544,77 @@ pub async fn run_bootstrap_multi_cluster(
     let secret = build_mc_kubeconfig_secret(namespace, service_account, &kubeconfig_yaml);
     let secret_name = format!("{service_account}{REMOTE_KUBECONFIG_SECRET_SUFFIX}");
     let secret_yaml =
-        serde_yaml::to_string(&secret).context("Failed to serialize kubeconfig Secret")?;
+        bindy_api::yaml::to_string(&secret).context("Failed to serialize kubeconfig Secret")?;
 
-    println!("---");
-    print!("{secret_yaml}");
-
-    eprintln!("\n✓ Apply the above Secret to each child cluster:");
-    eprintln!("    bindy bootstrap mc | kubectl --context=<child-cluster> apply -f -");
+    write_private_file(output, &format!("---\n{secret_yaml}"))?;
+    let shown = output.display();
+    eprintln!("\n✓ Wrote the kubeconfig Secret to {shown} (mode 0600; it holds the token)");
+    eprintln!("Apply it to each child cluster, then delete it:");
+    eprintln!("    kubectl --context=<child-cluster> apply -f {shown}");
+    eprintln!("    rm {shown}");
     eprintln!("Then set BINDY_SCOUT_REMOTE_SECRET={secret_name} on the scout Deployment.");
 
     Ok(())
+}
+
+/// The `--output` value that conventionally means standard output, refused here.
+const MC_OUTPUT_STDOUT: &str = "-";
+
+/// Owner read/write only: the kubeconfig Secret file carries a token.
+const PRIVATE_FILE_MODE: u32 = 0o600;
+
+/// Resolve `--output` for `bindy bootstrap mc` to the file to write.
+///
+/// # Arguments
+/// * `output` - The `--output` value, if given
+/// * `service_account` - The ServiceAccount the kubeconfig is for
+///
+/// # Returns
+/// The given path, or by default `<service-account>-kubeconfig.yaml` in the
+/// current directory.
+///
+/// # Errors
+/// Returns an error for `-`: the Secret carries the ServiceAccount token and
+/// is never printed, so it cannot end up in scrollback, a CI log or a session
+/// recording.
+pub fn mc_output_path(output: Option<&str>, service_account: &str) -> Result<std::path::PathBuf> {
+    match output {
+        Some(MC_OUTPUT_STDOUT) => Err(anyhow!(
+            "refusing to print the kubeconfig Secret: it carries the ServiceAccount token; \
+             pass --output <file> (written with mode 0600)"
+        )),
+        Some(path) => Ok(std::path::PathBuf::from(path)),
+        None => Ok(std::path::PathBuf::from(format!(
+            "{service_account}{REMOTE_KUBECONFIG_SECRET_SUFFIX}.yaml"
+        ))),
+    }
+}
+
+/// Write `contents` to `path` so only its owner can read it (mode 0600).
+///
+/// A new file is created 0600. An existing file is first restricted to 0600
+/// and then truncated, so a token is never written into a file that others
+/// can read.
+///
+/// # Errors
+/// Returns an error if the file cannot be opened, restricted or written.
+pub(crate) fn write_private_file(path: &std::path::Path, contents: &str) -> Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(PRIVATE_FILE_MODE)
+        .open(path)
+        .with_context(|| format!("Failed to open {}", path.display()))?;
+    file.set_permissions(std::fs::Permissions::from_mode(PRIVATE_FILE_MODE))
+        .with_context(|| format!("Failed to restrict {} to mode 0600", path.display()))?;
+    file.set_len(0)
+        .with_context(|| format!("Failed to truncate {}", path.display()))?;
+    file.write_all(contents.as_bytes())
+        .with_context(|| format!("Failed to write {}", path.display()))
 }
 
 /// Build a kubeconfig YAML string for the given service account token.
@@ -1579,7 +1641,7 @@ pub async fn run_bootstrap_multi_cluster(
 /// # Errors
 /// - Returns an error if `ca_data_b64` is `None` and `allow_insecure` is `false`.
 /// - Returns an error if YAML serialization fails.
-pub fn build_kubeconfig_yaml(
+pub(crate) fn build_kubeconfig_yaml(
     cluster_name: &str,
     server: &str,
     ca_data_b64: Option<&str>,
@@ -1621,11 +1683,11 @@ pub fn build_kubeconfig_yaml(
             },
         }],
     };
-    serde_yaml::to_string(&cfg).context("Failed to serialize kubeconfig YAML")
+    bindy_api::yaml::to_string(&cfg).context("Failed to serialize kubeconfig YAML")
 }
 
 /// Build the multi-cluster ServiceAccount on the queen-ship cluster.
-pub fn build_mc_service_account(namespace: &str, sa_name: &str) -> ServiceAccount {
+pub(crate) fn build_mc_service_account(namespace: &str, sa_name: &str) -> ServiceAccount {
     ServiceAccount {
         metadata: ObjectMeta {
             name: Some(sa_name.to_string()),
@@ -1660,7 +1722,7 @@ pub fn build_mc_service_account(namespace: &str, sa_name: &str) -> ServiceAccoun
 ///
 /// The Role name matches the service account name, mirroring the convention in
 /// `deploy/scout/remote-cluster-rbac.yaml`.
-pub fn build_mc_writer_role(namespace: &str, sa_name: &str) -> Role {
+pub(crate) fn build_mc_writer_role(namespace: &str, sa_name: &str) -> Role {
     Role {
         metadata: ObjectMeta {
             name: Some(sa_name.to_string()),
@@ -1707,7 +1769,7 @@ pub fn build_mc_writer_role(namespace: &str, sa_name: &str) -> Role {
 ///
 /// The RoleBinding name matches the service account name, mirroring the convention in
 /// `deploy/scout/remote-cluster-rbac.yaml`.
-pub fn build_mc_writer_role_binding(namespace: &str, sa_name: &str) -> RoleBinding {
+pub(crate) fn build_mc_writer_role_binding(namespace: &str, sa_name: &str) -> RoleBinding {
     RoleBinding {
         metadata: ObjectMeta {
             name: Some(sa_name.to_string()),
@@ -1743,7 +1805,7 @@ pub fn build_mc_writer_role_binding(namespace: &str, sa_name: &str) -> RoleBindi
 ///
 /// After this Secret is applied, the Kubernetes token controller populates `data.token`
 /// with a long-lived bearer token for the specified service account.
-pub fn build_mc_sa_token_secret(namespace: &str, sa_name: &str) -> Secret {
+pub(crate) fn build_mc_sa_token_secret(namespace: &str, sa_name: &str) -> Secret {
     let mut annotations = BTreeMap::new();
     annotations.insert(
         "kubernetes.io/service-account.name".to_string(),
@@ -1777,7 +1839,11 @@ pub fn build_mc_sa_token_secret(namespace: &str, sa_name: &str) -> Secret {
 ///
 /// The kubeconfig is stored under the `kubeconfig` key in `data`. Copy this Secret to the
 /// queen-ship cluster to grant the operator access to the remote child cluster.
-pub fn build_mc_kubeconfig_secret(namespace: &str, sa_name: &str, kubeconfig_yaml: &str) -> Secret {
+pub(crate) fn build_mc_kubeconfig_secret(
+    namespace: &str,
+    sa_name: &str,
+    kubeconfig_yaml: &str,
+) -> Secret {
     let mut data = BTreeMap::new();
     data.insert(
         "kubeconfig".to_string(),
@@ -1971,7 +2037,7 @@ fn read_cluster_info() -> Result<(String, Option<String>, String)> {
 /// directly to the container command so the scout behaves consistently with `bindy scout`.
 /// [`SCOUT_TARGET_NAMESPACE_ENV`] is set to `namespace`, so the scout writes
 /// `ARecord`s into the namespace where bootstrap created its writer Role.
-pub fn build_scout_deployment(
+pub(crate) fn build_scout_deployment(
     namespace: &str,
     opts: &ScoutDeploymentOptions<'_>,
 ) -> Result<Deployment> {

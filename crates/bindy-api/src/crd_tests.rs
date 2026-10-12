@@ -832,7 +832,7 @@ mod tests {
     }
 
     // ========================================================================
-    // Algorithm Tests - as_str() and as_rndc_str()
+    // Algorithm Tests - as_str()
     // ========================================================================
 
     #[test]
@@ -847,58 +847,11 @@ mod tests {
     }
 
     #[test]
-    fn test_rndc_algorithm_as_rndc_str_all_variants() {
-        // Test that as_rndc_str() returns the format expected by rndc crate (no "hmac-" prefix)
-        assert_eq!(RndcAlgorithm::HmacSha1.as_rndc_str(), "sha1");
-        assert_eq!(RndcAlgorithm::HmacSha224.as_rndc_str(), "sha224");
-        assert_eq!(RndcAlgorithm::HmacSha256.as_rndc_str(), "sha256");
-        assert_eq!(RndcAlgorithm::HmacSha384.as_rndc_str(), "sha384");
-        assert_eq!(RndcAlgorithm::HmacSha512.as_rndc_str(), "sha512");
-    }
-
-    #[test]
     fn test_rndc_algorithm_default() {
         // Test that the default algorithm is HmacSha256
         let default_alg = RndcAlgorithm::default();
         assert_eq!(default_alg, RndcAlgorithm::HmacSha256);
         assert_eq!(default_alg.as_str(), "hmac-sha256");
-        assert_eq!(default_alg.as_rndc_str(), "sha256");
-    }
-
-    #[test]
-    fn test_rndc_algorithm_format_consistency() {
-        // Verify that as_str() always has "hmac-" prefix and as_rndc_str() doesn't
-        let algorithms = vec![
-            RndcAlgorithm::HmacSha1,
-            RndcAlgorithm::HmacSha224,
-            RndcAlgorithm::HmacSha256,
-            RndcAlgorithm::HmacSha384,
-            RndcAlgorithm::HmacSha512,
-        ];
-
-        for algo in algorithms {
-            let bind9_format = algo.as_str();
-            let rndc_format = algo.as_rndc_str();
-
-            // BIND9 format should have "hmac-" prefix
-            assert!(
-                bind9_format.starts_with("hmac-"),
-                "BIND9 format should start with 'hmac-': {bind9_format}"
-            );
-
-            // RNDC format should NOT have "hmac-" prefix
-            assert!(
-                !rndc_format.starts_with("hmac-"),
-                "RNDC format should NOT start with 'hmac-': {rndc_format}"
-            );
-
-            // RNDC format should be the BIND9 format without the "hmac-" prefix
-            assert_eq!(
-                bind9_format.strip_prefix("hmac-").unwrap(),
-                rndc_format,
-                "RNDC format should be BIND9 format without 'hmac-' prefix"
-            );
-        }
     }
 
     #[test]
@@ -908,7 +861,6 @@ mod tests {
 
         assert_eq!(algo, cloned);
         assert_eq!(algo.as_str(), cloned.as_str());
-        assert_eq!(algo.as_rndc_str(), cloned.as_rndc_str());
     }
 
     #[test]
@@ -1067,7 +1019,6 @@ mod tests {
             let deserialized: RndcAlgorithm = serde_json::from_str(&json).unwrap();
             assert_eq!(original, deserialized);
             assert_eq!(original.as_str(), deserialized.as_str());
-            assert_eq!(original.as_rndc_str(), deserialized.as_rndc_str());
         }
     }
 
@@ -1083,7 +1034,6 @@ mod tests {
 
         assert_eq!(secret_ref.algorithm, RndcAlgorithm::HmacSha256);
         assert_eq!(secret_ref.algorithm.as_str(), "hmac-sha256");
-        assert_eq!(secret_ref.algorithm.as_rndc_str(), "sha256");
     }
 
     #[test]
@@ -1104,7 +1054,6 @@ mod tests {
 
             assert_eq!(tsig.algorithm, algo);
             assert_eq!(tsig.algorithm.as_str(), algo.as_str());
-            assert_eq!(tsig.algorithm.as_rndc_str(), algo.as_rndc_str());
         }
     }
 

@@ -49,7 +49,6 @@ fn compare_ns_rrset(existing_records: &[Record], nameserver: &str, desired_ttl: 
 /// # Errors
 ///
 /// Returns an error if the DNS update fails or the server rejects it.
-#[allow(clippy::too_many_arguments)]
 pub async fn add_ns_record(
     zone_name: &str,
     name: &str,

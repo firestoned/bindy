@@ -57,7 +57,6 @@ mod tests {
     // error_policy():
     //   - Tests that error_policy returns correct requeue action
     //   - Tests that it logs the error
-    //   - Tests the requeue duration matches ERROR_REQUEUE_DURATION_SECS
     //
     // reconcile_wrapper():
     //   - Tests finalizer addition on Apply event

@@ -13,9 +13,9 @@ mod tests {
     fn test_backoff_configuration() {
         let backoff = default_backoff();
 
-        // Verify initial interval
+        // A fresh backoff starts at the initial interval
         assert_eq!(
-            backoff.initial_interval,
+            backoff.current_interval,
             Duration::from_millis(100),
             "Initial interval should be 100ms"
         );
@@ -176,7 +176,7 @@ mod tests {
         // n >= log2(300,000) ≈ 18.2
         // So after ~18 retries, we should be at max interval
 
-        let mut current = backoff.initial_interval;
+        let mut current = backoff.current_interval;
         for _ in 0..20 {
             #[allow(
                 clippy::cast_precision_loss,
@@ -229,8 +229,8 @@ mod tests {
 mod reconcile_backoff_tests {
     use super::super::{
         clear_rejected_write, note_rejected_write, reconcile_error_backoff,
-        reset_reconcile_backoff, write_cooldown_remaining_at, write_in_cooldown,
-        write_in_cooldown_at, RECONCILE_BACKOFF_MAX, REJECTED_WRITE_COOLDOWN,
+        reset_reconcile_backoff, write_cooldown_remaining, write_cooldown_remaining_at,
+        RECONCILE_BACKOFF_MAX, REJECTED_WRITE_COOLDOWN,
     };
     use std::time::{Duration, Instant};
 
@@ -313,7 +313,7 @@ mod reconcile_backoff_tests {
     #[test]
     fn test_unknown_key_is_not_in_cooldown() {
         assert!(
-            !write_in_cooldown("ns/never-written", "hash-a"),
+            write_cooldown_remaining("ns/never-written", "hash-a").is_none(),
             "a record with no recorded rejection must be written immediately"
         );
     }
@@ -325,15 +325,16 @@ mod reconcile_backoff_tests {
         note_rejected_write(key, "hash-a");
 
         assert!(
-            write_in_cooldown(key, "hash-a"),
+            write_cooldown_remaining(key, "hash-a").is_some(),
             "a just-rejected write must not be re-attempted on the next watch event"
         );
         assert!(
-            !write_in_cooldown_at(
+            write_cooldown_remaining_at(
                 key,
                 "hash-a",
                 Instant::now() + REJECTED_WRITE_COOLDOWN + Duration::from_secs(1)
-            ),
+            )
+            .is_none(),
             "once the cooldown expires the scheduled retry must attempt it again"
         );
     }
@@ -345,7 +346,7 @@ mod reconcile_backoff_tests {
         note_rejected_write(key, "hash-a");
 
         assert!(
-            !write_in_cooldown(key, "hash-b"),
+            write_cooldown_remaining(key, "hash-b").is_none(),
             "editing the record is the user's fix for a rejection; it must not wait"
         );
     }
@@ -357,7 +358,7 @@ mod reconcile_backoff_tests {
         clear_rejected_write(key);
 
         assert!(
-            !write_in_cooldown(key, "hash-a"),
+            write_cooldown_remaining(key, "hash-a").is_none(),
             "a succeeding write clears the rejection"
         );
     }

@@ -166,7 +166,6 @@ pub(crate) fn parse_ipv6_addresses(addresses: &[String]) -> Result<Vec<Ipv6Addr>
 ///
 /// Returns an error if any address is not valid IPv4 (nothing is sent), the
 /// DNS update fails, or the server rejects the delete or an append.
-#[allow(clippy::too_many_arguments)]
 pub async fn add_a_record(
     zone_name: &str,
     name: &str,
@@ -262,7 +261,6 @@ pub async fn add_a_record(
 ///
 /// Returns an error if any address is not valid IPv6 (nothing is sent), the
 /// DNS update fails, or the server rejects the delete or an append.
-#[allow(clippy::too_many_arguments)]
 pub async fn add_aaaa_record(
     zone_name: &str,
     name: &str,

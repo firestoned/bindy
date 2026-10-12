@@ -176,7 +176,6 @@ mod tests {
             format!("{err:#}").contains("builder exploded"),
             "the build failure must be surfaced: {err:#}"
         );
-        assert!(manager.client().is_err());
     }
 
     /// A manager built for an instance without a Deployment in the store still

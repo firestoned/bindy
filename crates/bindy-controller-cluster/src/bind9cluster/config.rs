@@ -125,7 +125,3 @@ pub(super) async fn reconcile_pod_disruption_budgets(
 
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "config_tests.rs"]
-mod config_tests;

@@ -157,10 +157,10 @@ spec:
                       nullable: true
                       type: string
                     status:
-                      description: 'Status of the condition: True, False, or Unknown.'
+                      description: "Status of the condition: True, False, or Unknown."
                       type: string
                     type:
-                      description: 'Type of condition. Common types include: Ready, Available, Progressing, Degraded, Failed.'
+                      description: "Type of condition. Common types include: Ready, Available, Progressing, Degraded, Failed."
                       type: string
                   required:
                   - status

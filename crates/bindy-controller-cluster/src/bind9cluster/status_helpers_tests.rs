@@ -176,31 +176,6 @@ mod tests {
             .contains("No instances are ready"));
     }
 
-    #[tokio::test]
-    async fn test_update_status_skips_when_unchanged() {
-        // This test requires mocking the Kubernetes API
-        // For now, we document the expected behavior:
-        //
-        // Given: A cluster with current status matching new status
-        //        AND instance_count, ready_instances, instances list unchanged
-        //        AND all conditions unchanged
-        // When: update_status is called
-        // Then: Should NOT patch the status
-        //       AND log "Status unchanged, skipping update"
-    }
-
-    #[tokio::test]
-    async fn test_update_status_patches_when_changed() {
-        // This test requires mocking the Kubernetes API
-        // For now, we document the expected behavior:
-        //
-        // Given: A cluster with current status ready_instances=2
-        //        AND new status ready_instances=3
-        // When: update_status is called
-        // Then: Should patch the status with new values
-        //       AND log "Updating Bind9Cluster status: 3 instances, 3 ready"
-    }
-
     // ========================================================================
     // Status patch decision (cluster_status_changed)
     // ========================================================================

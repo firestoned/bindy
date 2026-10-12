@@ -8,8 +8,6 @@ mod tests {
     #[test]
     fn unset_is_all() {
         assert_eq!(NamespaceScope::parse(None), NamespaceScope::All);
-        assert!(NamespaceScope::parse(None).is_all());
-        assert!(NamespaceScope::parse(None).namespaces().is_empty());
     }
 
     #[test]
@@ -39,8 +37,6 @@ mod tests {
                 "tenant-b".to_string(),
             ])
         );
-        assert!(!scope.is_all());
-        assert_eq!(scope.namespaces().len(), 3);
     }
 
     #[test]

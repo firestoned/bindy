@@ -1,6 +1,8 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: Apache-2.0
 
+// The fixtures still set deprecated CRD fields (`rndc_secret_ref`,
+// `name_server_ips`) to cover their backward compatibility.
 #![allow(deprecated)]
 
 //! Comprehensive integration tests for Bindy DNS Controller
@@ -9,13 +11,6 @@
 //! They cover all CRD types, basic CRUD operations, and common scenarios.
 //!
 //! Run with: cargo test --test simple_integration -- --ignored
-
-#![allow(clippy::items_after_statements)]
-#![allow(clippy::manual_let_else)]
-#![allow(clippy::doc_markdown)]
-#![allow(clippy::too_many_lines)]
-#![allow(clippy::uninlined_format_args)]
-#![allow(clippy::if_not_else)]
 
 use bindy_api::crd::{
     ARecord, ARecordSpec, Bind9Cluster, Bind9ClusterCommonSpec, Bind9ClusterSpec, Bind9Instance,
