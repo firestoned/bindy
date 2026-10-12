@@ -1,14 +1,22 @@
 # Threat Model - Bindy DNS Operator
 
-**Version:** 1.22
-**Last Updated:** 2026-10-11
+**Version:** 1.23
+**Last Updated:** 2026-10-12
 **Owner:** Security Team
 **Compliance:** SOX 404, PCI-DSS 6.4.1, Basel III Cyber Risk
 
-> Last full pass 2026-10-11, against ADR-0001 ... ADR-0019 (ADR-0006 as amended;
+> Last full pass 2026-10-12, against ADR-0001 ... ADR-0019 (ADR-0006 as amended;
 > ADR-0009 as amended 2026-10-05, fully implemented; ADR-0013 stages 1 to 3,
 > ADR-0014, ADR-0015, ADR-0016, ADR-0017 as amended and corrected 2026-10-07
 > and by ADR-0019, ADR-0018 as amended 2026-10-07 and ADR-0019 implemented).
+>
+> **Revision note (v1.23):** `bindy bootstrap mc` no longer prints the
+> remote kubeconfig Secret, and with it the ServiceAccount token, to stdout:
+> it writes it to a file readable only by its owner and refuses `-` (**M-61**). The
+> I1 rows, Attack Surface 7 and Scenario 6 were re-walked; the Scout RBAC and
+> the Secret's contents are unchanged. The dead-code removal and the
+> `serde_yaml` to `serde-saphyr` move of the same day change no component,
+> boundary or control (the generated CRDs are semantically identical).
 >
 > **Revision note (v1.22):** Full pass after a code review of every crate for
 > paths that proceeded on failure. No new ADR, component, actor, asset, trust
@@ -2104,6 +2112,7 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-58 | **The operator uses the RNDC key the pods hold** (2026-10-11): the key loader reads the Secret name from the instance Deployment's `rndc-key` volume (`rndcKey.secretRef`, an inline `rndcKey.secret` name, or the default), and the writer, the drift check and the Deployment share one name helper; the instance Service follows the merged `bindcarConfig` (instance, cluster, provider). Anyone who can patch the Deployment could already mount that Secret into the pod, so reading the name from it adds no read path | I1 (no fallback Secret read outside the configured one), availability of dynamic updates | ✅ `crates/bindy-bind9/src/bind9_resources.rs` (`rndc_secret_name`, `rndc_secret_name_from_deployment`, `instance_configmap_name`), `crates/bindy-bind9/src/instances.rs` (`effective_rndc_secret_name`); uses the operator's existing `deployments: get` |
 | M-59 | **Scout keeps published records in step with the source** (2026-10-11): the TCPRoute record-name override goes through the same P2-7 validation as every other source kind; an `Ingress`/`HTTPRoute`/`TLSRoute` host that was removed or no longer matches the zone has its record pruned; a `Service` that stops being a `LoadBalancer` releases its records and finalizer; `Service` records left by an old `--cluster-name` are cleaned up; `bindy bootstrap scout --namespace X` points the scout at `X`, where its writer Role is | T1 (tenant-controlled record names; stale records served after the source changed), least privilege (the scout writes where its RBAC is) | ✅ `crates/bindy-scout/src/scout.rs` (`tcproute_record_name`, `arecords_to_prune`, `prune_unapplied_arecords`, `service_publishes_dns`, `delete_stale_cluster_service_arecords`), `crates/bindy-bootstrap/src/bootstrap.rs` (`SCOUT_TARGET_NAMESPACE_ENV`) |
 | M-60 | **bindcar transport fails closed** (2026-10-11): the TLS CA bundle is read only from the instance's namespace (a manager without one refuses TLS instead of reading `default`), and a bindcar HTTP client that cannot be built with its timeouts fails every call instead of falling back to a client without timeouts | Spoofing of the bindcar endpoint (a CA bundle planted in `default` trusted for TLS, ADR-0004), availability (an untimed bindcar request hangs a reconcile; D5 is the API-server analogue) | ✅ `crates/bindy-bind9/src/bind9/mod.rs` (`new_for_instance`, `read_ca_bundle`, `build_http_client_with_timeouts`), `crates/bindy-bind9/src/context.rs` |
+| M-61 | **The multi-cluster kubeconfig Secret is written to a private file** (2026-10-12): `bindy bootstrap mc` writes the `bindy.firestoned.io/remote-kubeconfig` Secret, which carries the remote ServiceAccount token, to a file created with mode `0600` (`--output`, default `<service-account>-kubeconfig.yaml`); an existing file is restricted to `0600` before it is truncated; the Secret is never printed (`--output -` is refused). Status messages stay on stderr | I1 (a token left in terminal scrollback, a CI log or a shared session recording), CodeQL `rust/cleartext-logging` | ✅ `crates/bindy-bootstrap/src/bootstrap.rs` (`mc_output_path`, `write_private_file`), `crates/bindy/src/cli.rs` (`--output`); tests `bootstrap_tests.rs` (`mc_output_tests`, 5) |
 | M-25 | **Scout Secret RBAC scoped** (fixed 2026-07-19, same day as this finding's discovery): removed the cluster-wide `secrets: get` `PolicyRule` from the `bindy-scout` `ClusterRole` entirely. Replaced with a namespaced, `resourceNames`-restricted Role (`bindy-scout-secrets-reader`) scoped to exactly the one Phase 2 kubeconfig Secret, applied only when `--remote-secret` is configured. Same-cluster-only deployments (the default) now get zero Secret access. See I4/E4/Scenario 6 for the full before/after. | I4, E4, T4 (Secret-read component), Scenario 6 | ✅ RBAC: **was the highest-priority open item in v1.1; closed same-day** |
 
 ---
@@ -2278,6 +2287,6 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 
 ---
 
-**Last Updated:** 2026-10-11
-**Next Review:** 2027-01-11 (Quarterly)
+**Last Updated:** 2026-10-12
+**Next Review:** 2027-01-12 (Quarterly)
 **Approved By:** Security Team *(pending re-approval for v1.1: this revision has not yet been formally reviewed/signed off; see the revision note at the top of this document)*

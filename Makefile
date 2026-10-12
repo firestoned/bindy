@@ -1072,7 +1072,7 @@ kind-create-scout: ## Create a second Kind cluster and install Scout (child clus
 	@echo ""
 	@echo "  To connect Scout to the Queen Bee cluster (multi-cluster mode):"
 	@echo "    kubectl config use-context $(KIND_CONTEXT)"
-	@echo "    bindy bootstrap mc | kubectl --context $(KIND_SCOUT_CONTEXT) apply -f -"
+	@echo "    bindy bootstrap mc -o scout-kubeconfig.yaml && kubectl --context $(KIND_SCOUT_CONTEXT) apply -f scout-kubeconfig.yaml && rm scout-kubeconfig.yaml"
 
 kind-scout-cleanup: ## Delete the Scout child Kind cluster
 	@echo "Deleting Scout cluster '$(KIND_SCOUT_CLUSTER)'..."

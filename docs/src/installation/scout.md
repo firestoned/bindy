@@ -146,19 +146,23 @@ In multi-cluster deployments, Scout runs on **workload clusters** and writes `AR
 bindy bootstrap mc \
   --service-account bindy-scout-remote \
   --namespace bindy-system \
-  | kubectl --context=<child-cluster> apply -f -
+  --output scout-kubeconfig.yaml
+
+# Apply it to the child cluster, then delete it: it holds the SA token
+kubectl --context=<child-cluster> apply -f scout-kubeconfig.yaml
+rm scout-kubeconfig.yaml
 ```
 
-This single pipeline:
+This:
 1. Creates a `ServiceAccount` + `Role` + `RoleBinding` on the **Queen Bee cluster** (minimal: ARecord CRUD + DNSZone read)
 2. Generates a kubeconfig for that service account
-3. Outputs a `bindy.firestoned.io/remote-kubeconfig` Secret and applies it to the **child cluster**
+3. Writes a `bindy.firestoned.io/remote-kubeconfig` Secret to the `--output` file, readable only by you (mode `0600`). Without `--output` the file is `<service-account>-kubeconfig.yaml`. The Secret carries the token, so it is never printed to stdout
 
 !!! tip "One SA per child cluster"
     Use a unique `--service-account` per child cluster for independent credential revocation:
     ```bash
-    bindy bootstrap mc --service-account bindy-scout-remote-cluster-a \
-      | kubectl --context=cluster-a apply -f -
+    bindy bootstrap mc --service-account bindy-scout-remote-cluster-a -o cluster-a.yaml
+    kubectl --context=cluster-a apply -f cluster-a.yaml && rm cluster-a.yaml
     ```
 
 ### 2. Enable remote mode on the Scout Deployment

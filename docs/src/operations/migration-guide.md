@@ -2,6 +2,33 @@
 
 This document collects the breaking-change migrations for Bindy, newest first.
 
+## `bindy bootstrap mc` writes the kubeconfig Secret to a file
+
+The Secret holds the remote ServiceAccount token, so `bindy bootstrap mc` no
+longer prints it to stdout. It writes it to a file created with mode `0600`:
+`--output <path>` (`-o`), by default `<service-account>-kubeconfig.yaml`
+in the current directory.
+
+- **Scripts that pipe the output stop working.** `bindy bootstrap mc | kubectl
+  apply -f -` now writes the file and pipes nothing, and `--output -` is
+  refused. Apply the file, then delete it:
+
+  ```bash
+  bindy bootstrap mc -o cluster-a.yaml
+  kubectl --context=child-cluster-a apply -f cluster-a.yaml && rm cluster-a.yaml
+  ```
+
+- **The Secret is now named `<service-account>-kubeconfig`** (was
+  `<service-account>-remote-kubeconfig`). With the default service account
+  that is `bindy-scout-remote-kubeconfig`, the name the static
+  `deploy/scout/secrets-reader-rbac.yaml` and the docs always used; before,
+  the default produced `bindy-scout-remote-remote-kubeconfig`, which that
+  Role does not let the scout read. A Secret already applied to a child
+  cluster keeps working under its old name as long as
+  `BINDY_SCOUT_REMOTE_SECRET` and the secrets-reader Role name it; when you
+  re-run `bindy bootstrap mc`, point both at the new name. The Secret's type
+  and contents are unchanged.
+
 ## Zone transfer peers follow the pods (ADR-0019)
 
 Apply the regenerated `DNSZone` CRD before the new operator: the status

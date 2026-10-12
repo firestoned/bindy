@@ -105,10 +105,12 @@ pub(crate) enum BootstrapCommands {
         remote_secret: Option<String>,
     },
     /// Bootstrap multi-cluster access: create a service account on the queen-ship
-    /// and write a `bindy.firestoned.io/remote-kubeconfig` Secret YAML to stdout.
+    /// and write a `bindy.firestoned.io/remote-kubeconfig` Secret YAML to a file
+    /// readable only by its owner (mode 0600), because it carries the token.
     ///
-    /// Run this command against the queen-ship (bindy operator) cluster. Pipe the
-    /// output to each child cluster so the scout can connect back to the queen-ship.
+    /// Run this command against the queen-ship (bindy operator) cluster. Apply the
+    /// file to each child cluster so the scout can connect back to the queen-ship,
+    /// then delete it.
     ///
     /// To remove access later: `bindy bootstrap mc --revoke --service-account <name>`
     #[command(alias = "mc")]
@@ -128,6 +130,12 @@ pub(crate) enum BootstrapCommands {
         /// Example: --server https://172.18.0.3:6443
         #[arg(long)]
         server: Option<String>,
+        /// Where to write the kubeconfig Secret manifest. Defaults to
+        /// `<service-account>-kubeconfig.yaml` in the current directory,
+        /// created with mode 0600. It contains the ServiceAccount token, so it
+        /// is never printed to stdout (`-` is refused).
+        #[arg(long, short = 'o')]
+        output: Option<String>,
         /// Revoke (delete) all resources previously created for --service-account.
         /// Safe to run multiple times — missing resources are silently skipped.
         /// Alias: --delete
@@ -319,22 +327,25 @@ pub(crate) async fn run_bootstrap(subcommand: BootstrapCommands) -> Result<()> {
         }
         // Creates or revokes the service account and RBAC on the queen-ship.
         // Without --revoke, writes a `bindy.firestoned.io/remote-kubeconfig`
-        // Secret manifest to stdout.
+        // Secret manifest to a private (0600) file.
         BootstrapCommands::MultiCluster {
             namespace,
             service_account,
             server,
+            output,
             revoke,
             insecure_skip_tls_verify,
         } => {
             if revoke {
                 bindy_bootstrap::run_revoke_multi_cluster(&namespace, &service_account).await
             } else {
+                let output = bindy_bootstrap::mc_output_path(output.as_deref(), &service_account)?;
                 bindy_bootstrap::run_bootstrap_multi_cluster(
                     &namespace,
                     &service_account,
                     server.as_deref(),
                     insecure_skip_tls_verify,
+                    &output,
                 )
                 .await
             }

@@ -272,8 +272,8 @@ mod tests {
         ["clusterbind9providers", "clusterbind9providers/status"];
 
     fn parse_role_rules(yaml: &str) -> Vec<k8s_openapi::api::rbac::v1::PolicyRule> {
-        let doc: serde_yaml::Value = serde_yaml::from_str(yaml).expect("valid RBAC YAML");
-        serde_yaml::from_value(doc["rules"].clone()).expect("rules parse")
+        let doc: serde_json::Value = serde_saphyr::from_str(yaml).expect("valid RBAC YAML");
+        serde_json::from_value(doc["rules"].clone()).expect("rules parse")
     }
 
     fn rule_resources(rules: &[k8s_openapi::api::rbac::v1::PolicyRule]) -> Vec<String> {
@@ -1875,7 +1875,7 @@ mod tests {
             true,
         )
         .unwrap();
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let parsed: serde_json::Value = serde_saphyr::from_str(&yaml).unwrap();
         assert_eq!(parsed["apiVersion"].as_str(), Some("v1"));
     }
 
@@ -1890,7 +1890,7 @@ mod tests {
             true,
         )
         .unwrap();
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let parsed: serde_json::Value = serde_saphyr::from_str(&yaml).unwrap();
         assert_eq!(parsed["kind"].as_str(), Some("Config"));
     }
 
@@ -1905,7 +1905,7 @@ mod tests {
             true,
         )
         .unwrap();
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let parsed: serde_json::Value = serde_saphyr::from_str(&yaml).unwrap();
         assert_eq!(
             parsed["clusters"][0]["cluster"]["server"].as_str(),
             Some("https://example.com:6443")
@@ -1923,7 +1923,7 @@ mod tests {
             true,
         )
         .unwrap();
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let parsed: serde_json::Value = serde_saphyr::from_str(&yaml).unwrap();
         assert_eq!(
             parsed["users"][0]["user"]["token"].as_str(),
             Some("my-token")
@@ -1941,7 +1941,7 @@ mod tests {
             true,
         )
         .unwrap();
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let parsed: serde_json::Value = serde_saphyr::from_str(&yaml).unwrap();
         assert_eq!(parsed["clusters"][0]["name"].as_str(), Some("my-cluster"));
     }
 
@@ -1956,7 +1956,7 @@ mod tests {
             true,
         )
         .unwrap();
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let parsed: serde_json::Value = serde_saphyr::from_str(&yaml).unwrap();
         assert_eq!(
             parsed["clusters"][0]["cluster"]["insecure-skip-tls-verify"].as_bool(),
             Some(true)
@@ -1975,7 +1975,7 @@ mod tests {
             false,
         )
         .unwrap();
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let parsed: serde_json::Value = serde_saphyr::from_str(&yaml).unwrap();
         assert_eq!(
             parsed["clusters"][0]["cluster"]["certificate-authority-data"].as_str(),
             Some(ca)
@@ -1994,7 +1994,7 @@ mod tests {
             false,
         )
         .unwrap();
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let parsed: serde_json::Value = serde_saphyr::from_str(&yaml).unwrap();
         assert!(
             parsed["clusters"][0]["cluster"]["insecure-skip-tls-verify"].is_null(),
             "insecure-skip-tls-verify must not be set when CA is provided"
@@ -2012,7 +2012,7 @@ mod tests {
             true,
         )
         .unwrap();
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let parsed: serde_json::Value = serde_saphyr::from_str(&yaml).unwrap();
         assert_eq!(parsed["current-context"].as_str(), Some("default"));
     }
 
@@ -2027,7 +2027,7 @@ mod tests {
             true,
         )
         .unwrap();
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let parsed: serde_json::Value = serde_saphyr::from_str(&yaml).unwrap();
         assert_eq!(parsed["users"][0]["name"].as_str(), Some("scout"));
     }
 
@@ -2042,7 +2042,7 @@ mod tests {
             true,
         )
         .unwrap();
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let parsed: serde_json::Value = serde_saphyr::from_str(&yaml).unwrap();
         assert_eq!(
             parsed["contexts"][0]["context"]["cluster"].as_str(),
             Some("my-cluster")
@@ -2090,7 +2090,7 @@ mod tests {
             true,
         )
         .unwrap();
-        let parsed: serde_yaml::Value = serde_yaml::from_str(&yaml).unwrap();
+        let parsed: serde_json::Value = serde_saphyr::from_str(&yaml).unwrap();
         assert_eq!(
             parsed["clusters"][0]["cluster"]["insecure-skip-tls-verify"].as_bool(),
             Some(true)
@@ -2116,7 +2116,7 @@ mod tests {
         // Assert
         assert_eq!(sa, "bindy-scout-remote");
         assert_eq!(token_secret, "bindy-scout-remote-token");
-        assert_eq!(kubeconfig_secret, "bindy-scout-remote-remote-kubeconfig");
+        assert_eq!(kubeconfig_secret, "bindy-scout-remote-kubeconfig");
     }
 
     /// Verify resource names for a custom per-cluster service account name.
@@ -2131,10 +2131,7 @@ mod tests {
 
         // Assert
         assert_eq!(token_secret, "bindy-scout-prod-us-east-token");
-        assert_eq!(
-            kubeconfig_secret,
-            "bindy-scout-prod-us-east-remote-kubeconfig"
-        );
+        assert_eq!(kubeconfig_secret, "bindy-scout-prod-us-east-kubeconfig");
     }
 }
 
@@ -2158,6 +2155,23 @@ mod rbac_drift {
     /// The Secret the static secrets-reader Role is restricted to.
     const MANIFEST_REMOTE_SECRET: &str = "bindy-scout-remote-kubeconfig";
 
+    /// `bindy bootstrap mc` with its defaults must produce exactly the Secret
+    /// the static secrets-reader Role lets the scout read; otherwise a scout
+    /// set up by the documented defaults is forbidden its own kubeconfig.
+    #[test]
+    fn default_mc_secret_is_the_one_the_static_rbac_allows() {
+        let secret = crate::bootstrap::build_mc_kubeconfig_secret(
+            MANIFEST_NAMESPACE,
+            crate::bootstrap::MC_DEFAULT_SERVICE_ACCOUNT_NAME,
+            "kubeconfig: content",
+        );
+
+        assert_eq!(
+            secret.metadata.name.as_deref(),
+            Some(MANIFEST_REMOTE_SECRET)
+        );
+    }
+
     const CLUSTERROLE_YAML: &str = include_str!("../../../deploy/scout/clusterrole.yaml");
     const CLUSTERROLEBINDING_YAML: &str =
         include_str!("../../../deploy/scout/clusterrolebinding.yaml");
@@ -2168,15 +2182,33 @@ mod rbac_drift {
     const SCOUT_GUIDE_MD: &str = include_str!("../../../docs/src/guide/scout.md");
 
     /// Every YAML document in `text`.
-    fn yaml_docs(text: &str) -> Vec<serde_yaml::Value> {
-        serde_yaml::Deserializer::from_str(text)
-            .map_while(|doc| serde_yaml::Value::deserialize(doc).ok())
+    fn yaml_docs(text: &str) -> Vec<serde_json::Value> {
+        split_yaml_documents(text)
+            .into_iter()
+            .map_while(|doc| serde_saphyr::from_str::<serde_json::Value>(&doc).ok())
             .filter(|value| !value.is_null())
             .collect()
     }
 
+    /// Split a multi-document YAML stream on its `---` separator lines.
+    fn split_yaml_documents(text: &str) -> Vec<String> {
+        let mut docs = vec![String::new()];
+        for line in text.lines() {
+            if line.trim_end() == "---" {
+                docs.push(String::new());
+                continue;
+            }
+            if let Some(current) = docs.last_mut() {
+                current.push_str(line);
+                current.push('\n');
+            }
+        }
+        docs.retain(|doc| !doc.trim().is_empty());
+        docs
+    }
+
     /// Every YAML document inside the ```yaml blocks of a Markdown page.
-    fn markdown_yaml_docs(markdown: &str) -> Vec<serde_yaml::Value> {
+    fn markdown_yaml_docs(markdown: &str) -> Vec<serde_json::Value> {
         let mut docs = Vec::new();
         let mut block: Option<String> = None;
         for line in markdown.lines() {
@@ -2197,22 +2229,21 @@ mod rbac_drift {
     }
 
     /// The documents of `kind` named `name`, deserialized.
-    fn find<T: DeserializeOwned>(docs: &[serde_yaml::Value], kind: &str, name: &str) -> Vec<T> {
+    fn find<T: DeserializeOwned>(docs: &[serde_json::Value], kind: &str, name: &str) -> Vec<T> {
         docs.iter()
             .filter(|doc| {
-                doc.get("kind").and_then(serde_yaml::Value::as_str) == Some(kind)
+                doc.get("kind").and_then(serde_json::Value::as_str) == Some(kind)
                     && doc
                         .get("metadata")
                         .and_then(|m| m.get("name"))
-                        .and_then(serde_yaml::Value::as_str)
+                        .and_then(serde_json::Value::as_str)
                         == Some(name)
             })
-            .map(|doc| serde_yaml::from_value(doc.clone()).expect("a valid RBAC object"))
+            .map(|doc| serde_json::from_value(doc.clone()).expect("a valid RBAC object"))
             .collect()
     }
 
     use k8s_openapi::api::rbac::v1::Subject;
-    use serde::Deserialize;
 
     /// Subjects with the API server's defaulting applied: a `ServiceAccount`
     /// subject's empty `apiGroup` and an absent one are the same thing.
@@ -2233,7 +2264,7 @@ mod rbac_drift {
     /// For a guide page: one ClusterRole block is the whole role and matches
     /// exactly; any other block is an excerpt ("... existing rules ...") and
     /// may only show rules the role really has.
-    fn assert_cluster_role_matches_or_excerpts(docs: &[serde_yaml::Value], source: &str) {
+    fn assert_cluster_role_matches_or_excerpts(docs: &[serde_json::Value], source: &str) {
         let built = build_scout_cluster_role();
         let built_rules = built.rules.clone().unwrap_or_default();
         let name = built.metadata.name.clone().unwrap();
@@ -2252,7 +2283,7 @@ mod rbac_drift {
         }
     }
 
-    fn assert_cluster_role_matches(docs: &[serde_yaml::Value], source: &str) {
+    fn assert_cluster_role_matches(docs: &[serde_json::Value], source: &str) {
         let built = build_scout_cluster_role();
         let name = built.metadata.name.clone().unwrap();
         let found: Vec<ClusterRole> = find(docs, "ClusterRole", &name);
@@ -2265,7 +2296,7 @@ mod rbac_drift {
         }
     }
 
-    fn assert_role_matches(docs: &[serde_yaml::Value], built: &Role, source: &str) {
+    fn assert_role_matches(docs: &[serde_json::Value], built: &Role, source: &str) {
         let name = built.metadata.name.clone().unwrap();
         let found: Vec<Role> = find(docs, "Role", &name);
         assert!(!found.is_empty(), "{source}: no Role {name}");
@@ -2277,7 +2308,7 @@ mod rbac_drift {
         }
     }
 
-    fn assert_cluster_role_binding_matches(docs: &[serde_yaml::Value], source: &str) {
+    fn assert_cluster_role_binding_matches(docs: &[serde_json::Value], source: &str) {
         let built = build_scout_cluster_role_binding(MANIFEST_NAMESPACE);
         let name = built.metadata.name.clone().unwrap();
         let found: Vec<ClusterRoleBinding> = find(docs, "ClusterRoleBinding", &name);
@@ -2295,7 +2326,7 @@ mod rbac_drift {
         }
     }
 
-    fn assert_role_binding_matches(docs: &[serde_yaml::Value], built: &RoleBinding, source: &str) {
+    fn assert_role_binding_matches(docs: &[serde_json::Value], built: &RoleBinding, source: &str) {
         let name = built.metadata.name.clone().unwrap();
         let found: Vec<RoleBinding> = find(docs, "RoleBinding", &name);
         assert!(!found.is_empty(), "{source}: no RoleBinding {name}");
@@ -2378,6 +2409,83 @@ mod rbac_drift {
             &docs,
             &build_scout_secrets_reader_role_binding(MANIFEST_NAMESPACE),
             source,
+        );
+    }
+}
+
+/// `bindy bootstrap mc` writes the kubeconfig Secret (it carries the
+/// ServiceAccount token) to a private file, never to stdout unless asked.
+#[cfg(test)]
+mod mc_output_tests {
+    use crate::bootstrap::{mc_output_path, write_private_file};
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+
+    /// Owner read/write only.
+    const PRIVATE_MODE: u32 = 0o600;
+    /// Group and world readable, as a default umask creates files.
+    const WORLD_READABLE_MODE: u32 = 0o644;
+    /// The permission bits of a file mode.
+    const PERMISSION_BITS: u32 = 0o777;
+
+    fn mode(path: &std::path::Path) -> u32 {
+        std::fs::metadata(path)
+            .expect("file exists")
+            .permissions()
+            .mode()
+            & PERMISSION_BITS
+    }
+
+    #[test]
+    fn defaults_to_a_file_named_after_the_service_account() {
+        assert_eq!(
+            mc_output_path(None, "bindy-scout-remote").expect("a path"),
+            PathBuf::from("bindy-scout-remote-kubeconfig.yaml")
+        );
+    }
+
+    #[test]
+    fn stdout_is_refused_because_the_secret_carries_a_token() {
+        let err = mc_output_path(Some("-"), "sa").expect_err("stdout is refused");
+        assert!(err.to_string().contains("token"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn an_explicit_path_is_used_as_is() {
+        assert_eq!(
+            mc_output_path(Some("/tmp/child-a.yaml"), "sa").expect("a path"),
+            PathBuf::from("/tmp/child-a.yaml")
+        );
+    }
+
+    #[test]
+    fn a_new_file_is_private() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("secret.yaml");
+
+        write_private_file(&path, "token: abc\n").expect("written");
+
+        assert_eq!(mode(&path), PRIVATE_MODE);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("readable"),
+            "token: abc\n"
+        );
+    }
+
+    #[test]
+    fn an_existing_readable_file_is_made_private_and_replaced() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("secret.yaml");
+        std::fs::write(&path, "old token that is longer than the new one\n").expect("seeded");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(WORLD_READABLE_MODE))
+            .expect("chmod");
+
+        write_private_file(&path, "token: new\n").expect("written");
+
+        assert_eq!(mode(&path), PRIVATE_MODE);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("readable"),
+            "token: new\n"
         );
     }
 }

@@ -25,8 +25,11 @@ pub mod crd;
 pub mod labels;
 pub mod selector;
 pub mod status_reasons;
+pub mod yaml;
 
 #[cfg(test)]
 mod crd_tests;
 #[cfg(test)]
 mod status_reasons_tests;
+#[cfg(test)]
+mod yaml_tests;

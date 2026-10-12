@@ -218,19 +218,21 @@ mod tests {
                 continue;
             }
             let text = std::fs::read_to_string(&path).expect("readable example");
-            for document in serde_yaml::Deserializer::from_str(&text) {
-                let Ok(value) = <serde_yaml::Value as serde::Deserialize>::deserialize(document)
-                else {
+            for document in text.split("\n---\n") {
+                if document.trim().is_empty() {
+                    continue;
+                }
+                let Ok(value) = serde_saphyr::from_str::<serde_json::Value>(document) else {
                     break;
                 };
                 let kind = value
                     .get("kind")
-                    .and_then(serde_yaml::Value::as_str)
+                    .and_then(serde_json::Value::as_str)
                     .unwrap_or("");
                 let name = value
                     .get("metadata")
                     .and_then(|m| m.get("name"))
-                    .and_then(serde_yaml::Value::as_str)
+                    .and_then(serde_json::Value::as_str)
                     .unwrap_or("?");
                 let label = format!(
                     "{}:{kind}/{name}",
@@ -238,7 +240,7 @@ mod tests {
                 );
                 let configmap = match kind {
                     "Bind9Instance" => {
-                        let mut instance: Bind9Instance = serde_yaml::from_value(value)
+                        let mut instance: Bind9Instance = serde_json::from_value(value)
                             .unwrap_or_else(|e| panic!("{label} does not deserialize: {e}"));
                         // The API server assigns the UID the owner reference
                         // needs; an example manifest has none.
@@ -246,7 +248,7 @@ mod tests {
                         build_configmap("x", "ns", &instance, None, None)
                     }
                     "Bind9Cluster" => {
-                        let cluster: Bind9Cluster = serde_yaml::from_value(value)
+                        let cluster: Bind9Cluster = serde_json::from_value(value)
                             .unwrap_or_else(|e| panic!("{label} does not deserialize: {e}"));
                         build_cluster_configmap("x", "ns", &cluster)
                     }

@@ -328,7 +328,7 @@ spec:
 
                   The name is restricted to a safe identifier set (`[A-Za-z0-9_-]`, starting
                   alphanumeric, max 63 chars) because it is interpolated into a quoted BIND9
-                  configuration literal — `"`, `;`, `{`, `}` would allow config injection (B-6).
+                  configuration literal; `"`, `;`, `{`, `}` would allow config injection (B-6).
                 nullable: true
                 pattern: ^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$
                 type: string
@@ -689,7 +689,7 @@ spec:
             - zoneName
             type: object
           status:
-            description: '`DNSZone` status'
+            description: "`DNSZone` status"
             nullable: true
             properties:
               bind9Instances:
@@ -809,10 +809,10 @@ spec:
                       nullable: true
                       type: string
                     status:
-                      description: 'Status of the condition: True, False, or Unknown.'
+                      description: "Status of the condition: True, False, or Unknown."
                       type: string
                     type:
-                      description: 'Type of condition. Common types include: Ready, Available, Progressing, Degraded, Failed.'
+                      description: "Type of condition. Common types include: Ready, Available, Progressing, Degraded, Failed."
                       type: string
                   required:
                   - status

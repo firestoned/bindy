@@ -42,12 +42,16 @@
 //!    DNSZones via `Api::namespaced` (not `Api::all`) in the same target namespace.
 //! 3. RoleBinding (`bindy-scout-remote`) — binds the SA to the namespaced Role
 //! 4. SA token Secret — a long-lived token for the SA
-//! 5. Kubeconfig Secret (`bindy-scout-remote-remote-kubeconfig`) — a ready-to-use
-//!    kubeconfig for the SA, printed to **stdout** as YAML
+//! 5. Kubeconfig Secret (`bindy-scout-remote-kubeconfig`): a ready-to-use
+//!    kubeconfig for the SA, written as YAML to a file readable only by its owner
+//!    (mode 0600; `--output`, default `<service-account>-kubeconfig.yaml`).
+//!    It carries the SA token, so it is never printed.
 //!
-//! The stdout output is applied to the **child cluster** where scout runs:
+//! The file is applied to the **child cluster** where scout runs, then deleted:
 //! ```text
-//! bindy bootstrap mc | kubectl --context=<child-cluster> apply -f -
+//! bindy bootstrap mc
+//! kubectl --context=<child-cluster> apply -f bindy-scout-remote-kubeconfig.yaml
+//! rm bindy-scout-remote-kubeconfig.yaml
 //! ```
 //! Then set `BINDY_SCOUT_REMOTE_SECRET=bindy-scout-remote-kubeconfig` on the
 //! scout Deployment so it picks up the remote kubeconfig at startup.
@@ -271,8 +275,9 @@ pub(crate) const SA_TOKEN_SECRET_SUFFIX: &str = "-token";
 
 /// Suffix appended to the service account name when naming the remote kubeconfig Secret.
 ///
-/// For example, SA `bindy-scout` produces kubeconfig Secret `bindy-scout-remote-kubeconfig`.
-pub(crate) const REMOTE_KUBECONFIG_SECRET_SUFFIX: &str = "-remote-kubeconfig";
+/// The default SA `bindy-scout-remote` produces `bindy-scout-remote-kubeconfig`, the
+/// Secret the static `deploy/scout/secrets-reader-rbac.yaml` lets the scout read.
+pub(crate) const REMOTE_KUBECONFIG_SECRET_SUFFIX: &str = "-kubeconfig";
 
 /// `app.kubernetes.io/component` label value for all resources created by `bootstrap mc`.
 const MC_COMPONENT_LABEL: &str = "scout-remote";
@@ -482,8 +487,8 @@ fn run_scout_dry_run(namespace: &str, opts: &ScoutDeploymentOptions<'_>) -> Resu
 }
 
 fn print_resource<T: serde::Serialize>(label: &str, resource: &T) -> Result<()> {
-    let yaml =
-        serde_yaml::to_string(resource).with_context(|| format!("Failed to serialize {label}"))?;
+    let yaml = bindy_api::yaml::to_string(resource)
+        .with_context(|| format!("Failed to serialize {label}"))?;
     println!("---\n# {label}");
     print!("{yaml}");
     Ok(())
@@ -990,12 +995,12 @@ pub(crate) fn build_deployment(
 
 /// Parse a ClusterRole from embedded YAML.
 pub(crate) fn parse_cluster_role(yaml: &str) -> Result<ClusterRole> {
-    serde_yaml::from_str(yaml).context("Failed to parse ClusterRole YAML")
+    serde_saphyr::from_str(yaml).context("Failed to parse ClusterRole YAML")
 }
 
 /// Parse a ClusterRoleBinding from embedded YAML.
 pub(crate) fn parse_cluster_role_binding(yaml: &str) -> Result<ClusterRoleBinding> {
-    serde_yaml::from_str(yaml).context("Failed to parse ClusterRoleBinding YAML")
+    serde_saphyr::from_str(yaml).context("Failed to parse ClusterRoleBinding YAML")
 }
 
 /// Build the TokenReview ClusterRoleBinding for the requested install namespace.
@@ -1471,17 +1476,19 @@ struct BootstrapUser {
 /// Run this command against the **queen-ship** (bindy operator) cluster. It creates a
 /// `ServiceAccount`, namespaced `Role` (ARecord CRUD + DNSZone read), and `RoleBinding`
 /// on the queen-ship, generates a kubeconfig for that service account, and writes a
-/// `bindy.firestoned.io/remote-kubeconfig` Secret manifest to **stdout**.
+/// `bindy.firestoned.io/remote-kubeconfig` Secret manifest to `output`: by default a
+/// file readable only by its owner (mode 0600), because the Secret carries the
+/// ServiceAccount token. Stdout is used only when the caller asks for it (`-`).
 ///
-/// Apply the stdout output to the child (workload) cluster where scout runs:
+/// Apply the file to the child (workload) cluster where scout runs, then delete it:
 ///
 /// ```text
-/// bindy bootstrap mc | kubectl --context=<child-cluster> apply -f -
+/// kubectl --context=<child-cluster> apply -f <service-account>-kubeconfig.yaml
 /// ```
 ///
 /// Then configure the scout Deployment with:
 /// ```text
-/// BINDY_SCOUT_REMOTE_SECRET=<service-account>-remote-kubeconfig
+/// BINDY_SCOUT_REMOTE_SECRET=<service-account>-kubeconfig
 /// ```
 ///
 /// # Arguments
@@ -1493,15 +1500,18 @@ struct BootstrapUser {
 /// * `allow_insecure` - Opt in to emitting `insecure-skip-tls-verify: true` when the
 ///   KUBECONFIG lacks `certificate-authority-data`. Defaults to `false`; the command
 ///   refuses rather than silently distributing MITM-susceptible kubeconfigs.
+/// * `output` - The file the Secret manifest is written to ([`mc_output_path`]).
 ///
 /// # Errors
-/// Returns error if KUBECONFIG is unreadable, the Kubernetes API calls fail, or a
-/// CA bundle is missing and `allow_insecure` is `false`.
+/// Returns error if KUBECONFIG is unreadable, the Kubernetes API calls fail, a
+/// CA bundle is missing and `allow_insecure` is `false`, or the output file
+/// cannot be written.
 pub async fn run_bootstrap_multi_cluster(
     namespace: &str,
     service_account: &str,
     server_override: Option<&str>,
     allow_insecure: bool,
+    output: &std::path::Path,
 ) -> Result<()> {
     let client = Client::try_default()
         .await
@@ -1534,16 +1544,77 @@ pub async fn run_bootstrap_multi_cluster(
     let secret = build_mc_kubeconfig_secret(namespace, service_account, &kubeconfig_yaml);
     let secret_name = format!("{service_account}{REMOTE_KUBECONFIG_SECRET_SUFFIX}");
     let secret_yaml =
-        serde_yaml::to_string(&secret).context("Failed to serialize kubeconfig Secret")?;
+        bindy_api::yaml::to_string(&secret).context("Failed to serialize kubeconfig Secret")?;
 
-    println!("---");
-    print!("{secret_yaml}");
-
-    eprintln!("\n✓ Apply the above Secret to each child cluster:");
-    eprintln!("    bindy bootstrap mc | kubectl --context=<child-cluster> apply -f -");
+    write_private_file(output, &format!("---\n{secret_yaml}"))?;
+    let shown = output.display();
+    eprintln!("\n✓ Wrote the kubeconfig Secret to {shown} (mode 0600; it holds the token)");
+    eprintln!("Apply it to each child cluster, then delete it:");
+    eprintln!("    kubectl --context=<child-cluster> apply -f {shown}");
+    eprintln!("    rm {shown}");
     eprintln!("Then set BINDY_SCOUT_REMOTE_SECRET={secret_name} on the scout Deployment.");
 
     Ok(())
+}
+
+/// The `--output` value that conventionally means standard output, refused here.
+const MC_OUTPUT_STDOUT: &str = "-";
+
+/// Owner read/write only: the kubeconfig Secret file carries a token.
+const PRIVATE_FILE_MODE: u32 = 0o600;
+
+/// Resolve `--output` for `bindy bootstrap mc` to the file to write.
+///
+/// # Arguments
+/// * `output` - The `--output` value, if given
+/// * `service_account` - The ServiceAccount the kubeconfig is for
+///
+/// # Returns
+/// The given path, or by default `<service-account>-kubeconfig.yaml` in the
+/// current directory.
+///
+/// # Errors
+/// Returns an error for `-`: the Secret carries the ServiceAccount token and
+/// is never printed, so it cannot end up in scrollback, a CI log or a session
+/// recording.
+pub fn mc_output_path(output: Option<&str>, service_account: &str) -> Result<std::path::PathBuf> {
+    match output {
+        Some(MC_OUTPUT_STDOUT) => Err(anyhow!(
+            "refusing to print the kubeconfig Secret: it carries the ServiceAccount token; \
+             pass --output <file> (written with mode 0600)"
+        )),
+        Some(path) => Ok(std::path::PathBuf::from(path)),
+        None => Ok(std::path::PathBuf::from(format!(
+            "{service_account}{REMOTE_KUBECONFIG_SECRET_SUFFIX}.yaml"
+        ))),
+    }
+}
+
+/// Write `contents` to `path` so only its owner can read it (mode 0600).
+///
+/// A new file is created 0600. An existing file is first restricted to 0600
+/// and then truncated, so a token is never written into a file that others
+/// can read.
+///
+/// # Errors
+/// Returns an error if the file cannot be opened, restricted or written.
+pub(crate) fn write_private_file(path: &std::path::Path, contents: &str) -> Result<()> {
+    use std::io::Write as _;
+    use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(PRIVATE_FILE_MODE)
+        .open(path)
+        .with_context(|| format!("Failed to open {}", path.display()))?;
+    file.set_permissions(std::fs::Permissions::from_mode(PRIVATE_FILE_MODE))
+        .with_context(|| format!("Failed to restrict {} to mode 0600", path.display()))?;
+    file.set_len(0)
+        .with_context(|| format!("Failed to truncate {}", path.display()))?;
+    file.write_all(contents.as_bytes())
+        .with_context(|| format!("Failed to write {}", path.display()))
 }
 
 /// Build a kubeconfig YAML string for the given service account token.
@@ -1612,7 +1683,7 @@ pub(crate) fn build_kubeconfig_yaml(
             },
         }],
     };
-    serde_yaml::to_string(&cfg).context("Failed to serialize kubeconfig YAML")
+    bindy_api::yaml::to_string(&cfg).context("Failed to serialize kubeconfig YAML")
 }
 
 /// Build the multi-cluster ServiceAccount on the queen-ship cluster.

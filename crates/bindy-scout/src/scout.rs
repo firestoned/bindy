@@ -1277,13 +1277,23 @@ pub(crate) fn is_being_deleted(ingress: &Ingress) -> bool {
 /// Selects on `managed-by=scout`, `source-cluster`, `source-namespace`, and
 /// `source-name` to precisely target only the records owned by this Ingress.
 pub fn arecord_label_selector(cluster: &str, namespace: &str, ingress_name: &str) -> String {
+    source_arecord_label_selector(cluster, namespace, ingress_name)
+}
+
+/// The label selector matching every ARecord Scout created for one source
+/// object, whatever its kind: `managed-by=scout,source-cluster=<cluster>,
+/// source-namespace=<namespace>,source-name=<name>`.
+fn source_arecord_label_selector(cluster: &str, namespace: &str, source_name: &str) -> String {
     format!(
-        "{}={},{cluster_key}={cluster},{ns_key}={namespace},{name_key}={ingress_name}",
+        "{}={},{}={},{}={},{}={}",
         LABEL_MANAGED_BY,
         LABEL_MANAGED_BY_SCOUT,
-        cluster_key = LABEL_SOURCE_CLUSTER,
-        ns_key = LABEL_SOURCE_NAMESPACE,
-        name_key = LABEL_SOURCE_NAME,
+        LABEL_SOURCE_CLUSTER,
+        cluster,
+        LABEL_SOURCE_NAMESPACE,
+        namespace,
+        LABEL_SOURCE_NAME,
+        source_name,
     )
 }
 
@@ -1748,14 +1758,7 @@ pub(crate) fn service_arecord_label_selector(
     namespace: &str,
     service_name: &str,
 ) -> String {
-    format!(
-        "{}={},{cluster_key}={cluster},{ns_key}={namespace},{name_key}={service_name}",
-        LABEL_MANAGED_BY,
-        LABEL_MANAGED_BY_SCOUT,
-        cluster_key = LABEL_SOURCE_CLUSTER,
-        ns_key = LABEL_SOURCE_NAMESPACE,
-        name_key = LABEL_SOURCE_NAME,
-    )
+    source_arecord_label_selector(cluster, namespace, service_name)
 }
 
 /// Builds a label selector string matching ARecords for the given Service that
@@ -1892,14 +1895,7 @@ pub(crate) fn httproute_arecord_label_selector(
     namespace: &str,
     route_name: &str,
 ) -> String {
-    format!(
-        "{}={},{cluster_key}={cluster},{ns_key}={namespace},{name_key}={route_name}",
-        LABEL_MANAGED_BY,
-        LABEL_MANAGED_BY_SCOUT,
-        cluster_key = LABEL_SOURCE_CLUSTER,
-        ns_key = LABEL_SOURCE_NAMESPACE,
-        name_key = LABEL_SOURCE_NAME,
-    )
+    source_arecord_label_selector(cluster, namespace, route_name)
 }
 
 /// Builds a Kubernetes label selector matching all ARecords created by Scout
@@ -1909,14 +1905,7 @@ pub(crate) fn tlsroute_arecord_label_selector(
     namespace: &str,
     route_name: &str,
 ) -> String {
-    format!(
-        "{}={},{cluster_key}={cluster},{ns_key}={namespace},{name_key}={route_name}",
-        LABEL_MANAGED_BY,
-        LABEL_MANAGED_BY_SCOUT,
-        cluster_key = LABEL_SOURCE_CLUSTER,
-        ns_key = LABEL_SOURCE_NAMESPACE,
-        name_key = LABEL_SOURCE_NAME,
-    )
+    source_arecord_label_selector(cluster, namespace, route_name)
 }
 
 /// Derives the ARecord CR name for a TCPRoute.
@@ -1938,14 +1927,7 @@ pub(crate) fn tcproute_arecord_label_selector(
     namespace: &str,
     route_name: &str,
 ) -> String {
-    format!(
-        "{}={},{cluster_key}={cluster},{ns_key}={namespace},{name_key}={route_name}",
-        LABEL_MANAGED_BY,
-        LABEL_MANAGED_BY_SCOUT,
-        cluster_key = LABEL_SOURCE_CLUSTER,
-        ns_key = LABEL_SOURCE_NAMESPACE,
-        name_key = LABEL_SOURCE_NAME,
-    )
+    source_arecord_label_selector(cluster, namespace, route_name)
 }
 
 /// Builds a label selector string matching ARecords for the given HTTPRoute that

@@ -1,3 +1,32 @@
+## [2026-10-12 16:00] - `bindy bootstrap mc` writes the kubeconfig Secret to a private file
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/bindy-bootstrap/src/bootstrap.rs`, `crates/bindy/src/cli.rs`: `bindy bootstrap mc` writes the `bindy.firestoned.io/remote-kubeconfig` Secret, which carries the remote ServiceAccount token, to a file instead of stdout.
+  - **Path:** set with `--output`/`-o`; the default is `<service-account>-kubeconfig.yaml`.
+- `crates/bindy-bootstrap/src/bootstrap.rs`: the generated Secret is named `<service-account>-kubeconfig` (was `-remote-kubeconfig`).
+  - The default service account `bindy-scout-remote` now produces `bindy-scout-remote-kubeconfig`, the Secret that `deploy/scout/secrets-reader-rbac.yaml` and the docs name. Before, it produced `bindy-scout-remote-remote-kubeconfig`, so a scout set up with the defaults and the static RBAC was forbidden its own kubeconfig.
+  - Changing the default service account to `bindy-scout` was rejected. It would take over the queen-ship scout's own ServiceAccount, and `--revoke` would then delete it.
+  - New test `rbac_drift::default_mc_secret_is_the_one_the_static_rbac_allows` pins the pairing.
+  - **Permissions:** the file is created with mode `0600`. An existing file is restricted to `0600` before it is overwritten.
+  - **Stdout:** never. `--output -` is refused, because the Secret carries the token.
+  - **Output:** status messages stay on stderr. They now say to apply the file and then delete it.
+- `crates/bindy-controller-cluster/Cargo.toml`: removed the unused `tokio` dependency (`cargo-machete`). Its last users were the empty `#[tokio::test]` placeholders removed earlier in this branch.
+- Docs:
+  - `docs/src/guide/scout.md` and `docs/src/installation/scout.md` use the file flow.
+  - `docs/src/development/testing-guide.md` and the `kind-create-scout` hint in the `Makefile` write a file, apply it, and delete it.
+  - `docs/src/security/threat-model.md` v1.23 adds M-61.
+
+### Why
+Printing the token to stdout left it in terminal scrollback, CI logs and session recordings. CodeQL flagged it as `rust/cleartext-logging`, and the alert is closed by this change rather than dismissed.
+
+### Impact
+- [x] Breaking change: `bindy bootstrap mc | kubectl apply -f -` now writes a file and pipes nothing. Apply the file with `kubectl apply -f <file>`, then delete it. The Secret is renamed `<service-account>-kubeconfig` (see the migration guide).
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-12 12:00] - Remove dead code across the workspace
 
 **Author:** Erick Bourgeois
@@ -39,6 +68,23 @@
 - `crates/bindy/src/cli.rs`: one exhaustive subcommand match in `main`. The `unreachable!` arm is gone, and CLI behaviour is unchanged.
 - `crates/bindy-scout`, `crates/bindy-bootstrap`: about 145 internal items are now `pub(crate)`. The public API is what `crates/bindy` and the scout integration test use.
 - Docs no longer name removed code: `error-handling.md`, `architecture-diagrams.md` (the record flow shows the RFC 2136 update, not a zone reload), `reconciler-hierarchy.md`, `status.md` (a reason the operator actually sets), the `add-new-crd` skill, and `.claude/CLAUDE.md`.
+
+### Dependencies
+- `serde_yaml` 0.9 is replaced by `serde-saphyr` 1.3 in `bindy-api` (crdgen), `bindy-bootstrap`, and `bindy-bind9` (tests only).
+  - **Why:** `serde_yaml` is archived, and its `unsafe-libyaml` backend is unmaintained (RUSTSEC-2024-0449), which now fails `cargo audit`.
+  - **About `serde-saphyr`:** written in safe Rust, it is one of the replacements the advisory recommends. It is maintained (last commit 2026-10-11) and licensed MIT/Apache-2.0. `kube-client` 4.2 already depends on it.
+  - **Rejected:** `serde_norway` and `serde_yaml_ng` still use a c2rust libyaml and have had no commits in six months.
+  - **CRD output:** the 13 CRDs crdgen generates are semantically identical before and after.
+  - **One YAML style:** crdgen and bootstrap both serialize through the new `bindy_api::yaml::to_string`.
+    - Long strings stay on one line: `folded_wrap_chars` is set to `usize::MAX`, so there is no `>-` folding.
+    - No line ends in whitespace. The emitter's indentation on blank lines inside block scalars is stripped, so 0 lines end in spaces, the same as `serde_yaml` (1,520 did with the defaults).
+    - `deploy/operator/crds/*.crd.yaml` are regenerated in this style. They were already stale: their descriptions predated punctuation edits in `crd.rs`.
+      - crdgen is idempotent.
+      - The schemas are unchanged: every changed line is a `description`.
+      - All 13 CRDs pass `kubectl create --dry-run=server` and reach `Established` on a throwaway kind cluster.
+    - Two differences remain, because no `serde-saphyr` option controls them: strings that need quotes use `"double"` quotes instead of `'single'`, and multi-line strings with tabs are `|-` blocks instead of one escaped line.
+  - **Checks:** `cargo audit` and `cargo deny` (bans, licenses, sources) are clean.
+- `crates/bindy-scout/src/scout.rs`: the five per-kind ARecord label-selector builders now share one `source_arecord_label_selector`. This clears six CodeQL `rust/unused-variable` false positives on inline `format!` captures.
 
 ### Why
 The review behind PR 1 found about 3,000 lines of code with no production caller, plus tests that tested nothing. Removing them makes the remaining code easier to follow before the duplication work.
