@@ -1413,3 +1413,51 @@ mod dnssec_shared_keys_schema_tests {
         }
     }
 }
+
+/// `InstanceReference` compares and hashes on its identity fields only, so
+/// the `Hash`/`Eq` contract holds when `last_reconciled_at` differs.
+#[cfg(test)]
+mod instance_reference_hash_tests {
+    use crate::crd::InstanceReference;
+    use std::collections::hash_map::DefaultHasher;
+    use std::collections::HashSet;
+    use std::hash::{Hash, Hasher};
+
+    fn instance_ref(last_reconciled_at: Option<&str>) -> InstanceReference {
+        InstanceReference {
+            api_version: "bindy.firestoned.io/v1beta1".to_string(),
+            kind: "Bind9Instance".to_string(),
+            name: "primary-0".to_string(),
+            namespace: "dns-system".to_string(),
+            last_reconciled_at: last_reconciled_at.map(str::to_string),
+        }
+    }
+
+    fn hash_of(value: &InstanceReference) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    #[test]
+    fn test_refs_differing_only_in_last_reconciled_at_are_equal_and_hash_equally() {
+        let reconciled = instance_ref(Some("2026-10-11T00:00:00Z"));
+        let unreconciled = instance_ref(None);
+
+        assert_eq!(reconciled, unreconciled);
+        assert_eq!(hash_of(&reconciled), hash_of(&unreconciled));
+    }
+
+    #[test]
+    fn test_hash_set_deduplicates_refs_differing_only_in_last_reconciled_at() {
+        let set: HashSet<InstanceReference> = [
+            instance_ref(Some("2026-10-11T00:00:00Z")),
+            instance_ref(Some("2026-10-11T01:00:00Z")),
+            instance_ref(None),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(set.len(), 1);
+    }
+}

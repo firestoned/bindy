@@ -92,6 +92,9 @@ mod tests {
             metadata: ObjectMeta {
                 name: Some(name.into()),
                 namespace: Some("test-ns".into()),
+                // Read from the API server, an instance always has a UID;
+                // the builders refuse to own anything without one.
+                uid: Some("test-instance-uid".into()),
                 ..Default::default()
             },
             spec: Bind9InstanceSpec {
@@ -206,7 +209,8 @@ mod tests {
             None,
             None,
             "test-instance-rndc-key",
-        );
+        )
+        .expect("build_deployment");
 
         let labels = deployment.metadata.labels.as_ref().unwrap();
         assert_eq!(
@@ -233,7 +237,8 @@ mod tests {
             None,
             None,
             "test-primary-rndc-key",
-        );
+        )
+        .expect("build_deployment");
 
         // Check deployment metadata labels
         let deployment_labels = deployment.metadata.labels.as_ref().unwrap();
@@ -292,7 +297,8 @@ mod tests {
             None,
             None,
             "test-instance-rndc-key",
-        );
+        )
+        .expect("build_deployment");
 
         let labels = deployment.metadata.labels.as_ref().unwrap();
         assert!(
@@ -312,7 +318,14 @@ mod tests {
         );
         instance.metadata.labels = Some(instance_labels);
 
-        let service = build_service("test-instance", "test-ns", &instance, None);
+        let service = build_service(
+            "test-instance",
+            "test-ns",
+            &instance,
+            instance.spec.bindcar_config.as_ref(),
+            None,
+        )
+        .expect("build_service");
 
         let labels = service.metadata.labels.as_ref().unwrap();
         assert_eq!(
@@ -345,7 +358,8 @@ mod tests {
     fn test_build_deployment() {
         let instance = create_test_instance("test");
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
 
         assert_eq!(deployment.metadata.name.as_deref(), Some("test"));
         assert_eq!(deployment.metadata.namespace.as_deref(), Some("test-ns"));
@@ -375,7 +389,14 @@ mod tests {
     #[test]
     fn test_build_service() {
         let instance = create_test_instance("test");
-        let service = build_service("test", "test-ns", &instance, None);
+        let service = build_service(
+            "test",
+            "test-ns",
+            &instance,
+            instance.spec.bindcar_config.as_ref(),
+            None,
+        )
+        .expect("build_service");
 
         assert_eq!(service.metadata.name.as_deref(), Some("test"));
         assert_eq!(service.metadata.namespace.as_deref(), Some("test-ns"));
@@ -398,7 +419,8 @@ mod tests {
     fn test_bind9_container_has_prestop_drain_hook() {
         let instance = create_test_instance("test");
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let container = &pod_spec.containers[0];
         assert_eq!(container.name, "bind9");
@@ -437,7 +459,8 @@ mod tests {
     fn test_pod_spec_termination_grace_period_outlasts_prestop() {
         let instance = create_test_instance("test");
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
 
         let grace = pod_spec
@@ -457,7 +480,8 @@ mod tests {
     fn test_pod_spec_has_zones_loaded_readiness_gate() {
         let instance = create_test_instance("test");
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
 
         let gates: Vec<String> = pod_spec
@@ -485,7 +509,8 @@ mod tests {
             None,
             None,
             "test-rndc-key",
-        );
+        )
+        .expect("build_deployment");
         let gates = deployment
             .spec
             .unwrap()
@@ -504,7 +529,8 @@ mod tests {
     /// ~115s window where the Pods were Ready but served no zones.
     #[test]
     fn test_pdb_allows_only_one_primary_down_at_a_time() {
-        let pdb = build_pod_disruption_budget("prod-dns", "dns-ns", ServerRole::Primary, None);
+        let pdb = build_pod_disruption_budget("prod-dns", "dns-ns", ServerRole::Primary, None)
+            .expect("build_pod_disruption_budget");
 
         assert_eq!(pdb.metadata.name.as_deref(), Some("prod-dns-primary-pdb"));
         assert_eq!(pdb.metadata.namespace.as_deref(), Some("dns-ns"));
@@ -540,7 +566,8 @@ mod tests {
     #[test]
     fn test_pdb_is_built_per_role() {
         let secondary =
-            build_pod_disruption_budget("prod-dns", "dns-ns", ServerRole::Secondary, None);
+            build_pod_disruption_budget("prod-dns", "dns-ns", ServerRole::Secondary, None)
+                .expect("build_pod_disruption_budget");
         assert_eq!(
             secondary.metadata.name.as_deref(),
             Some("prod-dns-secondary-pdb")
@@ -564,7 +591,8 @@ mod tests {
     fn test_pdb_has_owner_reference_to_cluster() {
         let cluster = create_test_cluster("prod-dns", "dns-ns");
         let pdb =
-            build_pod_disruption_budget("prod-dns", "dns-ns", ServerRole::Primary, Some(&cluster));
+            build_pod_disruption_budget("prod-dns", "dns-ns", ServerRole::Primary, Some(&cluster))
+                .expect("build_pod_disruption_budget");
 
         let owners = pdb
             .metadata
@@ -704,7 +732,8 @@ mod tests {
             Some(&cluster),
             None,
             "test-rndc-key",
-        );
+        )
+        .expect("build_deployment");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let sidecar = pod_spec
             .containers
@@ -737,7 +766,8 @@ mod tests {
     fn test_sidecar_has_readiness_probe_on_ready_endpoint() {
         let instance = create_test_instance("probe");
         let deployment =
-            build_deployment("probe", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("probe", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let sidecar = pod_spec
             .containers
@@ -782,7 +812,8 @@ mod tests {
             None,
             None,
             "test-rndc-key",
-        );
+        )
+        .expect("build_deployment");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let sidecar = pod_spec
             .containers
@@ -806,7 +837,8 @@ mod tests {
     fn test_build_pod_spec() {
         let instance = create_test_instance("test");
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
 
         // Verify volumes
@@ -850,7 +882,8 @@ mod tests {
         instance.spec.replicas = Some(5);
 
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let spec = deployment.spec.unwrap();
 
         assert_eq!(spec.replicas, Some(5));
@@ -862,7 +895,8 @@ mod tests {
         instance.spec.version = Some("9.20".into());
 
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let container = &pod_spec.containers[0];
 
@@ -876,7 +910,14 @@ mod tests {
     fn test_build_service_ports() {
         let instance = create_test_instance("test");
 
-        let service = build_service("test", "test-ns", &instance, None);
+        let service = build_service(
+            "test",
+            "test-ns",
+            &instance,
+            instance.spec.bindcar_config.as_ref(),
+            None,
+        )
+        .expect("build_service");
         let spec = service.spec.unwrap();
         let ports = spec.ports.unwrap();
 
@@ -953,7 +994,8 @@ mod tests {
     fn test_deployment_selector_matches_labels() {
         let instance = create_test_instance("test");
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
 
         let spec = deployment.spec.unwrap();
         let selector_labels = spec.selector.match_labels.unwrap();
@@ -969,7 +1011,14 @@ mod tests {
     fn test_service_selector_matches_deployment() {
         let instance = create_test_instance("test");
 
-        let service = build_service("test", "test-ns", &instance, None);
+        let service = build_service(
+            "test",
+            "test-ns",
+            &instance,
+            instance.spec.bindcar_config.as_ref(),
+            None,
+        )
+        .expect("build_service");
         let deployment_labels = build_labels("test");
 
         let svc_selector = service.spec.unwrap().selector.unwrap();
@@ -1047,7 +1096,8 @@ mod tests {
             None,
             None,
             &format!("{name}-rndc-key"),
-        );
+        )
+        .expect("build_deployment");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let volumes = pod_spec.volumes.as_ref().expect("pod must have volumes");
 
@@ -1316,7 +1366,8 @@ mod tests {
         });
 
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         assert_eq!(
@@ -1338,7 +1389,8 @@ mod tests {
         });
 
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
 
         let secrets = pod_spec.image_pull_secrets.unwrap();
@@ -1353,7 +1405,8 @@ mod tests {
         instance.spec.replicas = None;
 
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
 
         // Should default to 1 replica
         assert_eq!(deployment.spec.unwrap().replicas, Some(1));
@@ -1365,7 +1418,8 @@ mod tests {
         instance.spec.replicas = Some(0);
 
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
 
         assert_eq!(deployment.spec.unwrap().replicas, Some(0));
     }
@@ -1385,7 +1439,8 @@ mod tests {
         }]);
 
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let volumes = deployment
             .spec
             .unwrap()
@@ -1415,7 +1470,8 @@ mod tests {
         }]);
 
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let mounts = pod_spec.containers[0].volume_mounts.as_ref().unwrap();
 
@@ -1428,7 +1484,8 @@ mod tests {
     fn test_deployment_container_has_correct_command() {
         let instance = create_test_instance("test");
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         // Verify named command with correct flags
@@ -1443,7 +1500,8 @@ mod tests {
     fn test_deployment_has_tz_environment_variable() {
         let instance = create_test_instance("test");
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         let env = container.env.as_ref().unwrap();
@@ -1457,7 +1515,8 @@ mod tests {
 
         let instance = create_test_instance("test");
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         let env = container.env.as_ref().unwrap();
@@ -1469,7 +1528,8 @@ mod tests {
     fn test_deployment_probe_configuration() {
         let instance = create_test_instance("test");
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         // Liveness probe
@@ -1493,7 +1553,14 @@ mod tests {
     fn test_service_has_correct_type() {
         let instance = create_test_instance("test");
 
-        let service = build_service("test", "test-ns", &instance, None);
+        let service = build_service(
+            "test",
+            "test-ns",
+            &instance,
+            instance.spec.bindcar_config.as_ref(),
+            None,
+        )
+        .expect("build_service");
 
         assert_eq!(service.spec.unwrap().type_.as_deref(), Some("ClusterIP"));
     }
@@ -1502,7 +1569,14 @@ mod tests {
     fn test_service_port_target_ports() {
         let instance = create_test_instance("test");
 
-        let service = build_service("test", "test-ns", &instance, None);
+        let service = build_service(
+            "test",
+            "test-ns",
+            &instance,
+            instance.spec.bindcar_config.as_ref(),
+            None,
+        )
+        .expect("build_service");
         let ports = service.spec.unwrap().ports.unwrap();
 
         for port in &ports {
@@ -1566,7 +1640,8 @@ mod tests {
             None,
             None,
             "test-rndc-key",
-        );
+        )
+        .expect("build_deployment");
 
         assert_eq!(
             deployment.metadata.namespace.as_deref(),
@@ -1577,7 +1652,14 @@ mod tests {
     #[test]
     fn test_service_with_custom_namespace() {
         let instance = create_test_instance("test");
-        let service = build_service("test", "custom-namespace", &instance, None);
+        let service = build_service(
+            "test",
+            "custom-namespace",
+            &instance,
+            instance.spec.bindcar_config.as_ref(),
+            None,
+        )
+        .expect("build_service");
 
         assert_eq!(
             service.metadata.namespace.as_deref(),
@@ -1599,7 +1681,8 @@ mod tests {
         instance.spec.version = None;
 
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         // Should default to 9.18
@@ -1622,7 +1705,8 @@ mod tests {
         });
 
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         // Custom image should override version
@@ -1642,7 +1726,8 @@ mod tests {
         });
 
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         // Should use version from spec
@@ -1657,7 +1742,8 @@ mod tests {
     fn test_deployment_default_image_pull_policy() {
         let instance = create_test_instance("test");
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let container = &deployment.spec.unwrap().template.spec.unwrap().containers[0];
 
         assert_eq!(container.image_pull_policy.as_deref(), Some("IfNotPresent"));
@@ -1673,7 +1759,14 @@ mod tests {
             }),
             annotations: None,
         };
-        let service = build_service("test", "test-ns", &instance, Some(&custom_config));
+        let service = build_service(
+            "test",
+            "test-ns",
+            &instance,
+            instance.spec.bindcar_config.as_ref(),
+            Some(&custom_config),
+        )
+        .expect("build_service");
 
         assert_eq!(service.metadata.name.as_deref(), Some("test"));
         assert_eq!(service.spec.unwrap().type_.as_deref(), Some("NodePort"));
@@ -1690,7 +1783,14 @@ mod tests {
             }),
             annotations: None,
         };
-        let service = build_service("test", "test-ns", &instance, Some(&custom_config));
+        let service = build_service(
+            "test",
+            "test-ns",
+            &instance,
+            instance.spec.bindcar_config.as_ref(),
+            Some(&custom_config),
+        )
+        .expect("build_service");
 
         let spec = service.spec.unwrap();
         assert_eq!(spec.type_.as_deref(), Some("LoadBalancer"));
@@ -1707,7 +1807,14 @@ mod tests {
             }),
             annotations: None,
         };
-        let service = build_service("test", "test-ns", &instance, Some(&custom_config));
+        let service = build_service(
+            "test",
+            "test-ns",
+            &instance,
+            instance.spec.bindcar_config.as_ref(),
+            Some(&custom_config),
+        )
+        .expect("build_service");
 
         let spec = service.spec.unwrap();
         assert_eq!(spec.session_affinity.as_deref(), Some("ClientIP"));
@@ -1718,7 +1825,14 @@ mod tests {
     #[test]
     fn test_build_service_defaults_to_clusterip() {
         let instance = create_test_instance("test");
-        let service_none = build_service("test", "test-ns", &instance, None);
+        let service_none = build_service(
+            "test",
+            "test-ns",
+            &instance,
+            instance.spec.bindcar_config.as_ref(),
+            None,
+        )
+        .expect("build_service");
         let custom_config = crate::crd::ServiceConfig {
             spec: Some(ServiceSpec {
                 type_: Some("ClusterIP".into()),
@@ -1726,7 +1840,14 @@ mod tests {
             }),
             annotations: None,
         };
-        let service_clusterip = build_service("test", "test-ns", &instance, Some(&custom_config));
+        let service_clusterip = build_service(
+            "test",
+            "test-ns",
+            &instance,
+            instance.spec.bindcar_config.as_ref(),
+            Some(&custom_config),
+        )
+        .expect("build_service");
 
         assert_eq!(
             service_none.spec.as_ref().unwrap().type_,
@@ -1745,7 +1866,14 @@ mod tests {
             }),
             annotations: None,
         };
-        let service = build_service("test", "test-ns", &instance, Some(&custom_config));
+        let service = build_service(
+            "test",
+            "test-ns",
+            &instance,
+            instance.spec.bindcar_config.as_ref(),
+            Some(&custom_config),
+        )
+        .expect("build_service");
 
         let spec = service.spec.unwrap();
         assert_eq!(spec.type_.as_deref(), Some("NodePort"));
@@ -1776,7 +1904,14 @@ mod tests {
             }),
             annotations: Some(annotations.clone()),
         };
-        let service = build_service("test", "test-ns", &instance, Some(&custom_config));
+        let service = build_service(
+            "test",
+            "test-ns",
+            &instance,
+            instance.spec.bindcar_config.as_ref(),
+            Some(&custom_config),
+        )
+        .expect("build_service");
 
         // Verify annotations are applied
         let svc_annotations = service.metadata.annotations.as_ref().unwrap();
@@ -1803,7 +1938,8 @@ mod tests {
             None,
             None,
             "rndc-test-rndc-key",
-        );
+        )
+        .expect("build_deployment");
 
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let container = &pod_spec.containers[0];
@@ -1851,7 +1987,8 @@ mod tests {
             None,
             None,
             "rndc-test-rndc-key",
-        );
+        )
+        .expect("build_deployment");
 
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let container = &pod_spec.containers[0];
@@ -1877,7 +2014,8 @@ mod tests {
             None,
             None,
             "rndc-test-rndc-key",
-        );
+        )
+        .expect("build_deployment");
 
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let volumes = pod_spec.volumes.unwrap();
@@ -1913,7 +2051,8 @@ mod tests {
             None,
             None,
             "user-managed-rndc-secret",
-        );
+        )
+        .expect("build_deployment");
 
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
 
@@ -2495,7 +2634,14 @@ mod tests {
         // Test default API port (8080) when no bindcar_config is specified
         let instance = create_test_instance("test");
 
-        let service = build_service("test", "test-ns", &instance, None);
+        let service = build_service(
+            "test",
+            "test-ns",
+            &instance,
+            instance.spec.bindcar_config.as_ref(),
+            None,
+        )
+        .expect("build_service");
         let ports = service.spec.unwrap().ports.unwrap();
 
         let http_port = ports
@@ -2530,7 +2676,14 @@ mod tests {
             tls: None,
         });
 
-        let service = build_service("test", "test-ns", &instance, None);
+        let service = build_service(
+            "test",
+            "test-ns",
+            &instance,
+            instance.spec.bindcar_config.as_ref(),
+            None,
+        )
+        .expect("build_service");
         let ports = service.spec.unwrap().ports.unwrap();
 
         let http_port = ports
@@ -2579,7 +2732,14 @@ mod tests {
             tls: None,
         });
 
-        let service = build_service("test", "test-ns", &instance, None);
+        let service = build_service(
+            "test",
+            "test-ns",
+            &instance,
+            instance.spec.bindcar_config.as_ref(),
+            None,
+        )
+        .expect("build_service");
         let spec = service.spec.unwrap();
 
         // Verify service type was overridden
@@ -2606,7 +2766,8 @@ mod tests {
         let instance = create_test_instance("test");
 
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let containers = pod_spec.containers;
 
@@ -2649,7 +2810,8 @@ mod tests {
         let instance = create_test_instance("test");
 
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let containers = pod_spec.containers;
 
@@ -2701,7 +2863,8 @@ mod tests {
         // under PSA `restricted`).
         let instance = create_test_instance("test");
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let named = pod_spec
             .containers
@@ -2737,7 +2900,8 @@ mod tests {
         // seccomp, non-root.
         let instance = create_test_instance("test");
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let api = pod_spec
             .containers
@@ -2762,7 +2926,8 @@ mod tests {
     fn test_pod_security_context_has_seccomp() {
         let instance = create_test_instance("test");
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let sc = pod_spec.security_context.as_ref().unwrap();
         assert_eq!(sc.run_as_non_root, Some(true));
@@ -2777,7 +2942,8 @@ mod tests {
         // writable /tmp mount.
         let instance = create_test_instance("test");
         let deployment =
-            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key");
+            build_deployment("test", "test-ns", &instance, None, None, "test-rndc-key")
+                .expect("build_deployment");
         let pod_spec = deployment.spec.unwrap().template.spec.unwrap();
         let api = pod_spec
             .containers
@@ -3503,7 +3669,8 @@ mod tests {
     fn test_deployment_with_shared_keys_runs_the_init_container_first() {
         let mut instance = create_test_instance("shared-keys");
         instance.spec.config = Some(shared_keys_config(None, None));
-        let deployment = build_deployment("shared-keys", "test-ns", &instance, None, None, "rndc");
+        let deployment = build_deployment("shared-keys", "test-ns", &instance, None, None, "rndc")
+            .expect("build_deployment");
         let pod = deployment
             .spec
             .as_ref()
@@ -3540,7 +3707,8 @@ mod tests {
             None,
             None,
             "rndc",
-        );
+        )
+        .expect("build_deployment");
         assert!(plain
             .spec
             .as_ref()
@@ -3807,7 +3975,8 @@ mod tests {
             None,
             None,
             "test-rndc-key",
-        );
+        )
+        .expect("build_deployment");
 
         let selector = deployment
             .spec
@@ -3913,7 +4082,8 @@ mod tests {
             Some(&cluster),
             None,
             "test-rndc-key",
-        );
+        )
+        .expect("build_deployment");
 
         let constraints = pod_spec_of(&deployment)
             .topology_spread_constraints
@@ -3955,7 +4125,8 @@ mod tests {
             Some(&cluster),
             None,
             "test-rndc-key",
-        );
+        )
+        .expect("build_deployment");
         assert!(pod_spec_of(&deployment)
             .topology_spread_constraints
             .is_none());
@@ -3985,7 +4156,8 @@ mod tests {
             Some(&cluster),
             None,
             "test-rndc-key",
-        );
+        )
+        .expect("build_deployment");
         let pod = pod_spec_of(&deployment);
 
         let constraints = pod.topology_spread_constraints.as_ref().unwrap();
@@ -4022,7 +4194,8 @@ mod tests {
             Some(&cluster),
             None,
             "test-rndc-key",
-        );
+        )
+        .expect("build_deployment");
         assert!(
             pod_spec_of(&deployment)
                 .topology_spread_constraints
@@ -4037,7 +4210,8 @@ mod tests {
         instance.spec.cluster_ref = String::new();
         instance.spec.replicas = Some(3);
 
-        let deployment = build_deployment("solo", "dns", &instance, None, None, "test-rndc-key");
+        let deployment = build_deployment("solo", "dns", &instance, None, None, "test-rndc-key")
+            .expect("build_deployment");
         let constraints = pod_spec_of(&deployment)
             .topology_spread_constraints
             .as_ref()
@@ -4446,6 +4620,251 @@ mod tests {
         assert!(
             env.iter().any(|e| e.name == "HARMLESS"),
             "unreserved user env vars must still pass through"
+        );
+    }
+}
+
+/// Shared child-resource names, owner references and the Service's bindcar
+/// configuration: one source of truth for every writer and reader.
+#[cfg(test)]
+mod shared_names_tests {
+    use crate::bind9_resources::{
+        build_deployment, build_owner_references, build_pod_disruption_budget, build_service,
+        controller_owner_reference, default_rndc_secret_name, instance_configmap_name,
+        resolve_bindcar_config, rndc_secret_name, rndc_secret_name_from_deployment,
+    };
+    use crate::crd::{Bind9Cluster, Bind9Instance, RndcKeyConfig, ServerRole};
+    use k8s_openapi::api::apps::v1::Deployment;
+    use k8s_openapi::apimachinery::pkg::util::intstr::IntOrString;
+
+    const CLUSTER_BINDCAR_PORT: i32 = 9090;
+
+    fn instance(name: &str, cluster_ref: &str, uid: Option<&str>) -> Bind9Instance {
+        let mut metadata = serde_json::json!({ "name": name, "namespace": "dns" });
+        if let Some(uid) = uid {
+            metadata["uid"] = serde_json::json!(uid);
+        }
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "Bind9Instance",
+            "metadata": metadata,
+            "spec": { "clusterRef": cluster_ref, "role": "primary" },
+        }))
+        .expect("test Bind9Instance must deserialize")
+    }
+
+    fn cluster_with(global: serde_json::Value, uid: Option<&str>) -> Bind9Cluster {
+        let mut metadata = serde_json::json!({ "name": "prod", "namespace": "dns" });
+        if let Some(uid) = uid {
+            metadata["uid"] = serde_json::json!(uid);
+        }
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "Bind9Cluster",
+            "metadata": metadata,
+            "spec": { "global": global },
+        }))
+        .expect("test Bind9Cluster must deserialize")
+    }
+
+    fn rndc_config(value: serde_json::Value) -> RndcKeyConfig {
+        serde_json::from_value(value).expect("test RndcKeyConfig must deserialize")
+    }
+
+    fn config_volume_configmap(deployment: &Deployment) -> Option<String> {
+        deployment
+            .spec
+            .as_ref()?
+            .template
+            .spec
+            .as_ref()?
+            .volumes
+            .as_ref()?
+            .iter()
+            .find(|v| v.name == "config")
+            .and_then(|v| v.config_map.as_ref())
+            .map(|cm| cm.name.clone())
+    }
+
+    // ---------------------------------------------------------------- B3
+
+    #[test]
+    fn test_rndc_secret_name_defaults_to_instance_rndc_key() {
+        let inst = instance("primary-0", "", Some("uid-1"));
+        let name = rndc_secret_name(&inst, &RndcKeyConfig::default());
+        assert_eq!(name, "primary-0-rndc-key");
+        assert_eq!(name, default_rndc_secret_name("primary-0"));
+    }
+
+    #[test]
+    fn test_rndc_secret_name_uses_secret_ref() {
+        let inst = instance("primary-0", "", Some("uid-1"));
+        let config = rndc_config(serde_json::json!({
+            "secretRef": { "name": "corp-rndc" },
+            "secret": { "metadata": { "name": "ignored-inline" } },
+        }));
+        assert_eq!(rndc_secret_name(&inst, &config), "corp-rndc");
+    }
+
+    #[test]
+    fn test_rndc_secret_name_uses_inline_secret_name() {
+        let inst = instance("primary-0", "", Some("uid-1"));
+        let config = rndc_config(serde_json::json!({
+            "secret": { "metadata": { "name": "inline-rndc" } },
+        }));
+        assert_eq!(rndc_secret_name(&inst, &config), "inline-rndc");
+    }
+
+    #[test]
+    fn test_rndc_secret_name_from_deployment_reads_mounted_secret() {
+        let inst = instance("primary-0", "", Some("uid-1"));
+        let deployment =
+            build_deployment("primary-0", "dns", &inst, None, None, "corp-rndc").expect("build");
+        assert_eq!(
+            rndc_secret_name_from_deployment(&deployment).as_deref(),
+            Some("corp-rndc")
+        );
+    }
+
+    #[test]
+    fn test_rndc_secret_name_from_deployment_without_volume_is_none() {
+        assert_eq!(
+            rndc_secret_name_from_deployment(&Deployment::default()),
+            None
+        );
+    }
+
+    // ---------------------------------------------------------------- B8
+
+    #[test]
+    fn test_instance_configmap_name_standalone_uses_instance_name() {
+        let inst = instance("solo", "", Some("uid-1"));
+        assert_eq!(instance_configmap_name("solo", &inst), "solo-config");
+    }
+
+    #[test]
+    fn test_instance_configmap_name_with_cluster_ref_uses_cluster_name() {
+        // A user-created instance (no managed-by label) with a clusterRef
+        // mounts the cluster's shared ConfigMap, like a managed one.
+        let inst = instance("user-made", "prod", Some("uid-1"));
+        assert_eq!(instance_configmap_name("user-made", &inst), "prod-config");
+    }
+
+    #[test]
+    fn test_deployment_mounts_instance_configmap_name() {
+        for inst in [
+            instance("solo", "", Some("uid-1")),
+            instance("user-made", "prod", Some("uid-2")),
+        ] {
+            let name = inst.metadata.name.clone().expect("name");
+            let deployment = build_deployment(&name, "dns", &inst, None, None, "k").expect("build");
+            assert_eq!(
+                config_volume_configmap(&deployment),
+                Some(instance_configmap_name(&name, &inst))
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------- B6
+
+    #[test]
+    fn test_build_service_honours_cluster_bindcar_port() {
+        let inst = instance("primary-0", "prod", Some("uid-1"));
+        let cluster = cluster_with(
+            serde_json::json!({ "bindcarConfig": { "port": CLUSTER_BINDCAR_PORT } }),
+            Some("cluster-uid"),
+        );
+        let resolved = resolve_bindcar_config(&inst, Some(&cluster), None);
+        let service =
+            build_service("primary-0", "dns", &inst, resolved.as_ref(), None).expect("build");
+        let http = service
+            .spec
+            .expect("spec")
+            .ports
+            .expect("ports")
+            .into_iter()
+            .find(|p| p.name.as_deref() == Some("http"))
+            .expect("http port");
+        assert_eq!(
+            http.target_port,
+            Some(IntOrString::Int(CLUSTER_BINDCAR_PORT))
+        );
+    }
+
+    #[test]
+    fn test_build_service_honours_cluster_bindcar_service_spec() {
+        let inst = instance("primary-0", "prod", Some("uid-1"));
+        let cluster = cluster_with(
+            serde_json::json!({ "bindcarConfig": { "serviceSpec": { "type": "NodePort" } } }),
+            Some("cluster-uid"),
+        );
+        let resolved = resolve_bindcar_config(&inst, Some(&cluster), None);
+        let service =
+            build_service("primary-0", "dns", &inst, resolved.as_ref(), None).expect("build");
+        assert_eq!(
+            service.spec.expect("spec").type_.as_deref(),
+            Some("NodePort")
+        );
+    }
+
+    // --------------------------------------------------------------- B15e
+
+    #[test]
+    fn test_build_owner_references_requires_uid() {
+        let inst = instance("primary-0", "", None);
+        assert!(build_owner_references(&inst).is_err());
+    }
+
+    #[test]
+    fn test_build_owner_references_rejects_empty_uid() {
+        let inst = instance("primary-0", "", Some(""));
+        assert!(build_owner_references(&inst).is_err());
+    }
+
+    #[test]
+    fn test_build_owner_references_keeps_controller_and_block_owner_deletion() {
+        let inst = instance("primary-0", "", Some("uid-1"));
+        let refs = build_owner_references(&inst).expect("owner refs");
+        assert_eq!(refs.len(), 1);
+        let owner = &refs[0];
+        assert_eq!(owner.uid, "uid-1");
+        assert_eq!(owner.name, "primary-0");
+        assert_eq!(owner.kind, "Bind9Instance");
+        assert_eq!(owner.api_version, "bindy.firestoned.io/v1beta1");
+        assert_eq!(owner.controller, Some(true));
+        assert_eq!(owner.block_owner_deletion, Some(true));
+    }
+
+    #[test]
+    fn test_controller_owner_reference_for_cluster() {
+        let cluster = cluster_with(serde_json::json!({}), Some("cluster-uid"));
+        let owner = controller_owner_reference(&cluster).expect("owner ref");
+        assert_eq!(owner.kind, "Bind9Cluster");
+        assert_eq!(owner.uid, "cluster-uid");
+        assert_eq!(owner.controller, Some(true));
+        assert_eq!(owner.block_owner_deletion, Some(true));
+        let no_uid = cluster_with(serde_json::json!({}), None);
+        assert!(controller_owner_reference(&no_uid).is_err());
+    }
+
+    #[test]
+    fn test_build_deployment_requires_instance_uid() {
+        let inst = instance("primary-0", "", None);
+        assert!(build_deployment("primary-0", "dns", &inst, None, None, "k").is_err());
+    }
+
+    #[test]
+    fn test_build_service_requires_instance_uid() {
+        let inst = instance("primary-0", "", None);
+        assert!(build_service("primary-0", "dns", &inst, None, None).is_err());
+    }
+
+    #[test]
+    fn test_build_pdb_requires_cluster_uid() {
+        let cluster = cluster_with(serde_json::json!({}), None);
+        assert!(
+            build_pod_disruption_budget("prod", "dns", ServerRole::Primary, Some(&cluster))
+                .is_err()
         );
     }
 }

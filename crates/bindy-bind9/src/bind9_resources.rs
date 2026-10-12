@@ -8,10 +8,9 @@
 
 use crate::bind9_acl::parse_acl_list;
 use crate::constants::{
-    API_GROUP_VERSION, BIND9_MALLOC_CONF, BIND9_NONROOT_UID, BIND9_PRESTOP_DRAIN_SECS,
-    BIND9_SERVICE_ACCOUNT, BIND9_TERMINATION_GRACE_PERIOD_SECS, CONTAINER_NAME_BIND9,
-    CONTAINER_NAME_BINDCAR, DEFAULT_BIND9_VERSION, DNS_CONTAINER_PORT, DNS_PORT,
-    KIND_BIND9_CLUSTER, KIND_BIND9_INSTANCE, LIVENESS_FAILURE_THRESHOLD,
+    BIND9_MALLOC_CONF, BIND9_NONROOT_UID, BIND9_PRESTOP_DRAIN_SECS, BIND9_SERVICE_ACCOUNT,
+    BIND9_TERMINATION_GRACE_PERIOD_SECS, CONTAINER_NAME_BIND9, CONTAINER_NAME_BINDCAR,
+    DEFAULT_BIND9_VERSION, DNS_CONTAINER_PORT, DNS_PORT, LIVENESS_FAILURE_THRESHOLD,
     LIVENESS_INITIAL_DELAY_SECS, LIVENESS_PERIOD_SECS, LIVENESS_TIMEOUT_SECS,
     MAX_UNAVAILABLE_OPERANDS, READINESS_FAILURE_THRESHOLD, READINESS_INITIAL_DELAY_SECS,
     READINESS_PERIOD_SECS, READINESS_TIMEOUT_SECS, RNDC_PORT,
@@ -47,7 +46,7 @@ use k8s_openapi::apimachinery::pkg::{
     apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference},
     util::intstr::IntOrString,
 };
-use kube::ResourceExt;
+use kube::{Resource, ResourceExt};
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr};
 use tracing::{debug, warn};
@@ -125,6 +124,13 @@ const NAMED_CONF_FILENAME: &str = "named.conf";
 const NAMED_CONF_OPTIONS_FILENAME: &str = "named.conf.options";
 const NAMED_CONF_ZONES_FILENAME: &str = "named.conf.zones";
 const RNDC_CONF_FILENAME: &str = "rndc.conf";
+
+/// Suffix of the RNDC `Secret` bindy generates for an instance
+/// ([`default_rndc_secret_name`]).
+const RNDC_SECRET_NAME_SUFFIX: &str = "-rndc-key";
+/// Suffix of a rendered BIND9 configuration `ConfigMap`
+/// ([`instance_configmap_name`]).
+const CONFIGMAP_NAME_SUFFIX: &str = "-config";
 
 // Volume mount names
 const VOLUME_ZONES: &str = "zones";
@@ -953,6 +959,46 @@ pub fn build_pod_labels_from_instance(
     labels
 }
 
+/// Builds the controller owner reference that makes `owner` garbage-collect
+/// the object carrying it.
+///
+/// Uses kube's [`Resource::controller_owner_ref`], so `apiVersion`, `kind`
+/// and `name` come from the owner itself, and keeps the shape every bindy
+/// child has always carried: `controller: true` and
+/// `blockOwnerDeletion: true`.
+///
+/// # Arguments
+///
+/// * `owner` - The owning object, as read from the API server
+///
+/// # Returns
+///
+/// The owner reference pointing to `owner`.
+///
+/// # Errors
+///
+/// Returns an error when `owner` has no name or no (or an empty) UID. The API
+/// server rejects or mis-resolves such a reference, so nothing is written
+/// with one: an object that has not been read from the API server cannot own
+/// anything.
+pub fn controller_owner_reference<K>(owner: &K) -> anyhow::Result<OwnerReference>
+where
+    K: Resource<DynamicType = ()>,
+{
+    let mut owner_ref = owner
+        .controller_owner_ref(&())
+        .filter(|r| !r.uid.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "cannot build an owner reference to {} {:?}: it has no name or UID",
+                K::kind(&()),
+                owner.meta().name
+            )
+        })?;
+    owner_ref.block_owner_deletion = Some(true);
+    Ok(owner_ref)
+}
+
 /// Builds owner references for a resource owned by a `Bind9Instance`
 ///
 /// Sets up cascade deletion so that when the `Bind9Instance` is deleted,
@@ -965,16 +1011,119 @@ pub fn build_pod_labels_from_instance(
 /// # Returns
 ///
 /// A vector containing a single `OwnerReference` pointing to the instance
+///
+/// # Errors
+///
+/// Returns an error when the instance has no UID
+/// ([`controller_owner_reference`]).
+pub fn build_owner_references(instance: &Bind9Instance) -> anyhow::Result<Vec<OwnerReference>> {
+    Ok(vec![controller_owner_reference(instance)?])
+}
+
+/// The name of the RNDC `Secret` bindy creates for an instance when no
+/// `rndcKey.secretRef` or inline `rndcKey.secret` names another one:
+/// `{instance}-rndc-key`.
+///
+/// # Arguments
+///
+/// * `instance_name` - Name of the `Bind9Instance`
+///
+/// # Returns
+///
+/// The default RNDC `Secret` name.
 #[must_use]
-pub fn build_owner_references(instance: &Bind9Instance) -> Vec<OwnerReference> {
-    vec![OwnerReference {
-        api_version: API_GROUP_VERSION.to_string(),
-        kind: KIND_BIND9_INSTANCE.to_string(),
-        name: instance.name_any(),
-        uid: instance.metadata.uid.clone().unwrap_or_default(),
-        controller: Some(true),
-        block_owner_deletion: Some(true),
-    }]
+pub fn default_rndc_secret_name(instance_name: &str) -> String {
+    format!("{instance_name}{RNDC_SECRET_NAME_SUFFIX}")
+}
+
+/// The RNDC `Secret` an instance uses, given its resolved RNDC configuration.
+///
+/// The single source of truth for the name: the instance reconciler creates
+/// (or adopts) this Secret, the Deployment mounts it, and the drift check
+/// looks for it.
+///
+/// * `rndcKey.secretRef` names an existing Secret: that one, never created
+///   by bindy.
+/// * An inline `rndcKey.secret` is created under its `metadata.name`.
+/// * Otherwise bindy generates `{instance}-rndc-key`
+///   ([`default_rndc_secret_name`]).
+///
+/// # Arguments
+///
+/// * `instance` - The `Bind9Instance`
+/// * `rndc_config` - Its RNDC configuration, resolved through the instance >
+///   role precedence
+///
+/// # Returns
+///
+/// The name of the `Secret` holding the instance's RNDC key.
+#[must_use]
+pub fn rndc_secret_name(
+    instance: &Bind9Instance,
+    rndc_config: &crate::crd::RndcKeyConfig,
+) -> String {
+    if let Some(secret_ref) = rndc_config.secret_ref.as_ref() {
+        return secret_ref.name.clone();
+    }
+    if let Some(secret) = rndc_config.secret.as_ref() {
+        return secret.metadata.name.clone();
+    }
+    default_rndc_secret_name(&instance.name_any())
+}
+
+/// The RNDC `Secret` a Deployment's pods mount, read from its `rndc-key`
+/// volume.
+///
+/// This is the effective truth for the key BIND9 in those pods has loaded,
+/// whichever configuration level chose it.
+///
+/// # Arguments
+///
+/// * `deployment` - A BIND9 Deployment built by [`build_deployment`]
+///
+/// # Returns
+///
+/// The mounted Secret's name, or `None` when the Deployment has no
+/// Secret-backed `rndc-key` volume.
+#[must_use]
+pub fn rndc_secret_name_from_deployment(deployment: &Deployment) -> Option<String> {
+    deployment
+        .spec
+        .as_ref()?
+        .template
+        .spec
+        .as_ref()?
+        .volumes
+        .as_ref()?
+        .iter()
+        .find(|volume| volume.name == VOLUME_RNDC_KEY)?
+        .secret
+        .as_ref()?
+        .secret_name
+        .clone()
+}
+
+/// The `ConfigMap` an instance's pods mount for `named.conf` and friends.
+///
+/// An instance with a `clusterRef` (managed by its cluster or created by
+/// hand) mounts the cluster's shared `{cluster}-config`; a standalone one
+/// mounts its own `{instance}-config`. The Deployment builder, the instance
+/// reconciler and its drift check all take the name from here.
+///
+/// # Arguments
+///
+/// * `instance_name` - Name of the `Bind9Instance`
+/// * `instance` - The `Bind9Instance`
+///
+/// # Returns
+///
+/// The mounted `ConfigMap` name.
+#[must_use]
+pub fn instance_configmap_name(instance_name: &str, instance: &Bind9Instance) -> String {
+    if instance.spec.cluster_ref.is_empty() {
+        return format!("{instance_name}{CONFIGMAP_NAME_SUFFIX}");
+    }
+    format!("{}{CONFIGMAP_NAME_SUFFIX}", instance.spec.cluster_ref)
 }
 
 /// Resolves the Bindcar sidecar configuration for an instance by merging the
@@ -1108,13 +1257,17 @@ pub fn resolve_bindcar_config(
 /// # Returns
 ///
 /// A `PodDisruptionBudget` selecting the operand Pods of `cluster_name` in `role`
-#[must_use]
+///
+/// # Errors
+///
+/// Returns an error when `cluster` is given but has no UID
+/// ([`controller_owner_reference`]).
 pub fn build_pod_disruption_budget(
     cluster_name: &str,
     namespace: &str,
     role: ServerRole,
     cluster: Option<&Bind9Cluster>,
-) -> PodDisruptionBudget {
+) -> anyhow::Result<PodDisruptionBudget> {
     let role_str = match role {
         ServerRole::Primary => ROLE_PRIMARY,
         ServerRole::Secondary => ROLE_SECONDARY,
@@ -1126,18 +1279,11 @@ pub fn build_pod_disruption_budget(
     match_labels.insert(BINDY_CLUSTER_LABEL.to_string(), cluster_name.to_string());
     match_labels.insert(BINDY_ROLE_LABEL.to_string(), role_str.to_string());
 
-    let owner_references = cluster.map(|c| {
-        vec![OwnerReference {
-            api_version: API_GROUP_VERSION.to_string(),
-            kind: KIND_BIND9_CLUSTER.to_string(),
-            name: c.name_any(),
-            uid: c.metadata.uid.clone().unwrap_or_default(),
-            controller: Some(true),
-            block_owner_deletion: Some(true),
-        }]
-    });
+    let owner_references = cluster
+        .map(|c| controller_owner_reference(c).map(|owner| vec![owner]))
+        .transpose()?;
 
-    PodDisruptionBudget {
+    Ok(PodDisruptionBudget {
         metadata: ObjectMeta {
             name: Some(format!("{cluster_name}-{role_str}-pdb")),
             namespace: Some(namespace.to_string()),
@@ -1154,7 +1300,7 @@ pub fn build_pod_disruption_budget(
             ..Default::default()
         }),
         ..Default::default()
-    }
+    })
 }
 
 /// Builds a Kubernetes `ConfigMap` containing BIND9 configuration files.
@@ -1186,7 +1332,8 @@ pub fn build_pod_disruption_budget(
 /// Returns an error if any ACL, forwarder, or listen-address entry in the
 /// instance or cluster spec fails validation (see [`crate::bind9_acl`] for
 /// the accepted ACL syntax), or [`crate::config_check::InvalidBind9Config`]
-/// if the rendered configuration does not parse (ADR-0013).
+/// if the rendered configuration does not parse (ADR-0013), or an error when
+/// the instance has no UID for the owner reference.
 pub fn build_configmap(
     name: &str,
     namespace: &str,
@@ -1234,7 +1381,7 @@ pub fn build_configmap(
     // Note: We do NOT auto-generate named.conf.zones anymore.
     // Users must explicitly provide a namedConfZones ConfigMap if they want zones support.
 
-    let owner_refs = build_owner_references(instance);
+    let owner_refs = build_owner_references(instance)?;
 
     // ADR-0013: never publish a configuration `named` cannot parse. A broken
     // render fails here, so the ConfigMap is not written and the pods keep
@@ -1890,14 +2037,9 @@ fn resolve_deployment_config<'a>(
     // rest of the cluster's sidecar configuration. See resolve_bindcar_config.
     let bindcar_config = resolve_bindcar_config(instance, cluster, cluster_provider);
 
-    // Determine ConfigMap name: use cluster ConfigMap if instance belongs to a cluster
-    let configmap_name = if instance.spec.cluster_ref.is_empty() {
-        // Use instance-specific ConfigMap
-        format!("{name}-config")
-    } else {
-        // Use cluster-level shared ConfigMap
-        format!("{}-config", instance.spec.cluster_ref)
-    };
+    // The cluster's shared ConfigMap for an instance with a clusterRef, its
+    // own otherwise; the drift check reads the same name.
+    let configmap_name = instance_configmap_name(name, instance);
 
     DeploymentConfig {
         image_config,
@@ -1952,6 +2094,26 @@ fn resolve_role_counts(
     (role_count.max(1), (primaries + secondaries).max(1))
 }
 
+/// Builds the BIND9 `Deployment` of a `Bind9Instance`, with the bindcar
+/// sidecar, owned by the instance.
+///
+/// # Arguments
+///
+/// * `name` - Name of the Deployment (the instance name)
+/// * `namespace` - Kubernetes namespace
+/// * `instance` - The owning `Bind9Instance`
+/// * `cluster` - The instance's `Bind9Cluster`, if any
+/// * `cluster_provider` - The instance's `ClusterBind9Provider`, if any
+/// * `rndc_secret_name` - The RNDC `Secret` to mount ([`rndc_secret_name`])
+///
+/// # Returns
+///
+/// The desired Deployment.
+///
+/// # Errors
+///
+/// Returns an error when the instance has no UID for the owner reference
+/// ([`controller_owner_reference`]).
 pub fn build_deployment(
     name: &str,
     namespace: &str,
@@ -1959,7 +2121,7 @@ pub fn build_deployment(
     cluster: Option<&Bind9Cluster>,
     cluster_provider: Option<&crate::crd::ClusterBind9Provider>,
     rndc_secret_name: &str,
-) -> Deployment {
+) -> anyhow::Result<Deployment> {
     debug!(
         name = %name,
         namespace = %namespace,
@@ -1995,7 +2157,7 @@ pub fn build_deployment(
 
     let config = resolve_deployment_config(name, instance, cluster, cluster_provider);
 
-    let owner_refs = build_owner_references(instance);
+    let owner_refs = build_owner_references(instance)?;
 
     // Get global and instance configs for DNSSEC
     let global_config = cluster.and_then(|c| c.spec.common.global.as_ref());
@@ -2036,7 +2198,7 @@ pub fn build_deployment(
         Some(merged)
     };
 
-    Deployment {
+    Ok(Deployment {
         metadata: ObjectMeta {
             name: Some(name.into()),
             namespace: Some(namespace.into()),
@@ -2078,7 +2240,7 @@ pub fn build_deployment(
             ..Default::default()
         }),
         ..Default::default()
-    }
+    })
 }
 
 /// The BIND9 image and its pull policy: the configured image, else the ISC
@@ -2871,20 +3033,29 @@ fn build_volumes(
 /// * `name` - Name for the Service
 /// * `namespace` - Kubernetes namespace
 /// * `instance` - The `Bind9Instance` that owns this Service
+/// * `bindcar_config` - The instance's bindcar configuration merged across
+///   instance, cluster and provider ([`resolve_bindcar_config`]), the same
+///   one the Deployment's sidecar is built from, so the `http` port targets
+///   the port the sidecar listens on
 /// * `custom_config` - Optional custom `ServiceConfig` with spec and annotations to merge with defaults
 ///
 /// # Returns
 ///
 /// A Kubernetes Service resource ready for creation/update
 ///
+/// # Errors
+///
+/// Returns an error when the instance has no UID for the owner reference
+/// ([`controller_owner_reference`]).
+///
 /// # Example
 ///
 /// ```rust,no_run
-/// use bindy_bind9::bind9_resources::build_service;
+/// use bindy_bind9::bind9_resources::{build_service, resolve_bindcar_config};
 /// use bindy_api::crd::{Bind9Instance, ServiceConfig};
 /// use std::collections::BTreeMap;
 ///
-/// # fn example(instance: Bind9Instance) {
+/// # fn example(instance: Bind9Instance) -> anyhow::Result<()> {
 /// let mut annotations = BTreeMap::new();
 /// annotations.insert("metallb.universe.tf/address-pool".to_string(), "my-pool".to_string());
 ///
@@ -2893,25 +3064,30 @@ fn build_volumes(
 ///     spec: None,
 /// };
 ///
-/// let service = build_service("dns-primary", "bindy-system", &instance, Some(&config));
+/// let bindcar = resolve_bindcar_config(&instance, None, None);
+/// let service = build_service(
+///     "dns-primary",
+///     "bindy-system",
+///     &instance,
+///     bindcar.as_ref(),
+///     Some(&config),
+/// )?;
+/// # Ok(())
 /// # }
 /// ```
-#[must_use]
 pub fn build_service(
     name: &str,
     namespace: &str,
     instance: &Bind9Instance,
+    bindcar_config: Option<&crate::crd::BindcarConfig>,
     custom_config: Option<&crate::crd::ServiceConfig>,
-) -> Service {
+) -> anyhow::Result<Service> {
     // Build labels, checking if instance is managed by a cluster
     let labels = build_labels_from_instance(name, instance);
-    let owner_refs = build_owner_references(instance);
+    let owner_refs = build_owner_references(instance)?;
 
-    // Get API container port from instance spec, default to BINDCAR_API_PORT
-    let api_container_port = instance
-        .spec
-        .bindcar_config
-        .as_ref()
+    // The port the sidecar listens on, default BINDCAR_API_PORT
+    let api_container_port = bindcar_config
         .and_then(|c| c.port)
         .unwrap_or(i32::from(crate::constants::BINDCAR_API_PORT));
 
@@ -2946,12 +3122,7 @@ pub fn build_service(
     };
 
     // Merge bindcar service spec if provided (applies before custom_config)
-    if let Some(bindcar_service_spec) = instance
-        .spec
-        .bindcar_config
-        .as_ref()
-        .and_then(|c| c.service_spec.as_ref())
-    {
+    if let Some(bindcar_service_spec) = bindcar_config.and_then(|c| c.service_spec.as_ref()) {
         merge_service_spec(&mut default_spec, bindcar_service_spec);
     }
 
@@ -2979,11 +3150,11 @@ pub fn build_service(
         metadata.annotations = Some(annotations.clone());
     }
 
-    Service {
+    Ok(Service {
         metadata,
         spec: Some(default_spec),
         ..Default::default()
-    }
+    })
 }
 
 /// Builds a Kubernetes `ServiceAccount` for BIND9 pods.

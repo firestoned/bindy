@@ -131,6 +131,27 @@ where
         self.shards.iter().flat_map(Store::state).collect()
     }
 
+    /// Wait until every shard has finished its initial list.
+    ///
+    /// Before that a lookup in the view reads "nothing exists", so a
+    /// controller started earlier could act on an empty store (for example,
+    /// let a record finalizer go because the zone appears to select no
+    /// instances).
+    ///
+    /// # Errors
+    /// Returns an error if a shard's watch ended before it ever listed.
+    pub async fn wait_until_ready(&self) -> anyhow::Result<()> {
+        for shard in &self.shards {
+            shard.wait_until_ready().await.map_err(|e| {
+                anyhow::anyhow!(
+                    "{} store never finished its initial list: {e}",
+                    K::kind(&K::DynamicType::default())
+                )
+            })?;
+        }
+        Ok(())
+    }
+
     /// Number of shards backing this view (1 when cluster-wide).
     #[must_use]
     pub fn shard_count(&self) -> usize {

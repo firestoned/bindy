@@ -73,7 +73,7 @@ use reqwest::Client as HttpClient;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 /// Environment variable name that indicates bindcar authentication is enabled.
 /// If this env var is present in the bindcar container, authentication is required.
@@ -142,7 +142,11 @@ fn is_token_cache_fresh(read_at: Instant, now: Instant) -> bool {
 }
 
 /// Build the shared bindcar HTTP client with connect and request timeouts.
-fn build_http_client() -> HttpClient {
+///
+/// # Errors
+/// Fails when the HTTP client cannot be built (see
+/// [`build_http_client_with_timeouts`]).
+fn build_http_client() -> Result<HttpClient> {
     build_http_client_with_timeouts(
         Duration::from_secs(BINDCAR_HTTP_CONNECT_TIMEOUT_SECS),
         Duration::from_secs(BINDCAR_HTTP_REQUEST_TIMEOUT_SECS),
@@ -151,27 +155,29 @@ fn build_http_client() -> HttpClient {
 
 /// Build an HTTP client with the given connect and total-request timeouts.
 ///
-/// Falls back to the default client (no timeouts) if the builder fails, so
-/// manager construction never panics; the failure is logged.
+/// There is deliberately no fallback to an untimed client: a client without
+/// timeouts hangs a reconcile task forever on a blackholed endpoint.
+///
+/// # Errors
+/// Fails when the `reqwest` builder fails (e.g. no TLS crypto provider is
+/// installed).
 fn build_http_client_with_timeouts(
     connect_timeout: Duration,
     request_timeout: Duration,
-) -> HttpClient {
-    match HttpClient::builder()
+) -> Result<HttpClient> {
+    HttpClient::builder()
         .connect_timeout(connect_timeout)
         .timeout(request_timeout)
         .build()
-    {
-        Ok(client) => client,
-        Err(e) => {
-            warn!(
-                error = %e,
-                "Failed to build HTTP client with timeouts; falling back to default client without timeouts"
-            );
-            HttpClient::new()
-        }
-    }
+        .context("failed to build the bindcar HTTP client with connect/request timeouts")
 }
+
+/// The shared plaintext HTTP client, or the reason it could not be built.
+///
+/// Construction of a [`Bind9Manager`] is infallible, so a build failure is
+/// kept here and surfaced by every request instead of being papered over with
+/// an untimed client.
+type SharedHttpClient = std::result::Result<Arc<HttpClient>, Arc<str>>;
 
 /// Manager for BIND9 servers via HTTP API sidecar.
 ///
@@ -188,8 +194,8 @@ fn build_http_client_with_timeouts(
 /// ```
 #[derive(Debug, Clone)]
 pub struct Bind9Manager {
-    /// HTTP client for API requests
-    client: Arc<HttpClient>,
+    /// HTTP client for API requests, or why it could not be built
+    client: SharedHttpClient,
     /// Cached `ServiceAccount` token for authentication (only used if auth is
     /// enabled). Re-read from disk when older than `TOKEN_CACHE_TTL_SECS`
     /// because the kubelet rotates the projected token file; caching it for
@@ -225,18 +231,75 @@ impl Bind9Manager {
     /// enabled (backward compatible behavior).
     ///
     /// For proper auth status detection, use `new_with_deployment()` instead.
+    ///
+    /// A manager built this way has no instance namespace, so it cannot read a
+    /// TLS CA bundle; use [`Self::new_for_instance`] for a specific instance.
     #[must_use]
     pub fn new() -> Self {
+        Self::from_client_result(build_http_client(), None, None, None)
+    }
+
+    /// Create a `Bind9Manager` for a specific instance whose Deployment is
+    /// not known (e.g. not in the reflector store yet).
+    ///
+    /// Auth is assumed enabled, as with [`Self::new`], but the instance name
+    /// and namespace are kept so the TLS CA bundle is read from the
+    /// instance's own namespace.
+    ///
+    /// # Arguments
+    /// * `instance_name` - Name of the `Bind9Instance`
+    /// * `instance_namespace` - Namespace of the instance
+    #[must_use]
+    pub fn new_for_instance(instance_name: String, instance_namespace: String) -> Self {
+        Self::from_client_result(
+            build_http_client(),
+            None,
+            Some(instance_name),
+            Some(instance_namespace),
+        )
+    }
+
+    /// Assemble a manager from an HTTP client build result.
+    ///
+    /// A failed build is logged once and kept, so every request fails with
+    /// the cause rather than running without timeouts.
+    fn from_client_result(
+        client: Result<HttpClient>,
+        deployment: Option<Arc<Deployment>>,
+        instance_name: Option<String>,
+        instance_namespace: Option<String>,
+    ) -> Self {
+        let client = client.map(Arc::new).map_err(|e| {
+            let reason = format!("{e:#}");
+            error!(
+                error = %reason,
+                "Failed to build the bindcar HTTP client; every bindcar request will fail"
+            );
+            Arc::<str>::from(reason)
+        });
         Self {
-            client: Arc::new(build_http_client()),
+            client,
             token_cache: Arc::new(RwLock::new(None)),
-            deployment: None,
-            instance_name: None,
-            instance_namespace: None,
+            deployment,
+            instance_name,
+            instance_namespace,
             tls: None,
             kube_client: None,
             tls_client: Arc::new(tokio::sync::RwLock::new(None)),
         }
+    }
+
+    /// The namespace of the instance this manager talks to, when known.
+    #[must_use]
+    pub fn instance_namespace(&self) -> Option<&str> {
+        self.instance_namespace.as_deref()
+    }
+
+    /// The shared plaintext client, or an error if it could not be built.
+    fn plain_client(&self) -> Result<&Arc<HttpClient>> {
+        self.client
+            .as_ref()
+            .map_err(|reason| anyhow::anyhow!("bindcar HTTP client unavailable: {reason}"))
     }
 
     /// Create a new `Bind9Manager` with deployment information for auth checking.
@@ -273,16 +336,12 @@ impl Bind9Manager {
         instance_name: String,
         instance_namespace: String,
     ) -> Self {
-        Self {
-            client: Arc::new(build_http_client()),
-            token_cache: Arc::new(RwLock::new(None)),
-            deployment: Some(deployment),
-            instance_name: Some(instance_name),
-            instance_namespace: Some(instance_namespace),
-            tls: None,
-            kube_client: None,
-            tls_client: Arc::new(tokio::sync::RwLock::new(None)),
-        }
+        Self::from_client_result(
+            build_http_client(),
+            Some(deployment),
+            Some(instance_name),
+            Some(instance_namespace),
+        )
     }
 
     /// Attach the sidecar TLS configuration for this instance.
@@ -324,16 +383,17 @@ impl Bind9Manager {
     /// builds a CA-pinned client on first call and caches it.
     ///
     /// # Errors
-    /// Fails when TLS is enabled but the CA bundle cannot be resolved — no
-    /// Kubernetes client, no `caBundle` configured, the referenced object or
-    /// key is missing, or the bundle does not parse.
+    /// Fails when the plaintext client could not be built (TLS off), or when
+    /// TLS is enabled but the CA bundle cannot be resolved: no Kubernetes
+    /// client, no instance namespace, no `caBundle` configured, the referenced
+    /// object or key is missing, or the bundle does not parse.
     ///
     /// It deliberately does **not** fall back to the plaintext client on
     /// error. Doing so would send the ServiceAccount token in the clear on a
     /// deployment whose operator believes TLS is on.
     pub async fn resolve_client(&self) -> Result<Arc<HttpClient>> {
         let Some(tls) = self.tls.as_ref().filter(|t| t.is_enabled()) else {
-            return Ok(Arc::clone(&self.client));
+            return self.plain_client().map(Arc::clone);
         };
 
         if let Some(cached) = self.tls_client.read().await.as_ref() {
@@ -371,7 +431,12 @@ impl Bind9Manager {
             )
         })?;
 
-        let namespace = self.instance_namespace.as_deref().unwrap_or("default");
+        let namespace = self.instance_namespace.as_deref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "TLS is enabled but this Bind9Manager has no instance namespace, \
+                 so the CA bundle location is unknown"
+            )
+        })?;
 
         if let Some(cm_ref) = source.config_map_ref.as_ref() {
             let key = cm_ref.key.as_deref().unwrap_or(DEFAULT_CA_BUNDLE_KEY);
@@ -560,13 +625,17 @@ impl Bind9Manager {
         token
     }
 
-    /// Get a reference to the HTTP client for making API requests.
+    /// Get a reference to the plaintext HTTP client for making API requests.
     ///
     /// This allows external code to make custom HTTP requests to the bindcar API
-    /// while still respecting the authentication configuration.
-    #[must_use]
-    pub fn client(&self) -> &Arc<HttpClient> {
-        &self.client
+    /// while still respecting the authentication configuration. For a
+    /// TLS-aware client use [`Self::resolve_client`].
+    ///
+    /// # Errors
+    /// Fails when the timeout-bounded client could not be built at
+    /// construction; there is no untimed fallback.
+    pub fn client(&self) -> Result<&Arc<HttpClient>> {
+        self.plain_client()
     }
 
     /// Build the API base URL from a server address

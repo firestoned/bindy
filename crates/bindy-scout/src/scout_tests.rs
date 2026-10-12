@@ -3387,4 +3387,315 @@ mod tests {
         .await;
         assert!(client.is_ok(), "client must build: {:?}", client.err());
     }
+
+    // ------------------------------------------------------------------
+    // B1: TCPRoute record-name override must pass the P2-7 syntax check.
+    // TCPRoute has no hostnames, so the override is its only source of a
+    // record name; it must get the same validation every other kind gets
+    // through `resolve_record_name`.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn tcproute_record_name_rejects_override_with_newline() {
+        // A newline would let a tenant close the record and append another.
+        let annotations = record_name_annotations("db\nevil 300 IN A 6.6.6.6");
+        let result = crate::scout::tcproute_record_name(&annotations);
+        assert!(
+            result.is_err(),
+            "an illegal override must not yield a record name, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn tcproute_record_name_rejects_override_with_space() {
+        let annotations = record_name_annotations("db evil");
+        assert!(crate::scout::tcproute_record_name(&annotations).is_err());
+    }
+
+    #[test]
+    fn tcproute_record_name_rejects_label_starting_with_hyphen() {
+        let annotations = record_name_annotations("-db");
+        assert!(crate::scout::tcproute_record_name(&annotations).is_err());
+    }
+
+    #[test]
+    fn tcproute_record_name_accepts_valid_override() {
+        let annotations = record_name_annotations("db.internal");
+        assert_eq!(
+            crate::scout::tcproute_record_name(&annotations).unwrap(),
+            Some("db.internal".to_string())
+        );
+    }
+
+    #[test]
+    fn tcproute_record_name_accepts_apex() {
+        let annotations = record_name_annotations("@");
+        assert_eq!(
+            crate::scout::tcproute_record_name(&annotations).unwrap(),
+            Some("@".to_string())
+        );
+    }
+
+    #[test]
+    fn tcproute_record_name_absent_override_is_none() {
+        let annotations = std::collections::BTreeMap::new();
+        assert_eq!(
+            crate::scout::tcproute_record_name(&annotations).unwrap(),
+            None
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // B11.1: prune ARecords for hosts that were not applied this pass.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn indexed_arecord_cr_name_prefix_is_a_prefix_of_every_indexed_name() {
+        let prefix =
+            crate::scout::indexed_arecord_cr_name_prefix("prod", "team-checkout", "web-frontend");
+        for idx in [0usize, 1, 7, 42] {
+            let name = arecord_cr_name("prod", "team-checkout", "web-frontend", idx);
+            assert_eq!(name, format!("{prefix}{idx}"));
+            assert_eq!(
+                crate::scout::httproute_arecord_cr_name(
+                    "prod",
+                    "team-checkout",
+                    "web-frontend",
+                    idx
+                ),
+                format!("{prefix}{idx}")
+            );
+            assert_eq!(
+                crate::scout::tlsroute_arecord_cr_name(
+                    "prod",
+                    "team-checkout",
+                    "web-frontend",
+                    idx
+                ),
+                format!("{prefix}{idx}")
+            );
+        }
+    }
+
+    #[test]
+    fn indexed_arecord_cr_name_prefix_matches_sanitised_names() {
+        // Non-alphanumeric characters at the end of the source name are
+        // collapsed the same way `arecord_cr_name` collapses them.
+        let prefix = crate::scout::indexed_arecord_cr_name_prefix("Prod_1", "ns", "web.");
+        assert_eq!(
+            arecord_cr_name("Prod_1", "ns", "web.", 3),
+            format!("{prefix}3")
+        );
+    }
+
+    fn names(v: &[&str]) -> Vec<String> {
+        v.iter().map(ToString::to_string).collect()
+    }
+
+    fn applied_set(v: &[&str]) -> std::collections::BTreeSet<String> {
+        v.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn arecords_to_prune_returns_indexed_records_not_applied() {
+        // Host 1 was dropped from the Ingress: its record must go.
+        let prefix = "scout-prod-ns-web-";
+        let existing = names(&["scout-prod-ns-web-0", "scout-prod-ns-web-1"]);
+        let applied = applied_set(&["scout-prod-ns-web-0"]);
+        assert_eq!(
+            crate::scout::arecords_to_prune(&existing, &applied, prefix),
+            names(&["scout-prod-ns-web-1"])
+        );
+    }
+
+    #[test]
+    fn arecords_to_prune_keeps_everything_applied() {
+        let prefix = "scout-prod-ns-web-";
+        let existing = names(&["scout-prod-ns-web-0", "scout-prod-ns-web-1"]);
+        let applied = applied_set(&["scout-prod-ns-web-0", "scout-prod-ns-web-1"]);
+        assert!(crate::scout::arecords_to_prune(&existing, &applied, prefix).is_empty());
+    }
+
+    #[test]
+    fn arecords_to_prune_removes_all_when_nothing_applied() {
+        // Every host stopped matching the zone: nothing is published any more.
+        let prefix = "scout-prod-ns-web-";
+        let existing = names(&["scout-prod-ns-web-0", "scout-prod-ns-web-2"]);
+        let applied = applied_set(&[]);
+        assert_eq!(
+            crate::scout::arecords_to_prune(&existing, &applied, prefix),
+            names(&["scout-prod-ns-web-0", "scout-prod-ns-web-2"])
+        );
+    }
+
+    #[test]
+    fn arecords_to_prune_never_touches_a_same_named_services_record() {
+        // A Service named `web` in the same namespace carries the same
+        // source labels but an un-indexed CR name. Pruning an Ingress `web`
+        // must not delete it.
+        let prefix = "scout-prod-ns-web-";
+        let existing = names(&["scout-prod-ns-web", "scout-prod-ns-web-0"]);
+        let applied = applied_set(&["scout-prod-ns-web-0"]);
+        assert!(crate::scout::arecords_to_prune(&existing, &applied, prefix).is_empty());
+    }
+
+    #[test]
+    fn arecords_to_prune_ignores_names_with_non_numeric_suffix() {
+        let prefix = "scout-prod-ns-web-";
+        let existing = names(&["scout-prod-ns-web-api-0", "scout-prod-ns-web-x", "other-0"]);
+        let applied = applied_set(&[]);
+        assert!(crate::scout::arecords_to_prune(&existing, &applied, prefix).is_empty());
+    }
+
+    #[tokio::test]
+    async fn prune_unapplied_arecords_deletes_only_the_dropped_host() {
+        let server = MockServer::start().await;
+        let selector = arecord_label_selector("south", "team-checkout", "web-frontend");
+        Mock::given(method("GET"))
+            .and(path(ARECORD_LIST_PATH))
+            .and(wiremock::matchers::query_param(
+                "labelSelector",
+                selector.clone(),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![
+                    arecord_item(
+                        "scout-south-team-checkout-web-frontend-0",
+                        "south",
+                        "zone-beta.example.internal",
+                    ),
+                    arecord_item(
+                        "scout-south-team-checkout-web-frontend-1",
+                        "south",
+                        "zone-beta.example.internal",
+                    ),
+                ])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path(format!(
+                "{ARECORD_LIST_PATH}/scout-south-team-checkout-web-frontend-1"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(arecord_item(
+                "scout-south-team-checkout-web-frontend-1",
+                "south",
+                "zone-beta.example.internal",
+            )))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path(format!(
+                "{ARECORD_LIST_PATH}/scout-south-team-checkout-web-frontend-0"
+            )))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let prefix =
+            crate::scout::indexed_arecord_cr_name_prefix("south", "team-checkout", "web-frontend");
+        let applied = applied_set(&["scout-south-team-checkout-web-frontend-0"]);
+        let result = crate::scout::prune_unapplied_arecords(
+            &client_for(&server),
+            "bindy-system",
+            &selector,
+            &prefix,
+            &applied,
+        )
+        .await;
+
+        assert!(result.is_ok(), "got {result:?}");
+        // wiremock's `.expect(..)` counts are verified when `server` drops.
+    }
+
+    // ------------------------------------------------------------------
+    // B11.2: a Service that stops being LoadBalancer must be released like
+    // an opt-out, not left publishing its old IP.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn service_publishes_dns_only_when_opted_in_eligible_and_loadbalancer() {
+        use crate::scout::service_publishes_dns;
+        assert!(service_publishes_dns(true, true, true));
+        assert!(!service_publishes_dns(true, true, false));
+        assert!(!service_publishes_dns(false, true, true));
+        assert!(!service_publishes_dns(true, false, true));
+        assert!(!service_publishes_dns(false, false, false));
+    }
+
+    // ------------------------------------------------------------------
+    // B11.3: Service stale-cluster cleanup after a --cluster-name change.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn stale_service_arecord_label_selector_excludes_current_cluster_and_scopes_zone() {
+        let selector = crate::scout::stale_service_arecord_label_selector(
+            "south",
+            "team-checkout",
+            "web-frontend",
+            "zone-beta.example.internal",
+        );
+        assert_eq!(
+            selector,
+            stale_arecord_label_selector(
+                "south",
+                "team-checkout",
+                "web-frontend",
+                "zone-beta.example.internal"
+            )
+        );
+        assert!(selector.contains(&format!("{LABEL_SOURCE_CLUSTER}!=south")));
+        assert!(selector.contains(&format!("{LABEL_ZONE}=zone-beta.example.internal")));
+    }
+
+    #[tokio::test]
+    async fn delete_stale_cluster_service_arecords_deletes_old_cluster_record() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(ARECORD_LIST_PATH))
+            .and(wiremock::matchers::query_param(
+                "labelSelector",
+                crate::scout::stale_service_arecord_label_selector(
+                    "south",
+                    "team-checkout",
+                    "web-frontend",
+                    "zone-beta.example.internal",
+                ),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![arecord_item(
+                    "scout-north-team-checkout-web-frontend",
+                    "north",
+                    "zone-beta.example.internal",
+                )])),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path(format!(
+                "{ARECORD_LIST_PATH}/scout-north-team-checkout-web-frontend"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(arecord_item(
+                "scout-north-team-checkout-web-frontend",
+                "north",
+                "zone-beta.example.internal",
+            )))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let result = crate::scout::delete_stale_cluster_service_arecords(
+            &client_for(&server),
+            "bindy-system",
+            "south",
+            "team-checkout",
+            "web-frontend",
+            "zone-beta.example.internal",
+        )
+        .await;
+
+        assert!(result.is_ok(), "got {result:?}");
+    }
 }

@@ -12,7 +12,7 @@
 //! - Instances can be created in any namespace and reference the global cluster
 //! - The reconciler must list instances across all namespaces
 
-use crate::constants::{API_GROUP_VERSION, KIND_BIND9_CLUSTER, KIND_CLUSTER_BIND9_PROVIDER};
+use crate::constants::{API_GROUP_VERSION, KIND_BIND9_CLUSTER};
 use crate::context::Context;
 use crate::crd::{
     Bind9Cluster, Bind9ClusterStatus, Bind9Instance, ClusterBind9Provider, Condition,
@@ -363,15 +363,9 @@ async fn reconcile_namespace_clusters(
             cluster_provider_name.clone(),
         );
 
-        // Create ownerReference to global cluster (cluster-scoped can own namespace-scoped)
-        let owner_ref = k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference {
-            api_version: API_GROUP_VERSION.to_string(),
-            kind: KIND_CLUSTER_BIND9_PROVIDER.to_string(),
-            name: cluster_provider_name.clone(),
-            uid: cluster_provider.metadata.uid.clone().unwrap_or_default(),
-            controller: Some(true),
-            block_owner_deletion: Some(true),
-        };
+        // Create ownerReference to global cluster (cluster-scoped can own
+        // namespace-scoped). Fails fast when the provider has no UID.
+        let owner_ref = crate::bind9_resources::controller_owner_reference(cluster_provider)?;
 
         // Build the Bind9Cluster spec by cloning the global cluster's common spec
         let cluster_spec = Bind9ClusterSpec {

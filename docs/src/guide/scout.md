@@ -259,6 +259,8 @@ The record name is derived by stripping the zone suffix from the host:
 
 Opt in with the `bindy.firestoned.io/scout-enabled: "true"` annotation. One `ARecord` CR is created per rule host, named `scout-{cluster}-{namespace}-{ingress}-{idx}`. The IP is resolved from the Ingress LoadBalancer status or the `bindy.firestoned.io/ip` annotation override.
 
+When a host is removed from the Ingress, or stops matching the zone, Scout deletes that host's `ARecord` on the next reconcile. The same applies to `HTTPRoute` and `TLSRoute` hostnames.
+
 ---
 
 ### 2. Services (LoadBalancer)
@@ -292,7 +294,7 @@ Scout creates an `ARecord` named `scout-{cluster}-{namespace}-{service}` with:
 - DNS record name: `{service-name}` (relative to the zone) → resolves to `my-grpc-api.example.com`
 - IP: from `bindy.firestoned.io/ip` annotation → `--default-ips` → `status.loadBalancer.ingress[].ip`
 
-**`ClusterIP` and `NodePort` services are silently skipped** — they have no routable external IP.
+**`ClusterIP` and `NodePort` services are skipped**, because they have no routable external IP. If an opted-in `LoadBalancer` Service is changed to one of those types, Scout deletes its `ARecord` and removes its finalizer, just as when the opt-in annotation is removed.
 
 If no external IP has been assigned yet, Scout logs a warning and re-queues after 30s:
 
@@ -653,7 +655,7 @@ Scout treats HTTPRoute, TLSRoute, and TCPRoute similarly to Ingress:
 
 - **HTTPRoute**: Provides advanced HTTP routing (path-based, method-based, header matching) without the Ingress resource limitations
 - **TLSRoute**: For TLS-only traffic (non-HTTP protocols over TLS, gRPC, custom protocols), Scout ensures DNS records are created for all declared hostnames
-- **TCPRoute**: For TCP-based services such as databases, proxies, or other L4 traffic. TCPRoute has no `spec.hostnames[]` field, so the record name must be supplied via `bindy.firestoned.io/record-name`. Scout creates exactly one `ARecord`.
+- **TCPRoute**: For TCP-based services such as databases, proxies, or other L4 traffic. TCPRoute has no `spec.hostnames[]` field, so the record name must be supplied via `bindy.firestoned.io/record-name`. Scout creates exactly one `ARecord`. The name is validated like every other record-name override: an invalid one (for example, one containing whitespace or a label starting with `-`) is logged as a warning and no record is created until it is fixed.
 
 ### Quick Example: HTTPRoute
 

@@ -1,3 +1,49 @@
+## [2026-10-11 23:45] - Fail-fast fixes: errors stop the operation instead of proceeding on partial data
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/bindy-scout/src/scout.rs`:
+  - TCPRoute's `bindy.firestoned.io/record-name` override is now validated like every other source kind (audit finding P2-7). Before, it was published unchecked.
+  - Scout now prunes the record of an Ingress, HTTPRoute or TLSRoute host that was removed or no longer matches the zone.
+  - A Service that changes from `LoadBalancer` to another type releases its records and finalizer.
+  - Service records left behind by an old `--cluster-name` are cleaned up.
+- `crates/bindy-bootstrap/src/bootstrap.rs`: `bindy bootstrap scout --namespace X` sets `BINDY_SCOUT_NAMESPACE=X`, so the scout writes into `X`, where its Role is. Before, it fell back to `bindy-system`.
+- `crates/bindy-controller-records/src/records/mod.rs`: deleting a record keeps its finalizer and retries while the zone or role lookup fails. Before, the finalizer was removed and the record stayed served by BIND9. A delete still completes at once when the zone is gone, being deleted, selects no instances or has no primaries.
+- `crates/bindy-bind9/src/bind9/records/`:
+  - A/AAAA addresses are parsed before the live RRset is touched. An invalid entry used to wipe the RRset and leave it half rebuilt.
+  - Every record writer now checks the delete of the old RRset. Transport errors and `REFUSED`/`NOTAUTH`/`NOTZONE`/`SERVFAIL` fail the write instead of appending onto stale data.
+- `crates/bindy-bind9/src/primary.rs`, `crates/bindy-controller-zone/src/dnszone/{secondary,status_helpers}.rs`:
+  - A primary or secondary whose role cannot be read (any error but 404) fails the operation instead of silently dropping out of the target set.
+  - A failed lookup no longer counts as zero expected instances, which could report `Ready=True`.
+- `crates/bindy-bind9/src/{instances,bind9_resources}.rs`, `crates/bindy-controller-instance`, `crates/bindy-controller-cluster`:
+  - The RNDC key is read from the Secret the pods mount (`rndcKey.secretRef`, an inline `rndcKey.secret` name, or the default). Before, it always read `{instance}-rndc-key`, so dynamic updates failed on `secretRef` instances.
+  - The writer, the drift check and the Deployment share one name helper for the RNDC Secret and the ConfigMap. Hand-made instances with a `clusterRef` and `secretRef` instances no longer look drifted on every event.
+  - The instance Service follows the merged `bindcarConfig` (`port`, `serviceSpec` set on the cluster or provider).
+  - A failed read of the parent `Bind9Cluster` or `ClusterBind9Provider` fails the reconcile instead of rolling pods to an instance-only spec.
+  - Instance finalizer cleanup treats only 404 as deleted, and deletes only the RNDC Secret the operator generated. Before, it always deleted `{instance}-rndc-key`, including a user's `secretRef` Secret of that name.
+  - An owner without a UID is an error instead of an empty `ownerReference`.
+- `crates/bindy-bind9/src/bind9/mod.rs`, `crates/bindy-bind9/src/context.rs`:
+  - The bindcar TLS CA bundle is read from the instance's namespace, never `default`.
+  - A bindcar HTTP client that cannot be built with its timeouts fails every call instead of falling back to a client with no timeouts.
+- `crates/bindy-controller-sdk/src/pagination.rs`: a repeated continue token, an empty page with a token, or the page cap is now an error. Before, these returned a partial list as complete.
+- `crates/bindy-controller-sdk/src/{watch,context}.rs`, `crates/bindy/src/main.rs`:
+  - Controllers start only after every watch cache, the nine record kinds included, has finished its first list (`MultiStore::wait_until_ready`, `Stores::wait_until_ready`). Before, a pod admitted right after an operator restart could be replayed an empty record list by the zones-loaded gate.
+  - SIGTERM is listened for once, before leader election, so a signal during the lease wait is no longer lost.
+- `crates/bindy-controller-zone/src/dnszone.rs`: the primary and secondary push loops are plain `for` loops. This removes 8 `Arc::try_unwrap(..).expect(..)` panics and their mutexes, with no behaviour change.
+- `crates/bindy-controller-sdk/src/metrics.rs`: `bindy_firestoned_io_resources_active` no longer goes negative.
+- `crates/bindy-api/src/crd.rs`: `InstanceReference`'s `Hash` ignores `lastReconciledAt`, matching its `PartialEq`.
+- `docs/src/security/threat-model.md`: v1.22 full pass (M-56 to M-60, accepted risks 19 and 20).
+
+### Why
+A review of every crate found paths that logged an error and carried on as if the operation had succeeded. Each of them could leave served DNS data, finalizers or status out of step with the spec, without any visible symptom.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (operator binary; instance Services may update once when a cluster or provider sets `bindcarConfig`)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-09 10:00] - Quick chaos suite for CI; status and readiness follow recovery faster (ADR-0016, ADR-0017 amended)
 
 **Author:** Erick Bourgeois

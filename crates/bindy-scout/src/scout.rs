@@ -866,6 +866,29 @@ pub fn resolve_record_name(
     derive_record_name(host, zone)
 }
 
+/// Resolves the DNS record name for a `TCPRoute` ARecord.
+///
+/// `TCPRoute` has no hostnames, so the `bindy.firestoned.io/record-name`
+/// override is its only source of a record name. The override still gets the
+/// same syntax check as every other kind (audit finding P2-7), because it is
+/// tenant-writable and ends up in a zone file.
+///
+/// Returns `Ok(None)` when no override is set, and `Ok(Some(name))` for a
+/// legal override.
+///
+/// # Errors
+///
+/// Returns an error when the override is present but is not a legal DNS name.
+pub(crate) fn tcproute_record_name(
+    annotations: &BTreeMap<String, String>,
+) -> Result<Option<String>> {
+    let Some(override_name) = get_record_name_annotation(annotations) else {
+        return Ok(None);
+    };
+    validate_record_name_override(&override_name)?;
+    Ok(Some(override_name))
+}
+
 /// Returns the explicit IP overrides from the `bindy.firestoned.io/ip` annotation.
 ///
 /// The value may be a single IP (`"10.0.0.1"`) or a comma-separated list
@@ -1192,6 +1215,24 @@ pub fn arecord_cr_name(
     let raw = format!("{ARECORD_NAME_PREFIX}-{cluster}-{namespace}-{ingress_name}-{host_index}");
     let sanitized = sanitize_k8s_name(&raw);
     sanitized[..sanitized.len().min(MAX_K8S_NAME_LEN)].to_string()
+}
+
+/// Returns the CR-name prefix shared by every host-indexed ARecord Scout
+/// creates for one source object: `scout-{cluster}-{namespace}-{name}-`.
+///
+/// [`arecord_cr_name`], [`httproute_arecord_cr_name`] and
+/// [`tlsroute_arecord_cr_name`] all produce `{prefix}{index}` (before the
+/// [`MAX_K8S_NAME_LEN`] truncation), so a name that is this prefix followed by
+/// only digits is one of the source's per-host records. Used by
+/// [`arecords_to_prune`] to tell those apart from a same-named Service's
+/// un-indexed record, which carries the same source labels.
+pub(crate) fn indexed_arecord_cr_name_prefix(
+    cluster: &str,
+    namespace: &str,
+    source_name: &str,
+) -> String {
+    let raw = format!("{ARECORD_NAME_PREFIX}-{cluster}-{namespace}-{source_name}");
+    format!("{}-", sanitize_k8s_name(&raw))
 }
 
 /// Sanitizes a string for use as a Kubernetes resource name.
@@ -1720,6 +1761,33 @@ pub fn service_arecord_label_selector(
         ns_key = LABEL_SOURCE_NAMESPACE,
         name_key = LABEL_SOURCE_NAME,
     )
+}
+
+/// Builds a label selector string matching ARecords for the given Service that
+/// belong to **any cluster other than `current_cluster`, in the same DNS zone**.
+/// See [`stale_arecord_label_selector`].
+pub fn stale_service_arecord_label_selector(
+    current_cluster: &str,
+    namespace: &str,
+    service_name: &str,
+    current_zone: &str,
+) -> String {
+    stale_selector_for_zone(current_cluster, namespace, service_name, current_zone)
+}
+
+/// Returns `true` when a Service should have an ARecord published.
+///
+/// All three must hold: the Service opted in, its namespace is eligible, and
+/// it is `type: LoadBalancer` (only those have routable external IPs). When
+/// this is `false` and the Scout finalizer is present, the Service is released
+/// exactly like an opt-out, so a Service that changes from `LoadBalancer` to
+/// `ClusterIP` does not keep publishing its old IP.
+pub(crate) fn service_publishes_dns(
+    opted_in: bool,
+    namespace_eligible: bool,
+    is_loadbalancer: bool,
+) -> bool {
+    opted_in && namespace_eligible && is_loadbalancer
 }
 
 /// Parameters for building a Service-sourced ARecord CR.
@@ -2378,21 +2446,28 @@ pub(crate) async fn delete_stale_cluster_arecords(
 
 /// Deletes all ARecords in `target_namespace` that Scout created for the given Service.
 ///
-/// Called during Service deletion and opt-out annotation removal.
+/// Called during Service deletion, opt-out annotation removal, and when the
+/// Service stops being `type: LoadBalancer`. Returns the `zone` labels of the
+/// deleted records, for the stale-cluster cleanup that follows (see
+/// [`stale_cleanup_zones`]).
 async fn delete_arecords_for_service(
     remote_client: &Client,
     target_namespace: &str,
     cluster: &str,
     svc_namespace: &str,
     svc_name: &str,
-) -> Result<()> {
+) -> Result<BTreeSet<String>> {
     let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
     let selector = service_arecord_label_selector(cluster, svc_namespace, svc_name);
     let lp = ListParams::default().labels(&selector);
 
     let arecords = list_all_paginated(&api, lp).await?;
+    let mut deleted_zones = BTreeSet::new();
     for ar in arecords {
         let ar_name = ar.name_any();
+        if let Some(zone) = ar.metadata.labels.as_ref().and_then(|l| l.get(LABEL_ZONE)) {
+            deleted_zones.insert(zone.clone());
+        }
         api.delete(&ar_name, &DeleteParams::default()).await?;
         info!(
             arecord = %ar_name,
@@ -2400,6 +2475,58 @@ async fn delete_arecords_for_service(
             ns = %svc_namespace,
             "Deleted ARecord during Service cleanup"
         );
+    }
+    Ok(deleted_zones)
+}
+
+/// Deletes a Service's own ARecords, then its stale-cluster ARecords for every
+/// zone in play, mirroring the Ingress/route delete and opt-out paths.
+///
+/// `resolved_zone` is the zone from the Service's annotations or the operator
+/// default, if any; it is unioned with the zones of the records just deleted
+/// (see [`stale_cleanup_zones`]). When no usable zone is known, the
+/// stale-cluster candidates are only logged, never deleted.
+///
+/// # Errors
+/// Returns an error if listing or deleting ARecords on the remote cluster fails.
+async fn delete_service_arecords_with_stale_cleanup(
+    ctx: &ScoutContext,
+    svc_namespace: &str,
+    svc_name: &str,
+    resolved_zone: Option<&str>,
+) -> Result<()> {
+    let deleted_zones = delete_arecords_for_service(
+        &ctx.remote_client,
+        &ctx.target_namespace,
+        &ctx.cluster_name,
+        svc_namespace,
+        svc_name,
+    )
+    .await?;
+    let cleanup_zones = stale_cleanup_zones(resolved_zone, &deleted_zones);
+    if cleanup_zones.is_empty() {
+        warn!(service = %svc_name, ns = %svc_namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE), skipping stale-cluster ARecord cleanup; this Service's own ARecords were still removed");
+        log_unscoped_stale_cluster_arecord_candidates(
+            &ctx.remote_client,
+            &ctx.target_namespace,
+            &ctx.cluster_name,
+            "Service",
+            svc_namespace,
+            svc_name,
+        )
+        .await;
+        return Ok(());
+    }
+    for zone in &cleanup_zones {
+        delete_stale_cluster_service_arecords(
+            &ctx.remote_client,
+            &ctx.target_namespace,
+            &ctx.cluster_name,
+            svc_namespace,
+            svc_name,
+            zone,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -2586,6 +2713,108 @@ pub(crate) async fn delete_stale_cluster_tcproute_arecords(
             arecord = %ar_name,
             tcproute = %route_name,
             "Deleted stale TCPRoute ARecord from previous cluster name"
+        );
+    }
+    Ok(())
+}
+
+/// Deletes stale ARecords for a Service from a previous cluster name, in the
+/// same DNS zone. See [`delete_stale_cluster_arecords`].
+pub(crate) async fn delete_stale_cluster_service_arecords(
+    remote_client: &Client,
+    target_namespace: &str,
+    current_cluster: &str,
+    svc_namespace: &str,
+    svc_name: &str,
+    current_zone: &str,
+) -> Result<()> {
+    let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
+    let selector = stale_service_arecord_label_selector(
+        current_cluster,
+        svc_namespace,
+        svc_name,
+        current_zone,
+    );
+    let lp = ListParams::default().labels(&selector);
+
+    let arecords = list_all_paginated(&api, lp).await?;
+    for ar in arecords {
+        let ar_name = ar.name_any();
+        api.delete(&ar_name, &DeleteParams::default()).await?;
+        info!(
+            arecord = %ar_name,
+            service = %svc_name,
+            ns = %svc_namespace,
+            "Deleted stale Service ARecord from previous cluster name"
+        );
+    }
+    Ok(())
+}
+
+/// Decides which of a source object's existing ARecords are no longer
+/// published and must be deleted.
+///
+/// Scout names per-host records by index (`{cr_name_prefix}{index}`), so when
+/// an Ingress / HTTPRoute / TLSRoute drops a host, or a host stops matching the
+/// zone, the record for that index is not re-applied and would otherwise stay
+/// in DNS forever. A name is returned when it is `cr_name_prefix` followed by
+/// one or more ASCII digits and is not in `applied`.
+///
+/// The digit-suffix check matters: a same-named Service in the same namespace
+/// carries the same source labels, but its record name has no index, so it is
+/// never selected here.
+///
+/// # Arguments
+/// * `existing` - Names of the ARecords currently labelled for this source
+/// * `applied` - Names of the ARecords applied in this reconcile pass
+/// * `cr_name_prefix` - From [`indexed_arecord_cr_name_prefix`]
+pub(crate) fn arecords_to_prune(
+    existing: &[String],
+    applied: &BTreeSet<String>,
+    cr_name_prefix: &str,
+) -> Vec<String> {
+    existing
+        .iter()
+        .filter(|name| !applied.contains(*name))
+        .filter(|name| {
+            name.strip_prefix(cr_name_prefix)
+                .is_some_and(|idx| !idx.is_empty() && idx.chars().all(|c| c.is_ascii_digit()))
+        })
+        .cloned()
+        .collect()
+}
+
+/// Deletes the ARecords matching `selector` that were not applied in this
+/// reconcile pass (see [`arecords_to_prune`] for exactly which are chosen).
+///
+/// Shared by every kind that publishes one record per host. `selector` must be
+/// the current-cluster selector for the source object (for example
+/// [`arecord_label_selector`]); records from other cluster names are handled
+/// by the stale-cluster cleanup instead.
+///
+/// # Errors
+/// Returns an error if listing or deleting ARecords on the remote cluster fails.
+pub(crate) async fn prune_unapplied_arecords(
+    remote_client: &Client,
+    target_namespace: &str,
+    selector: &str,
+    cr_name_prefix: &str,
+    applied: &BTreeSet<String>,
+) -> Result<()> {
+    let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
+    let lp = ListParams::default().labels(selector);
+
+    let existing: Vec<String> = list_all_paginated(&api, lp)
+        .await?
+        .iter()
+        .map(ARecord::name_any)
+        .collect();
+    for ar_name in arecords_to_prune(&existing, applied, cr_name_prefix) {
+        api.delete(&ar_name, &DeleteParams::default()).await?;
+        info!(
+            arecord = %ar_name,
+            selector = %selector,
+            "Deleted ARecord for a host that is no longer published"
         );
     }
     Ok(())
@@ -2881,6 +3110,10 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
     let arecord_api: Api<ARecord> =
         Api::namespaced(ctx.remote_client.clone(), &ctx.target_namespace);
 
+    // CR names applied in this pass; anything else indexed for this Ingress is
+    // a dropped or no-longer-matching host and is pruned after the loop.
+    let mut applied: BTreeSet<String> = BTreeSet::new();
+
     for (idx, rule) in spec_rules.iter().enumerate() {
         let host = match rule.host.as_deref() {
             Some(h) if !h.is_empty() => h,
@@ -2927,7 +3160,18 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
                 )));
             }
         }
+        applied.insert(cr_name);
     }
+
+    prune_unapplied_arecords(
+        &ctx.remote_client,
+        &ctx.target_namespace,
+        &arecord_label_selector(&ctx.cluster_name, &namespace, &name),
+        &indexed_arecord_cr_name_prefix(&ctx.cluster_name, &namespace, &name),
+        &applied,
+    )
+    .await
+    .map_err(ScoutError::from)?;
 
     // Clean up any ARecords that were created by a previous cluster name for
     // this same Ingress — happens when scout is restarted with a new --cluster-name.
@@ -2949,7 +3193,10 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
 ///
 /// Mirrors the Ingress reconciler lifecycle:
 /// - Opts in via `bindy.firestoned.io/scout-enabled: "true"`.
-/// - Silently skips non-`LoadBalancer` Services (no warning — ClusterIP/NodePort are intra-cluster).
+/// - Silently skips non-`LoadBalancer` Services (no warning, since ClusterIP/NodePort are
+///   intra-cluster); one that was published and then stopped being `LoadBalancer` is
+///   released like an opt-out (ARecord and finalizer removed).
+/// - After publishing, deletes ARecords a previous `--cluster-name` left for this Service.
 /// - Adds a finalizer; on deletion removes the ARecord and releases it.
 /// - If the opt-in annotation is removed, cleans up the ARecord and finalizer.
 /// - Re-queues if no external IP is available yet (cloud provider may not have assigned one).
@@ -2979,12 +3226,17 @@ async fn reconcile_service(
             .unwrap_or(false)
         {
             info!(service = %name, ns = %namespace, "Service deleting — cleaning up ARecord");
-            if let Err(e) = delete_arecords_for_service(
-                &ctx.remote_client,
-                &ctx.target_namespace,
-                &ctx.cluster_name,
+            let deleting_annotations = svc
+                .metadata
+                .annotations
+                .as_ref()
+                .unwrap_or(&EMPTY_ANNOTATIONS);
+            let deleting_zone = resolve_zone(deleting_annotations, ctx.default_zone.as_deref());
+            if let Err(e) = delete_service_arecords_with_stale_cleanup(
+                &ctx,
                 &namespace,
                 &name,
+                deleting_zone.as_deref(),
             )
             .await
             {
@@ -3019,7 +3271,13 @@ async fn reconcile_service(
             .await
             .map_err(ScoutError::from)?;
 
-    if !is_scout_opted_in(annotations) || !namespace_eligible {
+    // Guard: opted in, eligible namespace, and LoadBalancer (only those have
+    // routable external IPs). A Service that fails any of these after it was
+    // published (opt-out, namespace no longer selected, or LoadBalancer changed
+    // to ClusterIP/NodePort) is released: its ARecords and finalizer go.
+    let opted_in = is_scout_opted_in(annotations);
+    let is_loadbalancer = is_loadbalancer_service(&svc);
+    if !service_publishes_dns(opted_in, namespace_eligible, is_loadbalancer) {
         let has_fin = svc
             .metadata
             .finalizers
@@ -3027,13 +3285,13 @@ async fn reconcile_service(
             .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
             .unwrap_or(false);
         if has_fin {
-            info!(service = %name, ns = %namespace, "Scout opt-in annotation removed — cleaning up ARecord and finalizer");
-            delete_arecords_for_service(
-                &ctx.remote_client,
-                &ctx.target_namespace,
-                &ctx.cluster_name,
+            info!(service = %name, ns = %namespace, opted_in, namespace_eligible, is_loadbalancer, "Service no longer publishes DNS, cleaning up ARecord and finalizer");
+            let release_zone = resolve_zone(annotations, ctx.default_zone.as_deref());
+            delete_service_arecords_with_stale_cleanup(
+                &ctx,
                 &namespace,
                 &name,
+                release_zone.as_deref(),
             )
             .await
             .map_err(ScoutError::from)?;
@@ -3041,13 +3299,7 @@ async fn reconcile_service(
                 .await
                 .map_err(ScoutError::from)?;
         }
-        debug!(service = %name, ns = %namespace, "No scout-enabled annotation — skipping");
-        return Ok(Action::await_change());
-    }
-
-    // Guard: only LoadBalancer services have routable external IPs
-    if !is_loadbalancer_service(&svc) {
-        debug!(service = %name, ns = %namespace, "Service is not LoadBalancer type — skipping");
+        debug!(service = %name, ns = %namespace, opted_in, namespace_eligible, is_loadbalancer, "Service not opted in, not eligible, or not LoadBalancer, skipping");
         return Ok(Action::await_change());
     }
 
@@ -3173,6 +3425,19 @@ async fn reconcile_service(
             )));
         }
     }
+
+    // Clean up any ARecords a previous cluster name left for this Service,
+    // as the other kinds do after a --cluster-name change.
+    delete_stale_cluster_service_arecords(
+        &ctx.remote_client,
+        &ctx.target_namespace,
+        &ctx.cluster_name,
+        &namespace,
+        &name,
+        &zone,
+    )
+    .await
+    .map_err(ScoutError::from)?;
 
     Ok(Action::await_change())
 }
@@ -3466,6 +3731,9 @@ async fn reconcile_httproute(
     let arecord_api: Api<ARecord> =
         Api::namespaced(ctx.remote_client.clone(), &ctx.target_namespace);
 
+    // CR names applied in this pass; see the Ingress reconciler.
+    let mut applied: BTreeSet<String> = BTreeSet::new();
+
     for (idx, hostname) in hostnames.iter().enumerate() {
         if hostname.is_empty() {
             debug!(httproute = %name, hostname_index = idx, "HTTPRoute hostname is empty — skipping");
@@ -3509,7 +3777,18 @@ async fn reconcile_httproute(
                 )));
             }
         }
+        applied.insert(cr_name);
     }
+
+    prune_unapplied_arecords(
+        &ctx.remote_client,
+        &ctx.target_namespace,
+        &httproute_arecord_label_selector(&ctx.cluster_name, &namespace, &name),
+        &indexed_arecord_cr_name_prefix(&ctx.cluster_name, &namespace, &name),
+        &applied,
+    )
+    .await
+    .map_err(ScoutError::from)?;
 
     // Clean up stale ARecords from old cluster names
     delete_stale_cluster_httproute_arecords(
@@ -3787,6 +4066,9 @@ async fn reconcile_tlsroute(
     let arecord_api: Api<ARecord> =
         Api::namespaced(ctx.remote_client.clone(), &ctx.target_namespace);
 
+    // CR names applied in this pass; see the Ingress reconciler.
+    let mut applied: BTreeSet<String> = BTreeSet::new();
+
     for (idx, hostname) in hostnames.iter().enumerate() {
         if hostname.is_empty() {
             debug!(tlsroute = %name, hostname_index = idx, "TLSRoute hostname is empty — skipping");
@@ -3830,7 +4112,18 @@ async fn reconcile_tlsroute(
                 )));
             }
         }
+        applied.insert(cr_name);
     }
+
+    prune_unapplied_arecords(
+        &ctx.remote_client,
+        &ctx.target_namespace,
+        &tlsroute_arecord_label_selector(&ctx.cluster_name, &namespace, &name),
+        &indexed_arecord_cr_name_prefix(&ctx.cluster_name, &namespace, &name),
+        &applied,
+    )
+    .await
+    .map_err(ScoutError::from)?;
 
     // Clean up stale ARecords from old cluster names
     delete_stale_cluster_tlsroute_arecords(
@@ -4081,11 +4374,22 @@ async fn reconcile_tcproute(
 
     let ttl: Option<i32> = annotations.get(ANNOTATION_TTL).and_then(|v| v.parse().ok());
 
-    let Some(record_name) = get_record_name_annotation(annotations) else {
-        warn!(tcproute = %name, ns = %namespace, "TCPRoute has no record-name override — skipping (add bindy.firestoned.io/record-name annotation)");
-        return Ok(Action::requeue(Duration::from_secs(
-            SCOUT_ERROR_REQUEUE_SECS,
-        )));
+    // P2-7: the override is the only record-name source for a TCPRoute, so it
+    // must pass the same syntax check every other kind gets.
+    let record_name = match tcproute_record_name(annotations) {
+        Ok(Some(n)) => n,
+        Ok(None) => {
+            warn!(tcproute = %name, ns = %namespace, "TCPRoute has no record-name override, skipping (add bindy.firestoned.io/record-name annotation)");
+            return Ok(Action::requeue(Duration::from_secs(
+                SCOUT_ERROR_REQUEUE_SECS,
+            )));
+        }
+        Err(e) => {
+            warn!(tcproute = %name, ns = %namespace, zone = %zone, error = %e, "Invalid record-name override, skipping");
+            return Ok(Action::requeue(Duration::from_secs(
+                SCOUT_ERROR_REQUEUE_SECS,
+            )));
+        }
     };
 
     let arecord_api: Api<ARecord> =

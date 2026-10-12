@@ -24,7 +24,6 @@ pub use k8s_openapi::api::{
     apps::v1::Deployment,
     core::v1::{ConfigMap, Pod, Secret, Service, ServiceAccount},
 };
-pub use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
 
 // Re-export kube-rs types
 pub use kube::{

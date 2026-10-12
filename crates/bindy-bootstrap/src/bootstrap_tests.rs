@@ -21,9 +21,9 @@ mod tests {
         OPERATOR_ROLE_NAME, POD_NAMESPACE_ENV, REMOTE_KUBECONFIG_SECRET_SUFFIX,
         REMOTE_KUBECONFIG_SECRET_TYPE, SA_TOKEN_SECRET_SUFFIX, SCOUT_CLUSTER_ROLE_BINDING_NAME,
         SCOUT_CLUSTER_ROLE_NAME, SCOUT_DEPLOYMENT_NAME, SCOUT_SECRETS_READER_ROLE_BINDING_NAME,
-        SCOUT_SECRETS_READER_ROLE_NAME, SCOUT_SERVICE_ACCOUNT_NAME, SCOUT_WRITER_ROLE_BINDING_NAME,
-        SCOUT_WRITER_ROLE_NAME, SECRETS_WRITER_ROLE_BINDING_NAME, SECRETS_WRITER_ROLE_NAME,
-        SERVICE_ACCOUNT_NAME,
+        SCOUT_SECRETS_READER_ROLE_NAME, SCOUT_SERVICE_ACCOUNT_NAME, SCOUT_TARGET_NAMESPACE_ENV,
+        SCOUT_WRITER_ROLE_BINDING_NAME, SCOUT_WRITER_ROLE_NAME, SECRETS_WRITER_ROLE_BINDING_NAME,
+        SECRETS_WRITER_ROLE_NAME, SERVICE_ACCOUNT_NAME,
     };
 
     /// Convenience helper: build a minimal `ScoutDeploymentOptions` for tests.
@@ -1301,6 +1301,52 @@ mod tests {
             args,
             vec!["scout", "--cluster-name", DEFAULT_SCOUT_CLUSTER_NAME]
         );
+    }
+
+    /// Returns the plain `value` of env var `name` on the scout container, if set.
+    fn scout_container_env_value(
+        d: k8s_openapi::api::apps::v1::Deployment,
+        name: &str,
+    ) -> Option<String> {
+        d.spec?
+            .template
+            .spec?
+            .containers
+            .into_iter()
+            .next()?
+            .env?
+            .into_iter()
+            .find(|e| e.name == name)?
+            .value
+    }
+
+    /// B12: `bindy bootstrap scout --namespace foo` creates the writer Role in
+    /// `foo`, so the scout it deploys must target `foo` too. Without the env
+    /// var the scout falls back to `bindy-system`, where it has no RBAC.
+    #[test]
+    fn test_build_scout_deployment_sets_target_namespace_env_to_bootstrap_namespace() {
+        let opts = scout_opts("latest", None, DEFAULT_SCOUT_CLUSTER_NAME, &[], None, None);
+        let d = build_scout_deployment("foo", &opts).unwrap();
+        assert_eq!(
+            scout_container_env_value(d, SCOUT_TARGET_NAMESPACE_ENV).as_deref(),
+            Some("foo")
+        );
+    }
+
+    #[test]
+    fn test_build_scout_deployment_target_namespace_env_follows_namespace() {
+        let opts = scout_opts("latest", None, DEFAULT_SCOUT_CLUSTER_NAME, &[], None, None);
+        let d = build_scout_deployment("bar", &opts).unwrap();
+        assert_eq!(
+            scout_container_env_value(d, SCOUT_TARGET_NAMESPACE_ENV).as_deref(),
+            Some("bar")
+        );
+    }
+
+    #[test]
+    fn test_scout_target_namespace_env_name_matches_scout_reader() {
+        // The scout reads exactly this variable (crates/bindy-scout/src/scout.rs).
+        assert_eq!(SCOUT_TARGET_NAMESPACE_ENV, "BINDY_SCOUT_NAMESPACE");
     }
 
     #[test]

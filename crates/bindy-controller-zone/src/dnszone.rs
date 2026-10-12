@@ -32,12 +32,10 @@ use crate::context::StoresBind9Ext;
 use crate::crd::DNSZone;
 use anyhow::{anyhow, Result};
 use bindcar::{ZONE_TYPE_PRIMARY, ZONE_TYPE_SECONDARY};
-use futures::stream::{self, StreamExt};
 use k8s_openapi::api::core::v1::{Pod, Service};
 use kube::{api::ListParams, client::Client, Api, ResourceExt};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
 /// Creates a map of nameserver hostnames to IP addresses by:
@@ -1145,9 +1143,9 @@ pub(crate) struct NotifyTarget {
 
 /// Record `endpoint` as the NOTIFY target if none has been chosen yet.
 ///
-/// Endpoints are configured concurrently, so this is called from every task;
-/// only the first caller may win. A later endpoint must not displace it, or
-/// NOTIFY would chase a different server on every reconcile.
+/// Called for every primary endpoint, in order; the first one wins. A later
+/// endpoint must not displace it, or NOTIFY would chase a different server on
+/// every reconcile.
 ///
 /// # Arguments
 /// * `slot` - The shared target, empty until the first endpoint is configured
@@ -1474,252 +1472,201 @@ pub(crate) async fn add_dnszone_with_resolver(
         );
     }
 
-    // Process all primary instances concurrently using async streams
-    // Mark each instance as reconciled immediately after first successful endpoint configuration
-    let first_endpoint = Arc::new(Mutex::new(None::<NotifyTarget>));
-    let total_endpoints = Arc::new(Mutex::new(0_usize));
+    // Configure the primary instances one after another, and each instance's
+    // endpoints one after another. Each instance is marked as reconciled as
+    // soon as one of its endpoints serves the zone.
+    let zone_name = &spec.zone_name;
+    let secondary_ips_ref = if secondary_ips.is_empty() {
+        None
+    } else {
+        Some(secondary_ips.as_slice())
+    };
+    let notify_targets_ref = if notify_targets.is_empty() {
+        None
+    } else {
+        Some(notify_targets.as_slice())
+    };
+    let mut first_endpoint: Option<NotifyTarget> = None;
+    let mut total_endpoints = 0_usize;
     // Endpoints where the zone did NOT exist and had to be created. A created
     // zone holds only SOA + NS, so every one of these endpoints is missing all
     // of the zone's record data and needs a replay.
-    let zones_created = Arc::new(Mutex::new(0_usize));
-    let errors = Arc::new(Mutex::new(Vec::<String>::new()));
-    let status_updater_shared = Arc::new(Mutex::new(status_updater));
+    let mut zones_created = 0_usize;
+    let mut errors: Vec<String> = Vec::new();
+    // Instances where EVERY endpoint accepted the zone (added or already
+    // present): the per-INSTANCE success signal used for readiness.
+    let mut instances_configured = 0_usize;
 
-    // Create a stream of futures for all instances.
-    // Each instance future resolves to `true` only if EVERY endpoint of that
-    // instance accepted the zone (added or already present) - this is the
-    // per-INSTANCE success signal used for readiness computation.
-    let instance_results = stream::iter(primary_instance_refs.iter())
-        .then(|instance_ref| {
-            // Per instance, not the shared startup manager: only this carries the
-            // instance's TLS configuration. See zone_manager_for_instance.
-            let zone_manager =
-                zone_manager_for_instance(&ctx, &instance_ref.name, &instance_ref.namespace);
-            let zone_name = spec.zone_name.clone();
-            let soa_record = spec.soa_record.clone();
-            let all_nameserver_hostnames = all_nameserver_hostnames.clone();
-            let name_server_ips = name_server_ips.clone();
-            let secondary_ips = secondary_ips.clone();
-            let notify_targets = notify_targets.clone();
-            let first_endpoint = Arc::clone(&first_endpoint);
-            let total_endpoints = Arc::clone(&total_endpoints);
-            let zones_created = Arc::clone(&zones_created);
-            let errors = Arc::clone(&errors);
-            let status_updater_shared = Arc::clone(&status_updater_shared);
-            let instance_ref = instance_ref.clone();
-            let _zone_namespace = namespace.clone();
-            let _zone_name_ref = name.clone();
+    for instance_ref in &primary_instance_refs {
+        // Per instance, not the shared startup manager: only this carries the
+        // instance's TLS configuration. See zone_manager_for_instance.
+        let zone_manager =
+            zone_manager_for_instance(&ctx, &instance_ref.name, &instance_ref.namespace);
 
-            async move {
-                debug!(
-                    "Processing endpoints for primary instance {}/{}",
+        debug!(
+            "Processing endpoints for primary instance {}/{}",
+            instance_ref.namespace, instance_ref.name
+        );
+
+        // Load RNDC key for this specific instance
+        let key_data = match resolver
+            .rndc_key(&instance_ref.namespace, &instance_ref.name)
+            .await
+        {
+            Ok(key) => key,
+            Err(e) => {
+                errors.push(format!(
+                    "instance {}/{}: failed to load RNDC key: {e}",
                     instance_ref.namespace, instance_ref.name
-                );
-
-                // Load RNDC key for this specific instance
-                let key_data = match resolver.rndc_key(&instance_ref.namespace, &instance_ref.name).await {
-                    Ok(key) => key,
-                    Err(e) => {
-                        let err_msg = format!("instance {}/{}: failed to load RNDC key: {e}", instance_ref.namespace, instance_ref.name);
-                        errors.lock().await.push(err_msg);
-                        return false;
-                    }
-                };
-
-                // Get all endpoints for this instance
-                let endpoints = match resolver.endpoints(&instance_ref.namespace, &instance_ref.name, "http").await {
-                    Ok(eps) => eps,
-                    Err(e) => {
-                        let err_msg = format!("instance {}/{}: failed to get endpoints: {e}", instance_ref.namespace, instance_ref.name);
-                        errors.lock().await.push(err_msg);
-                        return false;
-                    }
-                };
-
-                debug!(
-                    "Found {} endpoint(s) for primary instance {}/{}",
-                    endpoints.len(),
-                    instance_ref.namespace,
-                    instance_ref.name
-                );
-
-                // Process endpoints concurrently for this instance
-                let endpoint_results = stream::iter(endpoints.iter())
-                    .then(|endpoint| {
-                        let zone_manager = zone_manager.clone();
-                        let zone_name = zone_name.clone();
-                        let key_data = key_data.clone();
-                        let soa_record = soa_record.clone();
-                        let all_nameserver_hostnames = all_nameserver_hostnames.clone();
-                        let name_server_ips = name_server_ips.clone();
-                        let secondary_ips = secondary_ips.clone();
-                        let notify_targets = notify_targets.clone();
-                        let first_endpoint = Arc::clone(&first_endpoint);
-                        let total_endpoints = Arc::clone(&total_endpoints);
-                        let zones_created = Arc::clone(&zones_created);
-                        let errors = Arc::clone(&errors);
-                        let instance_ref = instance_ref.clone();
-                        let endpoint = endpoint.clone();
-
-                        async move {
-                            let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
-
-                            // Save the first endpoint (globally), together with
-                            // the instance serving it -- NOTIFY needs that
-                            // instance's TLS configuration to dial it.
-                            {
-                                let mut first = first_endpoint.lock().await;
-                                remember_first_notify_target(
-                                    &mut first,
-                                    &pod_endpoint,
-                                    &instance_ref.name,
-                                    &instance_ref.namespace,
-                                );
-                            }
-
-                            // Check if zone already exists before attempting creation
-                            let zone_exists = match zone_manager.zone_exists(&zone_name, &pod_endpoint).await {
-                                Ok(exists) => exists,
-                                Err(e) => {
-                                    // An endpoint that cannot say whether it has the
-                                    // zone (a pod that is gone, a sidecar restarting)
-                                    // is a failed endpoint, retried with the zone's
-                                    // backoff. A POST to it would only ride the
-                                    // two-minute bindcar retry and hold this zone's
-                                    // reconcile, and every other change of the zone,
-                                    // behind a dead address (chaos suite).
-                                    error!(
-                                        "Failed to check if zone {} exists on endpoint {} (instance {}/{}): {:#}",
-                                        zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name, e
-                                    );
-                                    errors.lock().await.push(format!(
-                                        "endpoint {pod_endpoint} (instance {}/{}): zone state unknown: {e:#}",
-                                        instance_ref.namespace, instance_ref.name
-                                    ));
-                                    return Err(());
-                                }
-                            };
-
-                            if zone_exists {
-                                debug!(
-                                    "Zone {} already exists on endpoint {} (instance {}/{}), skipping creation",
-                                    zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name
-                                );
-                                *total_endpoints.lock().await += 1;
-                                // Return false to indicate zone was not newly added
-                                return Ok(false);
-                            }
-
-                            // Pass secondary IPs for zone transfer configuration
-                            let secondary_ips_ref = if secondary_ips.is_empty() {
-                                None
-                            } else {
-                                Some(secondary_ips.as_slice())
-                            };
-                            let notify_targets_ref = if notify_targets.is_empty() {
-                                None
-                            } else {
-                                Some(notify_targets.as_slice())
-                            };
-
-                            match zone_manager
-                                .add_zones(
-                                    &zone_name,
-                                    ZONE_TYPE_PRIMARY,
-                                    &pod_endpoint,
-                                    &key_data,
-                                    Some(&soa_record),
-                                    Some(&all_nameserver_hostnames),
-                                    name_server_ips.as_ref(),
-                                    secondary_ips_ref,
-                                    notify_targets_ref,
-                                    None, // primary_ips only for secondary zones
-                                    dnssec_policy,
-                                )
-                                .await
-                            {
-                                Ok(was_added) => {
-                                    if was_added {
-                                        // The zone was absent from this pod and has just been
-                                        // recreated from spec - it currently holds only SOA and
-                                        // NS records, so the pod is authoritative for an empty
-                                        // zone until the records are replayed.
-                                        warn!(
-                                            "Zone {} was MISSING on endpoint {} (instance: {}/{}) and has been recreated \
-                                             with SOA and NS records only - all records for this zone will be replayed",
-                                            zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name
-                                        );
-                                        *zones_created.lock().await += 1;
-                                    }
-                                    *total_endpoints.lock().await += 1;
-                                    // Return was_added so we can check if zone was actually configured
-                                    Ok(was_added)
-                                }
-                                Err(e) => {
-                                    error!(
-                                        "Failed to add zone {} to endpoint {} (instance {}/{}): {}",
-                                        zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name, e
-                                    );
-                                    errors.lock().await.push(format!(
-                                        "endpoint {pod_endpoint} (instance {}/{}): {e}",
-                                        instance_ref.namespace, instance_ref.name
-                                    ));
-                                    Err(())
-                                }
-                            }
-                        }
-                    })
-                    .collect::<Vec<Result<bool, ()>>>()
-                    .await;
-
-                // Mark this instance as configured if at least one endpoint accepted
-                // the zone - freshly added OR already present. has_changes() compares
-                // instance lists excluding lastReconciledAt, so re-marking an already
-                // recorded instance does not cause a status patch per cycle.
-                let zone_was_configured = instance_serves_zone(&endpoint_results);
-                if zone_was_configured {
-                    status_updater_shared
-                        .lock()
-                        .await
-                        .update_instance_status(
-                            &instance_ref.name,
-                            &instance_ref.namespace,
-                            crate::crd::InstanceStatus::Configured,
-                            Some("Zone successfully configured on primary instance".to_string()),
-                        );
-                    debug!(
-                        "Marked primary instance {}/{} as configured for zone {}",
-                        instance_ref.namespace, instance_ref.name, zone_name
-                    );
-                }
-
-                // The instance counts as fully configured only if every one of
-                // its ready endpoints accepted the zone (added OR already
-                // present). A single failed endpoint means the instance is NOT
-                // fully serving the zone and must not count towards readiness.
-                !endpoint_results.is_empty() && endpoint_results.iter().all(Result::is_ok)
+                ));
+                continue;
             }
-        })
-        .collect::<Vec<bool>>()
-        .await;
+        };
 
-    let instances_configured = instance_results.iter().filter(|ok| **ok).count();
+        // Get all endpoints for this instance
+        let endpoints = match resolver
+            .endpoints(&instance_ref.namespace, &instance_ref.name, "http")
+            .await
+        {
+            Ok(eps) => eps,
+            Err(e) => {
+                errors.push(format!(
+                    "instance {}/{}: failed to get endpoints: {e}",
+                    instance_ref.namespace, instance_ref.name
+                ));
+                continue;
+            }
+        };
 
-    let first_endpoint = Arc::try_unwrap(first_endpoint)
-        .expect("Failed to unwrap first_endpoint Arc")
-        .into_inner();
-    let total_endpoints = Arc::try_unwrap(total_endpoints)
-        .expect("Failed to unwrap total_endpoints Arc")
-        .into_inner();
-    let zones_created = Arc::try_unwrap(zones_created)
-        .expect("Failed to unwrap zones_created Arc")
-        .into_inner();
-    let errors = Arc::try_unwrap(errors)
-        .expect("Failed to unwrap errors Arc")
-        .into_inner();
-    let status_updater = Arc::try_unwrap(status_updater_shared)
-        .map_err(|_| anyhow!("Failed to unwrap status_updater - multiple references remain"))?
-        .into_inner();
+        debug!(
+            "Found {} endpoint(s) for primary instance {}/{}",
+            endpoints.len(),
+            instance_ref.namespace,
+            instance_ref.name
+        );
+
+        // Per endpoint: Ok(true) zone added, Ok(false) already present, Err
+        // failed.
+        let mut endpoint_results: Vec<std::result::Result<bool, ()>> =
+            Vec::with_capacity(endpoints.len());
+        for endpoint in &endpoints {
+            let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
+
+            // Save the first endpoint (globally), together with the instance
+            // serving it: NOTIFY needs that instance's TLS configuration to
+            // dial it.
+            remember_first_notify_target(
+                &mut first_endpoint,
+                &pod_endpoint,
+                &instance_ref.name,
+                &instance_ref.namespace,
+            );
+
+            // Check if zone already exists before attempting creation
+            let zone_exists = match zone_manager.zone_exists(zone_name, &pod_endpoint).await {
+                Ok(exists) => exists,
+                Err(e) => {
+                    // An endpoint that cannot say whether it has the zone (a
+                    // pod that is gone, a sidecar restarting) is a failed
+                    // endpoint, retried with the zone's backoff. A POST to it
+                    // would only ride the two-minute bindcar retry and hold
+                    // this zone's reconcile, and every other change of the
+                    // zone, behind a dead address (chaos suite).
+                    error!(
+                        "Failed to check if zone {} exists on endpoint {} (instance {}/{}): {:#}",
+                        zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name, e
+                    );
+                    errors.push(format!(
+                        "endpoint {pod_endpoint} (instance {}/{}): zone state unknown: {e:#}",
+                        instance_ref.namespace, instance_ref.name
+                    ));
+                    endpoint_results.push(Err(()));
+                    continue;
+                }
+            };
+
+            if zone_exists {
+                debug!(
+                    "Zone {} already exists on endpoint {} (instance {}/{}), skipping creation",
+                    zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name
+                );
+                total_endpoints += 1;
+                // The zone was not newly added
+                endpoint_results.push(Ok(false));
+                continue;
+            }
+
+            match zone_manager
+                .add_zones(
+                    zone_name,
+                    ZONE_TYPE_PRIMARY,
+                    &pod_endpoint,
+                    &key_data,
+                    Some(&spec.soa_record),
+                    Some(&all_nameserver_hostnames),
+                    name_server_ips.as_ref(),
+                    secondary_ips_ref,
+                    notify_targets_ref,
+                    None, // primary_ips only for secondary zones
+                    dnssec_policy,
+                )
+                .await
+            {
+                Ok(was_added) => {
+                    if was_added {
+                        // The zone was absent from this pod and has just been
+                        // recreated from spec - it currently holds only SOA and
+                        // NS records, so the pod is authoritative for an empty
+                        // zone until the records are replayed.
+                        warn!(
+                            "Zone {} was MISSING on endpoint {} (instance: {}/{}) and has been recreated \
+                             with SOA and NS records only - all records for this zone will be replayed",
+                            zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name
+                        );
+                        zones_created += 1;
+                    }
+                    total_endpoints += 1;
+                    endpoint_results.push(Ok(was_added));
+                }
+                Err(e) => {
+                    error!(
+                        "Failed to add zone {} to endpoint {} (instance {}/{}): {}",
+                        zone_name, pod_endpoint, instance_ref.namespace, instance_ref.name, e
+                    );
+                    errors.push(format!(
+                        "endpoint {pod_endpoint} (instance {}/{}): {e}",
+                        instance_ref.namespace, instance_ref.name
+                    ));
+                    endpoint_results.push(Err(()));
+                }
+            }
+        }
+
+        // Mark this instance as configured if at least one endpoint accepted
+        // the zone - freshly added OR already present. has_changes() compares
+        // instance lists excluding lastReconciledAt, so re-marking an already
+        // recorded instance does not cause a status patch per cycle.
+        if instance_serves_zone(&endpoint_results) {
+            status_updater.update_instance_status(
+                &instance_ref.name,
+                &instance_ref.namespace,
+                crate::crd::InstanceStatus::Configured,
+                Some("Zone successfully configured on primary instance".to_string()),
+            );
+            debug!(
+                "Marked primary instance {}/{} as configured for zone {}",
+                instance_ref.namespace, instance_ref.name, zone_name
+            );
+        }
+
+        // The instance counts as fully configured only if every one of its
+        // ready endpoints accepted the zone (added OR already present). A
+        // single failed endpoint means the instance is NOT fully serving the
+        // zone and must not count towards readiness.
+        if !endpoint_results.is_empty() && endpoint_results.iter().all(Result::is_ok) {
+            instances_configured += 1;
+        }
+    }
 
     // If ALL operations failed, return an error
     if total_endpoints == 0 && !errors.is_empty() {
@@ -1939,214 +1886,196 @@ pub(crate) async fn add_dnszone_to_secondaries_with_resolver(
         return Ok(SecondaryConfigOutcome::default());
     }
 
-    let total_endpoints = Arc::new(Mutex::new(0_usize));
+    // Configure the secondary instances one after another, and each
+    // instance's endpoints one after another.
+    let zone_name = &spec.zone_name;
+    let mut total_endpoints = 0_usize;
     // Endpoints where the secondary zone had to be created (see the primary
     // path for why this matters). A replaced zone is not counted: the
     // primaries still hold every record, nothing needs a replay.
-    let zones_created = Arc::new(Mutex::new(0_usize));
-    let errors = Arc::new(Mutex::new(Vec::<String>::new()));
-    let not_loaded = Arc::new(Mutex::new(Vec::<String>::new()));
-    let status_updater_shared = Arc::new(Mutex::new(status_updater));
+    let mut zones_created = 0_usize;
+    let mut errors: Vec<String> = Vec::new();
+    let mut not_loaded: Vec<String> = Vec::new();
+    // Instances where every endpoint has the zone loaded.
+    let mut instances_configured = 0_usize;
 
-    let instance_results = stream::iter(secondary_instance_refs.iter())
-        .then(|instance_ref| {
-            let zone_manager =
-                zone_manager_for_instance(&ctx, &instance_ref.name, &instance_ref.namespace);
-            let zone_name = spec.zone_name.clone();
-            let primary_ips = primary_ips.to_vec();
-            let total_endpoints = Arc::clone(&total_endpoints);
-            let zones_created = Arc::clone(&zones_created);
-            let errors = Arc::clone(&errors);
-            let not_loaded = Arc::clone(&not_loaded);
-            let status_updater_shared = Arc::clone(&status_updater_shared);
-            let instance_ref = instance_ref.clone();
+    for instance_ref in &secondary_instance_refs {
+        let zone_manager =
+            zone_manager_for_instance(&ctx, &instance_ref.name, &instance_ref.namespace);
 
-            async move {
-                debug!(
-                    "Processing secondary instance {}/{} for zone {}",
-                    instance_ref.namespace, instance_ref.name, zone_name
-                );
+        debug!(
+            "Processing secondary instance {}/{} for zone {}",
+            instance_ref.namespace, instance_ref.name, zone_name
+        );
 
-                // Each instance has its own RNDC secret for security isolation
-                let key_data = match resolver.rndc_key(&instance_ref.namespace, &instance_ref.name).await {
-                    Ok(key) => key,
-                    Err(e) => {
-                        let err_msg = format!("instance {}/{}: failed to load RNDC key: {e}", instance_ref.namespace, instance_ref.name);
-                        errors.lock().await.push(err_msg);
-                        return false;
-                    }
-                };
-
-                let endpoints = match resolver.endpoints(&instance_ref.namespace, &instance_ref.name, "http").await {
-                    Ok(eps) => eps,
-                    Err(e) => {
-                        let err_msg = format!("instance {}/{}: failed to get endpoints: {e}", instance_ref.namespace, instance_ref.name);
-                        errors.lock().await.push(err_msg);
-                        return false;
-                    }
-                };
-
-                let endpoint_results = stream::iter(endpoints.iter())
-                    .then(|endpoint| {
-                        let zone_manager = zone_manager.clone();
-                        let zone_name = zone_name.clone();
-                        let key_data = key_data.clone();
-                        let primary_ips = primary_ips.clone();
-                        let total_endpoints = Arc::clone(&total_endpoints);
-                        let zones_created = Arc::clone(&zones_created);
-                        let errors = Arc::clone(&errors);
-                        let instance_ref = instance_ref.clone();
-                        let endpoint = endpoint.clone();
-
-                        async move {
-                            let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
-                            let label = format!("{}/{} ({pod_endpoint})", instance_ref.namespace, instance_ref.name);
-
-                            // Absent, loaded, or configured with no data
-                            // (ADR-0019). An endpoint whose state cannot be read
-                            // (a pod that is gone, a sidecar restarting) is a
-                            // failed endpoint retried with the zone's backoff,
-                            // never a POST that rides the two-minute bindcar
-                            // retry against a dead address.
-                            let presence = match zone_manager.zone_presence(&zone_name, &pod_endpoint).await {
-                                Ok(presence) => Some(presence),
-                                Err(e) => {
-                                    warn!("Cannot read zone {zone_name} on secondary {label}: {e:#}");
-                                    errors.lock().await.push(format!("endpoint {label}: zone state unknown: {e:#}"));
-                                    return (Err(()), false);
-                                }
-                            };
-                            let exists = matches!(presence, Some(ZonePresence::Loaded | ZonePresence::NotLoaded));
-                            let mut loaded = presence == Some(ZonePresence::Loaded);
-
-                            let created = if exists && replace_existing {
-                                match zone_manager
-                                    .replace_secondary_zone(&zone_name, &pod_endpoint, &key_data, &primary_ips)
-                                    .await
-                                {
-                                    Ok(()) => {
-                                        info!("Replaced secondary zone {zone_name} on {label}: primaries {primary_ips:?}");
-                                        loaded = false;
-                                        false
-                                    }
-                                    Err(e) => {
-                                        error!("Failed to replace secondary zone {zone_name} on {label}: {e:#}");
-                                        errors.lock().await.push(format!("endpoint {label}: {e:#}"));
-                                        return (Err(()), false);
-                                    }
-                                }
-                            } else if exists {
-                                false
-                            } else {
-                                match zone_manager
-                                    .add_zones(
-                                        &zone_name,
-                                        ZONE_TYPE_SECONDARY,
-                                        &pod_endpoint,
-                                        &key_data,
-                                        None, // No SOA record for secondary zones
-                                        None, // No name_servers for secondary zones
-                                        None, // No name_server_ips for secondary zones
-                                        None, // No secondary_ips for secondary zones
-                                        None, // No notify targets for secondary zones
-                                        Some(&primary_ips),
-                                        None, // No DNSSEC policy for secondary zones
-                                    )
-                                    .await
-                                {
-                                    Ok(added) => {
-                                        if added {
-                                            info!("Added secondary zone {zone_name} to {label}");
-                                            *zones_created.lock().await += 1;
-                                        }
-                                        loaded = false;
-                                        added
-                                    }
-                                    Err(e) => {
-                                        error!("Failed to add secondary zone {zone_name} to {label}: {e:#}");
-                                        errors.lock().await.push(format!("endpoint {label}: {e:#}"));
-                                        return (Err(()), false);
-                                    }
-                                }
-                            };
-                            *total_endpoints.lock().await += 1;
-
-                            // `rndc addzone` only configures the zone; the data
-                            // comes from an AXFR. Force one now (also on a zone
-                            // that already existed, to bring it up to date).
-                            if let Err(e) = zone_manager.retransfer_zone(&zone_name, &pod_endpoint).await {
-                                warn!(
-                                    "Failed to trigger zone transfer for {zone_name} on {label}: {e:#}. Zone will sync via SOA refresh timer."
-                                );
-                            }
-
-                            (Ok(created), loaded)
-                        }
-                    })
-                    .collect::<Vec<SecondaryEndpointResult>>()
-                    .await;
-
-                let accepted: Vec<std::result::Result<bool, ()>> =
-                    endpoint_results.iter().map(|(result, _)| *result).collect();
-                let all_loaded = !endpoint_results.is_empty()
-                    && endpoint_results.iter().all(|(result, loaded)| result.is_ok() && *loaded);
-                let unloaded: Vec<String> = endpoint_results
-                    .iter()
-                    .zip(endpoints.iter())
-                    .filter(|((result, loaded), _)| result.is_ok() && !*loaded)
-                    .map(|(_, endpoint)| {
-                        format!(
-                            "{}/{} ({}:{})",
-                            instance_ref.namespace, instance_ref.name, endpoint.ip, endpoint.port
-                        )
-                    })
-                    .collect();
-
-                if instance_serves_zone(&accepted) {
-                    let (status, message) = if unloaded.is_empty() {
-                        (
-                            crate::crd::InstanceStatus::Configured,
-                            "Zone successfully configured on secondary instance".to_string(),
-                        )
-                    } else {
-                        (
-                            crate::crd::InstanceStatus::Failed,
-                            format!(
-                                "Zone configured but not loaded on {} endpoint(s): transfer pending or denied",
-                                unloaded.len()
-                            ),
-                        )
-                    };
-                    status_updater_shared.lock().await.update_instance_status(
-                        &instance_ref.name,
-                        &instance_ref.namespace,
-                        status,
-                        Some(message),
-                    );
-                }
-                not_loaded.lock().await.extend(unloaded);
-
-                // Fully configured only if every endpoint has the zone loaded.
-                all_loaded
+        // Each instance has its own RNDC secret for security isolation
+        let key_data = match resolver
+            .rndc_key(&instance_ref.namespace, &instance_ref.name)
+            .await
+        {
+            Ok(key) => key,
+            Err(e) => {
+                errors.push(format!(
+                    "instance {}/{}: failed to load RNDC key: {e}",
+                    instance_ref.namespace, instance_ref.name
+                ));
+                continue;
             }
-        })
-        .collect::<Vec<bool>>()
-        .await;
+        };
 
-    let instances_configured = instance_results.iter().filter(|ok| **ok).count();
+        let endpoints = match resolver
+            .endpoints(&instance_ref.namespace, &instance_ref.name, "http")
+            .await
+        {
+            Ok(eps) => eps,
+            Err(e) => {
+                errors.push(format!(
+                    "instance {}/{}: failed to get endpoints: {e}",
+                    instance_ref.namespace, instance_ref.name
+                ));
+                continue;
+            }
+        };
 
-    let total_endpoints = Arc::try_unwrap(total_endpoints)
-        .expect("Failed to unwrap total_endpoints Arc")
-        .into_inner();
-    let zones_created = Arc::try_unwrap(zones_created)
-        .expect("Failed to unwrap zones_created Arc")
-        .into_inner();
-    let errors = Arc::try_unwrap(errors)
-        .expect("Failed to unwrap errors Arc")
-        .into_inner();
-    let not_loaded = Arc::try_unwrap(not_loaded)
-        .expect("Failed to unwrap not_loaded Arc")
-        .into_inner();
+        let mut endpoint_results: Vec<SecondaryEndpointResult> =
+            Vec::with_capacity(endpoints.len());
+        for endpoint in &endpoints {
+            let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
+            let label = format!(
+                "{}/{} ({pod_endpoint})",
+                instance_ref.namespace, instance_ref.name
+            );
+
+            // Absent, loaded, or configured with no data (ADR-0019). An
+            // endpoint whose state cannot be read (a pod that is gone, a
+            // sidecar restarting) is a failed endpoint retried with the
+            // zone's backoff, never a POST that rides the two-minute bindcar
+            // retry against a dead address.
+            let presence = match zone_manager.zone_presence(zone_name, &pod_endpoint).await {
+                Ok(presence) => presence,
+                Err(e) => {
+                    warn!("Cannot read zone {zone_name} on secondary {label}: {e:#}");
+                    errors.push(format!("endpoint {label}: zone state unknown: {e:#}"));
+                    endpoint_results.push((Err(()), false));
+                    continue;
+                }
+            };
+            let exists = matches!(presence, ZonePresence::Loaded | ZonePresence::NotLoaded);
+            let mut loaded = presence == ZonePresence::Loaded;
+
+            let created = if exists && replace_existing {
+                match zone_manager
+                    .replace_secondary_zone(zone_name, &pod_endpoint, &key_data, primary_ips)
+                    .await
+                {
+                    Ok(()) => {
+                        info!("Replaced secondary zone {zone_name} on {label}: primaries {primary_ips:?}");
+                        loaded = false;
+                        false
+                    }
+                    Err(e) => {
+                        error!("Failed to replace secondary zone {zone_name} on {label}: {e:#}");
+                        errors.push(format!("endpoint {label}: {e:#}"));
+                        endpoint_results.push((Err(()), false));
+                        continue;
+                    }
+                }
+            } else if exists {
+                false
+            } else {
+                match zone_manager
+                    .add_zones(
+                        zone_name,
+                        ZONE_TYPE_SECONDARY,
+                        &pod_endpoint,
+                        &key_data,
+                        None, // No SOA record for secondary zones
+                        None, // No name_servers for secondary zones
+                        None, // No name_server_ips for secondary zones
+                        None, // No secondary_ips for secondary zones
+                        None, // No notify targets for secondary zones
+                        Some(primary_ips),
+                        None, // No DNSSEC policy for secondary zones
+                    )
+                    .await
+                {
+                    Ok(added) => {
+                        if added {
+                            info!("Added secondary zone {zone_name} to {label}");
+                            zones_created += 1;
+                        }
+                        loaded = false;
+                        added
+                    }
+                    Err(e) => {
+                        error!("Failed to add secondary zone {zone_name} to {label}: {e:#}");
+                        errors.push(format!("endpoint {label}: {e:#}"));
+                        endpoint_results.push((Err(()), false));
+                        continue;
+                    }
+                }
+            };
+            total_endpoints += 1;
+
+            // `rndc addzone` only configures the zone; the data comes from an
+            // AXFR. Force one now (also on a zone that already existed, to
+            // bring it up to date).
+            if let Err(e) = zone_manager.retransfer_zone(zone_name, &pod_endpoint).await {
+                warn!(
+                    "Failed to trigger zone transfer for {zone_name} on {label}: {e:#}. Zone will sync via SOA refresh timer."
+                );
+            }
+
+            endpoint_results.push((Ok(created), loaded));
+        }
+
+        let accepted: Vec<std::result::Result<bool, ()>> =
+            endpoint_results.iter().map(|(result, _)| *result).collect();
+        let all_loaded = !endpoint_results.is_empty()
+            && endpoint_results
+                .iter()
+                .all(|(result, loaded)| result.is_ok() && *loaded);
+        let unloaded: Vec<String> = endpoint_results
+            .iter()
+            .zip(endpoints.iter())
+            .filter(|((result, loaded), _)| result.is_ok() && !*loaded)
+            .map(|(_, endpoint)| {
+                format!(
+                    "{}/{} ({}:{})",
+                    instance_ref.namespace, instance_ref.name, endpoint.ip, endpoint.port
+                )
+            })
+            .collect();
+
+        if instance_serves_zone(&accepted) {
+            let (status, message) = if unloaded.is_empty() {
+                (
+                    crate::crd::InstanceStatus::Configured,
+                    "Zone successfully configured on secondary instance".to_string(),
+                )
+            } else {
+                (
+                    crate::crd::InstanceStatus::Failed,
+                    format!(
+                        "Zone configured but not loaded on {} endpoint(s): transfer pending or denied",
+                        unloaded.len()
+                    ),
+                )
+            };
+            status_updater.update_instance_status(
+                &instance_ref.name,
+                &instance_ref.namespace,
+                status,
+                Some(message),
+            );
+        }
+        not_loaded.extend(unloaded);
+
+        // Fully configured only if every endpoint has the zone loaded.
+        if all_loaded {
+            instances_configured += 1;
+        }
+    }
 
     // If ALL operations failed, return an error
     if total_endpoints == 0 && !errors.is_empty() {

@@ -27,20 +27,21 @@ use kube::Client;
 ///
 /// # Errors
 ///
-/// Does not currently fail; an instance that is neither cached nor readable
-/// is skipped with a warning.
+/// Returns an error if an instance the store does not hold cannot be read
+/// (any failure other than 404), so a secondary never silently drops out of
+/// the zone's secondary set on a transient API error.
 pub async fn filter_secondary_instances(
     client: &Client,
     store: &crate::context::MultiStore<crate::crd::Bind9Instance>,
     instance_refs: &[crate::crd::InstanceReference],
 ) -> Result<Vec<crate::crd::InstanceReference>> {
-    Ok(bindy_bind9::primary::filter_instances_by_role_cached(
+    bindy_bind9::primary::try_filter_instances_by_role_cached(
         client,
         store,
         instance_refs,
         &crate::crd::ServerRole::Secondary,
     )
-    .await)
+    .await
 }
 
 #[cfg(test)]

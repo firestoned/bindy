@@ -15,10 +15,63 @@ use k8s_openapi::api::core::v1::Pod;
 use kube::{api::ListParams, Api, Client};
 use tracing::{debug, error, warn};
 
+use crate::constants::HTTP_NOT_FOUND;
+
 use crate::bind9::RndcKeyData;
 use crate::instances::PodInfo;
 
+/// Turn the result of a `Bind9Instance` GET into that instance's role.
+///
+/// Only a 404 means the instance is gone and may be skipped (`Ok(None)`, with
+/// a warning). Every other failure (timeout, 429, 5xx, transport) propagates:
+/// skipping it would silently drop a live instance from a write's target set,
+/// and the write would report success without touching it.
+///
+/// # Arguments
+///
+/// * `result` - The outcome of `Api::<Bind9Instance>::get`
+/// * `instance_ref` - The instance that was read, for logs and errors
+///
+/// # Returns
+///
+/// `Ok(Some(role))` for a readable instance, `Ok(None)` for a deleted one.
+///
+/// # Errors
+///
+/// Returns an error for any GET failure other than 404 Not Found.
+pub fn role_from_get_result(
+    result: std::result::Result<crate::crd::Bind9Instance, kube::Error>,
+    instance_ref: &crate::crd::InstanceReference,
+) -> Result<Option<crate::crd::ServerRole>> {
+    match result {
+        Ok(instance) => Ok(Some(instance.spec.role)),
+        Err(kube::Error::Api(status)) if status.code == HTTP_NOT_FOUND => {
+            warn!(
+                "Instance {}/{} not found (deleted). Skipping.",
+                instance_ref.namespace, instance_ref.name
+            );
+            Ok(None)
+        }
+        Err(e) => Err(anyhow::Error::new(e).context(format!(
+            "Failed to get instance {}/{}",
+            instance_ref.namespace, instance_ref.name
+        ))),
+    }
+}
+
+/// Read one instance's role from the API server.
+async fn get_instance_role(
+    client: &Client,
+    instance_ref: &crate::crd::InstanceReference,
+) -> Result<Option<crate::crd::ServerRole>> {
+    let api: Api<crate::crd::Bind9Instance> =
+        Api::namespaced(client.clone(), &instance_ref.namespace);
+    role_from_get_result(api.get(&instance_ref.name).await, instance_ref)
+}
+
 /// Filters a list of instance references to only PRIMARY instances.
+///
+/// An instance that no longer exists (404) is skipped with a warning.
 ///
 /// # Arguments
 ///
@@ -31,31 +84,20 @@ use crate::instances::PodInfo;
 ///
 /// # Errors
 ///
-/// Returns an error if Kubernetes API calls fail.
+/// Returns an error if reading any instance fails for a reason other than
+/// 404 Not Found (timeout, 429, 5xx), so a live primary never silently drops
+/// out of the target set.
 pub async fn filter_primary_instances(
     client: &Client,
     instance_refs: &[crate::crd::InstanceReference],
 ) -> Result<Vec<crate::crd::InstanceReference>> {
-    use crate::crd::{Bind9Instance, ServerRole};
+    use crate::crd::ServerRole;
 
     let mut primary_refs = Vec::new();
 
     for instance_ref in instance_refs {
-        let instance_api: Api<Bind9Instance> =
-            Api::namespaced(client.clone(), &instance_ref.namespace);
-
-        match instance_api.get(&instance_ref.name).await {
-            Ok(instance) => {
-                if instance.spec.role == ServerRole::Primary {
-                    primary_refs.push(instance_ref.clone());
-                }
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to get instance {}/{}: {}. Skipping.",
-                    instance_ref.namespace, instance_ref.name, e
-                );
-            }
+        if get_instance_role(client, instance_ref).await? == Some(ServerRole::Primary) {
+            primary_refs.push(instance_ref.clone());
         }
     }
 
@@ -122,35 +164,71 @@ pub fn primary_role_in_store(
 ///
 /// # Returns
 ///
-/// The instance's role, or `None` (with a warning) when it is neither cached
-/// nor readable.
+/// The instance's role, or `None` (with a warning) when it is not cached and
+/// the API server says it does not exist (404).
+///
+/// # Errors
+///
+/// Returns an error when the fallback GET fails for any reason other than
+/// 404 Not Found.
 pub async fn instance_role_cached(
     client: &Client,
     store: &crate::context::MultiStore<crate::crd::Bind9Instance>,
     instance_ref: &crate::crd::InstanceReference,
-) -> Option<crate::crd::ServerRole> {
+) -> Result<Option<crate::crd::ServerRole>> {
     if let Some(role) = instance_role_in_store(store, instance_ref) {
-        return Some(role);
+        return Ok(Some(role));
     }
-    let api: Api<crate::crd::Bind9Instance> =
-        Api::namespaced(client.clone(), &instance_ref.namespace);
-    match api.get(&instance_ref.name).await {
-        Ok(instance) => Some(instance.spec.role),
-        Err(e) => {
-            warn!(
-                "Failed to get instance {}/{}: {}. Skipping.",
-                instance_ref.namespace, instance_ref.name, e
-            );
-            None
-        }
-    }
+    get_instance_role(client, instance_ref).await
 }
 
 /// Filters instance references to those with `role`, reading each role from
 /// the `Bind9Instance` reflector store (ADR-0015, ADR-0016).
 ///
 /// An instance the store holds costs no API call; one it does not hold yet
-/// is read with a GET and skipped, with a warning, if that fails.
+/// is read with a GET, and skipped only if the API server says it does not
+/// exist (404).
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client, for the fallback GET
+/// * `store` - The shared `Bind9Instance` reflector store
+/// * `instance_refs` - Instance references to filter
+/// * `role` - The role to keep
+///
+/// # Returns
+///
+/// The references whose instance has `role`, in input order.
+///
+/// # Errors
+///
+/// Returns an error when a fallback GET fails for any reason other than
+/// 404 Not Found, so a live instance never silently drops out.
+pub async fn try_filter_instances_by_role_cached(
+    client: &Client,
+    store: &crate::context::MultiStore<crate::crd::Bind9Instance>,
+    instance_refs: &[crate::crd::InstanceReference],
+    role: &crate::crd::ServerRole,
+) -> Result<Vec<crate::crd::InstanceReference>> {
+    let mut matching = Vec::new();
+    for instance_ref in instance_refs {
+        if instance_role_cached(client, store, instance_ref)
+            .await?
+            .as_ref()
+            == Some(role)
+        {
+            matching.push(instance_ref.clone());
+        }
+    }
+    Ok(matching)
+}
+
+/// Infallible form of [`try_filter_instances_by_role_cached`]: an instance
+/// whose role cannot be read is skipped with an error log.
+///
+/// Prefer [`try_filter_instances_by_role_cached`]; this form drops an instance
+/// on a transient API failure and is kept only for callers that have not yet
+/// moved to the fallible form.
 ///
 /// # Arguments
 ///
@@ -170,12 +248,10 @@ pub async fn filter_instances_by_role_cached(
 ) -> Vec<crate::crd::InstanceReference> {
     let mut matching = Vec::new();
     for instance_ref in instance_refs {
-        if instance_role_cached(client, store, instance_ref)
-            .await
-            .as_ref()
-            == Some(role)
-        {
-            matching.push(instance_ref.clone());
+        match instance_role_cached(client, store, instance_ref).await {
+            Ok(found) if found.as_ref() == Some(role) => matching.push(instance_ref.clone()),
+            Ok(_) => {}
+            Err(e) => error!("{e:#}. Skipping."),
         }
     }
     matching
@@ -187,8 +263,8 @@ pub async fn filter_instances_by_role_cached(
 /// Same result as [`filter_primary_instances`], but an instance the store
 /// holds costs no API call, so a record write no longer spends one GET per
 /// instance. An instance the store does not hold yet (a watch that has not
-/// caught up) falls back to a GET, and is skipped with a warning if that
-/// fails, exactly as [`filter_primary_instances`] does.
+/// caught up) falls back to a GET, and is skipped only if the API server
+/// says it does not exist (404), exactly as [`filter_primary_instances`] does.
 ///
 /// # Arguments
 ///
@@ -202,8 +278,9 @@ pub async fn filter_instances_by_role_cached(
 ///
 /// # Errors
 ///
-/// Does not currently fail; the `Result` keeps the signature of
-/// [`filter_primary_instances`].
+/// Returns an error when the fallback GET for an uncached instance fails for
+/// any reason other than 404 Not Found, so a live primary never silently
+/// drops out of a record write or zone delete.
 pub async fn filter_primary_instances_cached(
     client: &Client,
     store: &crate::context::MultiStore<crate::crd::Bind9Instance>,

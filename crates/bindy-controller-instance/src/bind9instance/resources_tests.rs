@@ -759,6 +759,7 @@ mod tests {
                 metadata: ObjectMeta {
                     name: Some(name.into()),
                     namespace: Some("dns".into()),
+                    uid: Some("test-instance-uid".into()),
                     ..Default::default()
                 },
                 spec: Bind9InstanceSpec {
@@ -816,6 +817,7 @@ mod tests {
                 None,
                 "rndc-key",
             )
+            .expect("build_deployment")
         }
 
         fn zone_rule(when: WhenUnsatisfiable) -> PlacementConfig {
@@ -1094,6 +1096,7 @@ mod tests {
                 metadata: ObjectMeta {
                     name: Some(name.into()),
                     namespace: Some("dns".into()),
+                    uid: Some("test-instance-uid".into()),
                     ..Default::default()
                 },
                 spec: Bind9InstanceSpec {
@@ -1227,7 +1230,8 @@ mod tests {
                     .expect("managed");
             let hash = configmap_data_hash(&desired);
             let mut deployment =
-                build_deployment("my-dns-primary-0", "dns", &inst, Some(&c), None, "k");
+                build_deployment("my-dns-primary-0", "dns", &inst, Some(&c), None, "k")
+                    .expect("build_deployment");
             stamp_config_hash(&mut deployment, &hash);
 
             // Everything current: no drift.
@@ -1246,7 +1250,8 @@ mod tests {
             ));
 
             // Pods carry no hash yet, or an older one.
-            let unstamped = build_deployment("my-dns-primary-0", "dns", &inst, Some(&c), None, "k");
+            let unstamped = build_deployment("my-dns-primary-0", "dns", &inst, Some(&c), None, "k")
+                .expect("build_deployment");
             assert!(config_drifted(
                 Some(&desired),
                 Some(&unstamped),
@@ -1262,7 +1267,8 @@ mod tests {
             let inst = instance("my-dns-primary-0", "my-dns");
             let c = cluster();
             let mut current =
-                build_deployment("my-dns-primary-0", "dns", &inst, Some(&c), None, "k");
+                build_deployment("my-dns-primary-0", "dns", &inst, Some(&c), None, "k")
+                    .expect("build_deployment");
             let mut desired = current.clone();
             stamp_config_hash(&mut current, "old");
             stamp_config_hash(&mut desired, "new");
@@ -1311,6 +1317,7 @@ mod tests {
                 metadata: ObjectMeta {
                     name: Some("my-dns-primary-0".into()),
                     namespace: Some("dns".into()),
+                    uid: Some("test-instance-uid".into()),
                     ..Default::default()
                 },
                 spec: Bind9InstanceSpec {
@@ -1391,7 +1398,8 @@ mod tests {
                 Some(&cluster(false)),
                 None,
                 "k",
-            );
+            )
+            .expect("build_deployment");
             let desired = build_deployment(
                 "my-dns-primary-0",
                 "dns",
@@ -1399,7 +1407,8 @@ mod tests {
                 Some(&cluster(true)),
                 None,
                 "k",
-            );
+            )
+            .expect("build_deployment");
             assert!(
                 deployment_needs_update(&current, &desired),
                 "a missing DNSSEC key volume must count as a change"
@@ -1419,7 +1428,8 @@ mod tests {
                 Some(&cluster(true)),
                 None,
                 "k",
-            );
+            )
+            .expect("build_deployment");
             let (volumes, mounts) = build_volumes_patch(&desired);
             let volumes = volumes.to_string();
             let mounts = mounts.to_string();
@@ -1468,7 +1478,8 @@ mod tests {
                 Some(&cluster(true)),
                 None,
                 "k",
-            );
+            )
+            .expect("build_deployment");
             let desired = build_deployment(
                 "my-dns-primary-0",
                 "dns",
@@ -1476,7 +1487,8 @@ mod tests {
                 Some(&shared_keys_cluster()),
                 None,
                 "k",
-            );
+            )
+            .expect("build_deployment");
             assert!(deployment_needs_update(&current, &desired));
             assert!(
                 deployment_needs_update(&desired, &current),
@@ -1516,6 +1528,7 @@ mod tests {
                 metadata: ObjectMeta {
                     name: Some("primary-0".into()),
                     namespace: Some("dns".into()),
+                    uid: Some("test-instance-uid".into()),
                     ..Default::default()
                 },
                 spec: Bind9InstanceSpec {
@@ -1538,6 +1551,7 @@ mod tests {
                 status: None,
             };
             build_deployment("primary-0", "dns", &inst, None, None, "rndc-key")
+                .expect("build_deployment")
         }
 
         /// A Deployment built before the gate existed: same template, no
@@ -1597,6 +1611,7 @@ mod tests {
                 metadata: ObjectMeta {
                     name: Some("primary-0".into()),
                     namespace: Some("dns".into()),
+                    uid: Some("test-instance-uid".into()),
                     ..Default::default()
                 },
                 spec: Bind9InstanceSpec {
@@ -1619,6 +1634,7 @@ mod tests {
                 status: None,
             };
             build_deployment("primary-0", "dns", &inst, None, None, "rndc-key")
+                .expect("build_deployment")
         }
 
         fn with_replicas(mut d: Deployment, replicas: i32) -> Deployment {
@@ -1803,7 +1819,8 @@ mod tests {
                 Some(&live.cluster),
                 None,
                 &default_rndc_secret_name(&live.instance),
-            );
+            )
+            .expect("build_deployment");
             stamp_config_hash(&mut deployment, &configmap_data_hash(&configmap));
             deployment
         }
@@ -1831,6 +1848,208 @@ mod tests {
                 deployment_change(&live.deployment, &desired(&live)),
                 DeploymentChange::None
             );
+        }
+    }
+
+    /// Finalizer cleanup: only "already gone" (404) counts as success;
+    /// every other API error must keep the finalizer (B10).
+    mod delete_classification {
+        use crate::bind9instance::resources::deleted_or_absent;
+
+        fn api_error(code: u16) -> kube::Error {
+            kube::Error::Api(
+                kube::core::Status::failure("test error", "TestReason")
+                    .with_code(code)
+                    .boxed(),
+            )
+        }
+
+        #[test]
+        fn a_successful_delete_is_deleted() {
+            assert!(deleted_or_absent(Ok::<(), kube::Error>(())).expect("ok"));
+        }
+
+        #[test]
+        fn not_found_is_already_absent() {
+            assert!(!deleted_or_absent(Err::<(), _>(api_error(404))).expect("ok"));
+        }
+
+        #[test]
+        fn forbidden_and_server_errors_propagate() {
+            for code in [403, 409, 429, 500, 503] {
+                assert!(
+                    deleted_or_absent(Err::<(), _>(api_error(code))).is_err(),
+                    "HTTP {code} must fail the cleanup"
+                );
+            }
+        }
+    }
+
+    /// Finalizer cleanup deletes only the RNDC Secret the operator generated:
+    /// never a user's `secretRef` Secret, even one that happens to carry the
+    /// default name, and never a Secret the pods do not mount.
+    mod generated_rndc_secret_to_delete {
+        use crate::bind9instance::resources::generated_rndc_secret;
+        use crate::crd::RndcKeyConfig;
+        use serde_json::json;
+
+        fn config(value: serde_json::Value) -> RndcKeyConfig {
+            serde_json::from_value(value).expect("valid RndcKeyConfig")
+        }
+
+        #[test]
+        fn a_generated_key_is_deleted() {
+            let rndc = config(json!({}));
+
+            assert_eq!(
+                generated_rndc_secret("dns", Some("dns-rndc-key"), &rndc),
+                Some("dns-rndc-key".to_string())
+            );
+        }
+
+        #[test]
+        fn a_generated_key_is_deleted_when_the_deployment_is_gone() {
+            let rndc = config(json!({}));
+
+            assert_eq!(
+                generated_rndc_secret("dns", None, &rndc),
+                Some("dns-rndc-key".to_string())
+            );
+        }
+
+        #[test]
+        fn a_secret_ref_is_never_deleted_even_with_the_default_name() {
+            let rndc = config(json!({"secretRef": {"name": "dns-rndc-key"}}));
+
+            assert_eq!(
+                generated_rndc_secret("dns", Some("dns-rndc-key"), &rndc),
+                None
+            );
+            assert_eq!(generated_rndc_secret("dns", None, &rndc), None);
+        }
+
+        #[test]
+        fn an_inline_secret_is_left_to_garbage_collection() {
+            let rndc = config(json!({"secret": {"metadata": {"name": "inline-key"}}}));
+
+            assert_eq!(
+                generated_rndc_secret("dns", Some("inline-key"), &rndc),
+                None
+            );
+        }
+
+        #[test]
+        fn a_key_chosen_at_cluster_level_is_not_the_instance_default() {
+            // The pods mount a cluster-level secretRef; the instance has no
+            // RNDC config of its own.
+            let rndc = config(json!({}));
+
+            assert_eq!(
+                generated_rndc_secret("dns", Some("bindy-shared-rndc"), &rndc),
+                None
+            );
+        }
+    }
+
+    /// The drift check must look for exactly the children the writer
+    /// creates and the Deployment mounts (B3, B8).
+    mod drift_names_agree_with_writer {
+        use crate::bind9_resources::{build_deployment, rndc_secret_name_from_deployment};
+        use crate::bind9instance::resources::{
+            desired_configmap_for_instance, drift_child_names, resolve_full_rndc_config,
+        };
+        use crate::crd::{Bind9Cluster, Bind9Instance};
+        use crate::labels::BINDY_MANAGED_BY_LABEL;
+
+        fn instance(name: &str, cluster_ref: &str, managed: bool) -> Bind9Instance {
+            let mut labels = serde_json::Map::new();
+            if managed {
+                labels.insert(
+                    BINDY_MANAGED_BY_LABEL.to_string(),
+                    serde_json::json!("Bind9Cluster"),
+                );
+            }
+            serde_json::from_value(serde_json::json!({
+                "apiVersion": "bindy.firestoned.io/v1beta1",
+                "kind": "Bind9Instance",
+                "metadata": {
+                    "name": name,
+                    "namespace": "dns",
+                    "uid": "uid-1",
+                    "labels": labels,
+                },
+                "spec": {
+                    "clusterRef": cluster_ref,
+                    "role": "primary",
+                    "rndcKey": { "secretRef": { "name": "corp-rndc" } },
+                },
+            }))
+            .expect("test Bind9Instance must deserialize")
+        }
+
+        fn cluster() -> Bind9Cluster {
+            serde_json::from_value(serde_json::json!({
+                "apiVersion": "bindy.firestoned.io/v1beta1",
+                "kind": "Bind9Cluster",
+                "metadata": { "name": "prod", "namespace": "dns", "uid": "c-uid" },
+                "spec": {},
+            }))
+            .expect("test Bind9Cluster must deserialize")
+        }
+
+        fn assert_agree(inst: &Bind9Instance, cluster: Option<&Bind9Cluster>) {
+            let name = inst.metadata.name.clone().expect("name");
+            let rndc = resolve_full_rndc_config(inst, cluster, None);
+            let names = drift_child_names(&name, inst, &rndc);
+
+            if let Some(cm) =
+                desired_configmap_for_instance(&name, "dns", inst, cluster).expect("renders")
+            {
+                assert_eq!(cm.metadata.name.as_deref(), Some(names.configmap.as_str()));
+            }
+
+            let deployment =
+                build_deployment(&name, "dns", inst, cluster, None, &names.rndc_secret)
+                    .expect("build");
+            assert_eq!(
+                rndc_secret_name_from_deployment(&deployment).as_deref(),
+                Some("corp-rndc"),
+                "the referenced Secret is mounted, not {name}-rndc-key"
+            );
+            assert_eq!(names.rndc_secret, "corp-rndc");
+            let mounted_cm = deployment
+                .spec
+                .and_then(|s| s.template.spec)
+                .and_then(|s| s.volumes)
+                .and_then(|v| v.into_iter().find(|v| v.name == "config"))
+                .and_then(|v| v.config_map)
+                .map(|cm| cm.name);
+            assert_eq!(mounted_cm.as_deref(), Some(names.configmap.as_str()));
+        }
+
+        #[test]
+        fn a_managed_instance() {
+            let c = cluster();
+            assert_agree(&instance("prod-primary-0", "prod", true), Some(&c));
+        }
+
+        #[test]
+        fn a_user_created_instance_with_a_cluster_ref() {
+            // No managed-by label, but a clusterRef: the writer mounts and
+            // renders `prod-config`, so the drift check must look there.
+            let c = cluster();
+            let inst = instance("hand-made", "prod", false);
+            assert_agree(&inst, Some(&c));
+            let rndc = resolve_full_rndc_config(&inst, Some(&c), None);
+            assert_eq!(
+                drift_child_names("hand-made", &inst, &rndc).configmap,
+                "prod-config"
+            );
+        }
+
+        #[test]
+        fn a_standalone_instance() {
+            assert_agree(&instance("solo", "", false), None);
         }
     }
 }

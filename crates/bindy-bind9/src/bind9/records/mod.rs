@@ -66,7 +66,7 @@ pub(crate) fn build_delete_rrset_record(fqdn: &Name, record_type: RecordType) ->
 }
 
 /// Response codes that indicate an RFC 2136 delete succeeded (`NoError`) or the
-/// target records already did not exist (`NXDomain`, `NXRRSet`) — idempotent
+/// target records already did not exist (`NXDomain`, `NXRRSet`): idempotent
 /// success.
 ///
 /// Every other code (e.g. `Refused`, `NotAuth`, `NotZone`, `ServFail`) is a real
@@ -76,6 +76,57 @@ pub(crate) fn is_idempotent_delete_response_code(code: ResponseCode) -> bool {
         code,
         ResponseCode::NoError | ResponseCode::NXDomain | ResponseCode::NXRRSet
     )
+}
+
+/// Classify the response to the "delete `RRset`" half of a delete-then-append
+/// `RRset` replacement.
+///
+/// `NoError`, `NXDomain` and `NXRRSet` mean the old `RRset` is gone (or never
+/// existed), so the append may proceed. Any other code (e.g. `Refused`,
+/// `NotAuth`) means the stale `RRset` is still live, so the write must fail
+/// rather than append on top of it and report success.
+///
+/// # Errors
+///
+/// Returns an error naming the record type, FQDN and response code when the
+/// code is not an idempotent delete success.
+pub(crate) fn check_replace_delete_response(
+    code: ResponseCode,
+    fqdn: &Name,
+    record_type: RecordType,
+) -> Result<()> {
+    if is_idempotent_delete_response_code(code) {
+        return Ok(());
+    }
+    Err(anyhow::anyhow!(
+        "DNS DELETE of the existing {record_type:?} RRset for {fqdn} rejected \
+         with response code: {code:?}"
+    ))
+}
+
+/// Delete the existing `RRset` of `record_type` at `fqdn` before it is
+/// recreated, checking both the transport and the server's response code.
+///
+/// # Errors
+///
+/// Returns an error if the DNS UPDATE cannot be sent or the server rejects
+/// the delete (see [`check_replace_delete_response`]).
+pub(crate) async fn delete_rrset_for_replace(
+    client: &mut Client<TokioRuntimeProvider>,
+    fqdn: &Name,
+    record_type: RecordType,
+    zone: &Name,
+) -> Result<()> {
+    let delete_record = build_delete_rrset_record(fqdn, record_type);
+    let response = client
+        .delete_rrset(delete_record, zone.clone())
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to send DNS UPDATE to delete the existing {record_type:?} RRset for {fqdn}"
+            )
+        })?;
+    check_replace_delete_response(response.metadata.response_code, fqdn, record_type)
 }
 
 /// Build an unauthenticated UDP DNS client for read-only queries.

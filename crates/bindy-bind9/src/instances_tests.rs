@@ -1632,4 +1632,55 @@ mod gated_pod_tests {
             coverage_pod_ips(&pods, &[instance("primary-0", true)], NS, "primary-0").is_empty()
         );
     }
+
+    // ========================================================================
+    // Which Secret holds an instance's RNDC key (B3)
+    // ========================================================================
+
+    fn instance_with_uid(name: &str) -> crate::crd::Bind9Instance {
+        serde_json::from_value(serde_json::json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "Bind9Instance",
+            "metadata": { "name": name, "namespace": "dns", "uid": "uid-1" },
+            "spec": { "clusterRef": "", "role": "primary" },
+        }))
+        .expect("test Bind9Instance must deserialize")
+    }
+
+    #[test]
+    fn test_effective_rndc_secret_name_follows_the_deployment_mount() {
+        // An instance on rndcKey.secretRef mounts the referenced Secret; the
+        // loader must read that one, not `{instance}-rndc-key`.
+        let inst = instance_with_uid("primary-0");
+        let deployment = crate::bind9_resources::build_deployment(
+            "primary-0",
+            "dns",
+            &inst,
+            None,
+            None,
+            "corp-rndc",
+        )
+        .expect("build");
+        assert_eq!(
+            effective_rndc_secret_name("primary-0", Some(&deployment)),
+            "corp-rndc"
+        );
+    }
+
+    #[test]
+    fn test_effective_rndc_secret_name_defaults_without_deployment() {
+        assert_eq!(
+            effective_rndc_secret_name("primary-0", None),
+            "primary-0-rndc-key"
+        );
+    }
+
+    #[test]
+    fn test_effective_rndc_secret_name_defaults_when_no_rndc_volume() {
+        let deployment = k8s_openapi::api::apps::v1::Deployment::default();
+        assert_eq!(
+            effective_rndc_secret_name("primary-0", Some(&deployment)),
+            "primary-0-rndc-key"
+        );
+    }
 }

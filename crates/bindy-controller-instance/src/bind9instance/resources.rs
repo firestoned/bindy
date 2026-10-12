@@ -9,15 +9,16 @@
 #[allow(clippy::wildcard_imports)]
 use super::types::*;
 
+use super::cluster_helpers::parent_or_none;
 use super::template_drift::{
     env_equivalent, list_equivalent, map_equivalent, pull_policy_equivalent, resources_equivalent,
 };
 use crate::bind9::Bind9Manager;
 use crate::bind9_resources::{
     build_cluster_configmap, build_configmap, build_deployment, build_service,
-    build_service_account,
+    build_service_account, controller_owner_reference, instance_configmap_name,
+    resolve_bindcar_config, rndc_secret_name,
 };
-use crate::constants::{API_GROUP_VERSION, KIND_BIND9_INSTANCE};
 use crate::rollout::{
     rollout_queued, InstanceId, PatchOutcome, RolloutDecision, RolloutGate, RolloutStatus,
     TemplateStart,
@@ -124,56 +125,61 @@ pub(super) async fn create_or_update_resources(
         "Creating or updating Kubernetes resources"
     );
 
-    // Fetch the Bind9Cluster (namespace-scoped) if referenced
+    // Fetch the Bind9Cluster (namespace-scoped) if referenced. Only a 404
+    // means "no such parent": any other error fails the reconcile, so a
+    // transient API error never builds the Deployment without the cluster's
+    // image, version, RNDC key or volumes (and rolls the pods onto it).
     let cluster = if instance.spec.cluster_ref.is_empty() {
         debug!("No cluster reference, proceeding with standalone instance");
         None
     } else {
         debug!(cluster_ref = %instance.spec.cluster_ref, "Fetching Bind9Cluster");
         let cluster_api: Api<Bind9Cluster> = Api::namespaced(client.clone(), namespace);
-        match cluster_api.get(&instance.spec.cluster_ref).await {
-            Ok(cluster) => {
-                debug!(
-                    cluster_name = %instance.spec.cluster_ref,
-                    "Successfully fetched Bind9Cluster"
-                );
-                info!(
-                    "Found Bind9Cluster: {}/{}",
-                    namespace, instance.spec.cluster_ref
-                );
-                Some(cluster)
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to fetch Bind9Cluster {}/{}: {}. Proceeding with instance-only config.",
-                    namespace, instance.spec.cluster_ref, e
-                );
-                None
-            }
+        let cluster = parent_or_none(
+            cluster_api
+                .get(&instance.spec.cluster_ref)
+                .await
+                .map_err(anyhow::Error::from),
+        )
+        .with_context(|| {
+            format!(
+                "Failed to fetch Bind9Cluster {}/{}",
+                namespace, instance.spec.cluster_ref
+            )
+        })?;
+        if cluster.is_some() {
+            info!(
+                "Found Bind9Cluster: {}/{}",
+                namespace, instance.spec.cluster_ref
+            );
         }
+        cluster
     };
 
     // Fetch the ClusterBind9Provider (cluster-scoped) if no namespace-scoped cluster was found
     let cluster_provider = if cluster.is_none() && !instance.spec.cluster_ref.is_empty() {
         debug!(cluster_ref = %instance.spec.cluster_ref, "Fetching ClusterBind9Provider");
         let cluster_provider_api: Api<crate::crd::ClusterBind9Provider> = Api::all(client.clone());
-        match cluster_provider_api.get(&instance.spec.cluster_ref).await {
-            Ok(gc) => {
-                debug!(
-                    cluster_name = %instance.spec.cluster_ref,
-                    "Successfully fetched ClusterBind9Provider"
-                );
-                info!("Found ClusterBind9Provider: {}", instance.spec.cluster_ref);
-                Some(gc)
-            }
-            Err(e) => {
-                warn!(
-                    "Failed to fetch ClusterBind9Provider {}: {}. Proceeding with instance-only config.",
-                    instance.spec.cluster_ref, e
-                );
-                None
-            }
+        let provider = parent_or_none(
+            cluster_provider_api
+                .get(&instance.spec.cluster_ref)
+                .await
+                .map_err(anyhow::Error::from),
+        )
+        .with_context(|| {
+            format!(
+                "Failed to fetch ClusterBind9Provider {}",
+                instance.spec.cluster_ref
+            )
+        })?;
+        match provider.as_ref() {
+            Some(_) => info!("Found ClusterBind9Provider: {}", instance.spec.cluster_ref),
+            None => warn!(
+                "clusterRef {} names neither a Bind9Cluster in {} nor a ClusterBind9Provider. Proceeding with instance-only config.",
+                instance.spec.cluster_ref, namespace
+            ),
         }
+        provider
     } else {
         None
     };
@@ -200,8 +206,7 @@ pub(super) async fn create_or_update_resources(
     // 2. Create/update RNDC Secret with rotation support (must be before deployment, as it will be mounted)
     debug!("Step 2: Creating/updating RNDC Secret with rotation support");
     let secret_name =
-        create_or_update_rndc_secret_with_config(client, namespace, name, instance, &rndc_config)
-            .await?;
+        create_or_update_rndc_secret_with_config(client, namespace, instance, &rndc_config).await?;
 
     // Fetch the Secret for rotation status updates (only if rotation is enabled)
     let secret = if rndc_config.auto_rotate {
@@ -362,8 +367,8 @@ pub(super) fn evaluate_existing_rndc_secret(
 ///
 /// * `client` - Kubernetes client
 /// * `namespace` - Namespace for the `Secret`
-/// * `name` - Instance name (used for `Secret` naming)
-/// * `instance` - `Bind9Instance` resource
+/// * `instance` - `Bind9Instance` resource (its name names the generated
+///   `Secret`, [`rndc_secret_name`])
 /// * `config` - RNDC configuration (resolved via precedence)
 ///
 /// # Returns
@@ -372,13 +377,13 @@ pub(super) fn evaluate_existing_rndc_secret(
 ///
 /// # Errors
 ///
-/// Returns error if `Secret` creation/update fails or API call fails.
+/// Returns error if `Secret` creation/update fails, the instance has no UID
+/// for the owner reference, or an API call fails.
 #[allow(dead_code)] // Will be used when integrated into reconciler
 #[allow(clippy::too_many_lines)] // Function implements three Secret modes
 async fn create_or_update_rndc_secret_with_config(
     client: &Client,
     namespace: &str,
-    name: &str,
     instance: &Bind9Instance,
     config: &crate::crd::RndcKeyConfig,
 ) -> Result<String> {
@@ -393,14 +398,9 @@ async fn create_or_update_rndc_secret_with_config(
         return Ok(secret_ref.name.clone());
     }
 
-    // Mode 2 & 3: Create/manage Secret (inline spec or auto-generated)
-    let secret_name = if let Some(ref secret_spec) = config.secret {
-        // Use name from inline spec
-        secret_spec.metadata.name.clone()
-    } else {
-        // Default name for auto-generated
-        format!("{name}-rndc-key")
-    };
+    // Mode 2 & 3: Create/manage Secret (inline spec name or the generated
+    // default), named by the helper the drift check and loader share.
+    let secret_name = rndc_secret_name(instance, config);
 
     let secret_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
 
@@ -490,15 +490,8 @@ async fn create_or_update_rndc_secret_with_config(
         0, // Initial rotation count
     );
 
-    // Add owner reference
-    let owner_ref = OwnerReference {
-        api_version: API_GROUP_VERSION.to_string(),
-        kind: KIND_BIND9_INSTANCE.to_string(),
-        name: name.to_string(),
-        uid: instance.metadata.uid.clone().unwrap_or_default(),
-        controller: Some(true),
-        block_owner_deletion: Some(true),
-    };
+    // Add owner reference (fails fast when the instance has no UID)
+    let owner_ref = controller_owner_reference(instance)?;
 
     let mut secret_with_owner = secret;
     secret_with_owner
@@ -538,7 +531,7 @@ async fn create_or_update_rndc_secret(
     name: &str,
     instance: &Bind9Instance,
 ) -> Result<()> {
-    let secret_name = format!("{name}-rndc-key");
+    let secret_name = crate::bind9_resources::default_rndc_secret_name(name);
     let secret_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
 
     // Check if secret already exists
@@ -592,14 +585,7 @@ async fn create_or_update_rndc_secret(
     let secret_data = Bind9Manager::create_rndc_secret_data(&key_data);
 
     // Create owner reference to the Bind9Instance
-    let owner_ref = OwnerReference {
-        api_version: API_GROUP_VERSION.to_string(),
-        kind: KIND_BIND9_INSTANCE.to_string(),
-        name: name.to_string(),
-        uid: instance.metadata.uid.clone().unwrap_or_default(),
-        controller: Some(true),
-        block_owner_deletion: Some(true),
-    };
+    let owner_ref = controller_owner_reference(instance)?;
 
     // Build Secret object
     let secret = Secret {
@@ -945,6 +931,35 @@ pub(super) fn desired_configmap_for_instance(
             .and_then(|s| s.allow_transfer.as_ref()),
     });
     build_configmap(name, namespace, instance, cluster, role_allow_transfer).map(Some)
+}
+
+/// The names of the children the drift check looks for, taken from the
+/// helpers the writers use, so the check and the apply never disagree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct DriftChildNames {
+    /// The `ConfigMap` the pods mount ([`instance_configmap_name`])
+    pub configmap: String,
+    /// The RNDC `Secret` the pods mount ([`rndc_secret_name`])
+    pub rndc_secret: String,
+}
+
+/// The `ConfigMap` and RNDC `Secret` an instance's Deployment mounts.
+///
+/// # Arguments
+///
+/// * `name` - The instance name
+/// * `instance` - The `Bind9Instance`
+/// * `rndc_config` - Its resolved RNDC configuration
+///   ([`resolve_full_rndc_config`])
+pub(super) fn drift_child_names(
+    name: &str,
+    instance: &Bind9Instance,
+    rndc_config: &crate::crd::RndcKeyConfig,
+) -> DriftChildNames {
+    DriftChildNames {
+        configmap: instance_configmap_name(name, instance),
+        rndc_secret: rndc_secret_name(instance, rndc_config),
+    }
 }
 
 /// Whether the BIND config `instance` runs on is behind what bindy renders:
@@ -1533,7 +1548,7 @@ async fn create_or_update_deployment(
         cluster,
         cluster_provider,
         rndc_secret_name,
-    );
+    )?;
     if let Some(hash) = config_hash {
         crate::bind9_resources::stamp_config_hash(&mut deployment, hash);
     }
@@ -1709,7 +1724,17 @@ async fn create_or_update_service(
             })
         });
 
-    let service = build_service(name, namespace, instance, custom_spec);
+    // The same merged bindcar configuration the Deployment's sidecar is
+    // built from, so the `http` port targets the port it listens on and a
+    // cluster- or provider-level `serviceSpec` is applied.
+    let bindcar_config = resolve_bindcar_config(instance, cluster, cluster_provider);
+    let service = build_service(
+        name,
+        namespace,
+        instance,
+        bindcar_config.as_ref(),
+        custom_spec,
+    )?;
     let svc_api: Api<Service> = Api::namespaced(client.clone(), namespace);
 
     if let Ok(existing) = svc_api.get(name).await {
@@ -1734,82 +1759,156 @@ async fn create_or_update_service(
     Ok(())
 }
 
+/// Classify the result of one cleanup DELETE (finalizer path).
+///
+/// A child that is already gone (HTTP 404) is what cleanup wants, so it
+/// counts as success; any other error (403, 409, 429, 5xx, a transport
+/// failure) is returned, so the finalizer stays and the deletion is retried
+/// instead of orphaning the child.
+///
+/// # Returns
+///
+/// `Ok(true)` when the child was deleted, `Ok(false)` when it was already
+/// absent.
+///
+/// # Errors
+///
+/// Returns every error other than not found.
+pub(super) fn deleted_or_absent<T>(result: std::result::Result<T, kube::Error>) -> Result<bool> {
+    match result {
+        Ok(_) => Ok(true),
+        Err(kube::Error::Api(status)) if status.code == crate::constants::HTTP_NOT_FOUND => {
+            Ok(false)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Delete one child of an instance, treating "already gone" as done.
+async fn delete_child<K>(api: &Api<K>, kind: &str, namespace: &str, name: &str) -> Result<()>
+where
+    K: Clone + k8s_openapi::serde::de::DeserializeOwned + std::fmt::Debug,
+{
+    let deleted = deleted_or_absent(api.delete(name, &kube::api::DeleteParams::default()).await)
+        .with_context(|| format!("Failed to delete {kind} {namespace}/{name}"))?;
+    if deleted {
+        info!("Deleted {} {}/{}", kind, namespace, name);
+    } else {
+        debug!("{} {}/{} already absent", kind, namespace, name);
+    }
+    Ok(())
+}
+
+/// The RNDC `Secret` the operator generated for an instance and so must
+/// delete with it, if any.
+///
+/// Only the default-named key the operator auto-generated is deleted. A
+/// `secretRef` Secret is the user's, even when it carries the default name;
+/// an inline `secret` is garbage-collected through its owner reference; and a
+/// key the pods mount under another name (chosen at cluster level) is not
+/// this instance's to delete.
+///
+/// # Arguments
+/// * `name` - The instance name
+/// * `mounted` - The Secret the instance's Deployment mounts, when the
+///   Deployment still exists
+/// * `instance_rndc` - The instance's own RNDC configuration
+///
+/// # Returns
+/// The name of the Secret to delete, or `None`.
+#[must_use]
+pub(super) fn generated_rndc_secret(
+    name: &str,
+    mounted: Option<&str>,
+    instance_rndc: &crate::crd::RndcKeyConfig,
+) -> Option<String> {
+    if instance_rndc.secret_ref.is_some() || instance_rndc.secret.is_some() {
+        return None;
+    }
+    let generated = crate::bind9_resources::default_rndc_secret_name(name);
+    if mounted.is_some_and(|mounted| mounted != generated) {
+        return None;
+    }
+    Some(generated)
+}
+
 /// Delete all Kubernetes resources for a `Bind9Instance`
-pub(super) async fn delete_resources(client: &Client, namespace: &str, name: &str) -> Result<()> {
-    let delete_params = kube::api::DeleteParams::default();
+///
+/// Runs before the instance's finalizer is removed. A child that is already
+/// gone counts as deleted; any other API error fails the cleanup so the
+/// finalizer stays and the deletion is retried ([`deleted_or_absent`]).
+///
+/// # Errors
+///
+/// Returns an error if any child cannot be read or deleted.
+pub(super) async fn delete_resources(client: &Client, instance: &Bind9Instance) -> Result<()> {
+    let namespace = instance
+        .namespace()
+        .ok_or_else(|| anyhow::anyhow!("Bind9Instance {} has no namespace", instance.name_any()))?;
+    let namespace = namespace.as_str();
+    let name = instance.name_any();
+    let name = name.as_str();
 
-    // 1. Delete Service (if it exists)
+    // 1. Service
     let svc_api: Api<Service> = Api::namespaced(client.clone(), namespace);
-    match svc_api.delete(name, &delete_params).await {
-        Ok(_) => info!("Deleted Service {}/{}", namespace, name),
-        Err(e) => warn!("Failed to delete Service {}/{}: {}", namespace, name, e),
-    }
+    delete_child(&svc_api, "Service", namespace, name).await?;
 
-    // 2. Delete Deployment (if it exists)
+    // 2. Deployment, read first: its rndc-key volume names the Secret the
+    // pods mount, which decides whether step 4 deletes anything.
     let deploy_api: Api<Deployment> = Api::namespaced(client.clone(), namespace);
-    match deploy_api.delete(name, &delete_params).await {
-        Ok(_) => info!("Deleted Deployment {}/{}", namespace, name),
-        Err(e) => warn!("Failed to delete Deployment {}/{}: {}", namespace, name, e),
-    }
+    let mounted_secret = deploy_api
+        .get_opt(name)
+        .await
+        .with_context(|| format!("Failed to get Deployment {namespace}/{name}"))?
+        .as_ref()
+        .and_then(crate::bind9_resources::rndc_secret_name_from_deployment);
+    delete_child(&deploy_api, "Deployment", namespace, name).await?;
 
-    // 3. Delete ConfigMap (if it exists)
+    // 3. ConfigMap: a standalone instance's own. This path runs only for
+    // instances no cluster manages; a cluster's shared ConfigMap is the
+    // cluster's to delete, and a hand-made instance with a clusterRef has
+    // no `{name}-config` (a 404 here).
     let cm_api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
     let cm_name = format!("{name}-config");
-    match cm_api.delete(&cm_name, &delete_params).await {
-        Ok(_) => info!("Deleted ConfigMap {}/{}", namespace, cm_name),
-        Err(e) => warn!(
-            "Failed to delete ConfigMap {}/{}: {}",
-            namespace, cm_name, e
-        ),
+    delete_child(&cm_api, "ConfigMap", namespace, &cm_name).await?;
+
+    // 4. The RNDC Secret, only when the operator generated it
+    // ([`generated_rndc_secret`]).
+    let instance_rndc = resolve_full_rndc_config(instance, None, None);
+    if let Some(secret_name) =
+        generated_rndc_secret(name, mounted_secret.as_deref(), &instance_rndc)
+    {
+        let secret_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
+        delete_child(&secret_api, "Secret", namespace, &secret_name).await?;
     }
 
-    // 4. Delete RNDC Secret (if it exists)
-    let secret_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
-    let secret_name = format!("{name}-rndc-key");
-    match secret_api.delete(&secret_name, &delete_params).await {
-        Ok(_) => info!("Deleted Secret {}/{}", namespace, secret_name),
-        Err(e) => warn!(
-            "Failed to delete Secret {}/{}: {}",
-            namespace, secret_name, e
-        ),
-    }
-
-    // 5. Delete ServiceAccount (if it exists and is owned by this instance)
+    // 5. ServiceAccount, only when this instance owns it
     let sa_api: Api<ServiceAccount> = Api::namespaced(client.clone(), namespace);
     let sa_name = crate::constants::BIND9_SERVICE_ACCOUNT;
-    match sa_api.get(sa_name).await {
-        Ok(sa) => {
-            // Check if this instance owns the ServiceAccount
-            let is_owner = sa
-                .metadata
-                .owner_references
-                .as_ref()
-                .is_some_and(|owners| owners.iter().any(|owner| owner.name == name));
-
-            if is_owner {
-                match sa_api.delete(sa_name, &delete_params).await {
-                    Ok(_) => info!("Deleted ServiceAccount {}/{}", namespace, sa_name),
-                    Err(e) => warn!(
-                        "Failed to delete ServiceAccount {}/{}: {}",
-                        namespace, sa_name, e
-                    ),
-                }
-            } else {
-                debug!(
-                    "ServiceAccount {}/{} is not owned by this instance, skipping deletion",
-                    namespace, sa_name
-                );
-            }
-        }
-        Err(e) => {
-            debug!(
-                "ServiceAccount {}/{} does not exist or cannot be retrieved: {}",
-                namespace, sa_name, e
-            );
-        }
+    let Some(sa) = sa_api
+        .get_opt(sa_name)
+        .await
+        .with_context(|| format!("Failed to get ServiceAccount {namespace}/{sa_name}"))?
+    else {
+        debug!(
+            "ServiceAccount {}/{} does not exist, nothing to delete",
+            namespace, sa_name
+        );
+        return Ok(());
+    };
+    let is_owner = sa
+        .metadata
+        .owner_references
+        .as_ref()
+        .is_some_and(|owners| owners.iter().any(|owner| owner.name == name));
+    if !is_owner {
+        debug!(
+            "ServiceAccount {}/{} is not owned by this instance, skipping deletion",
+            namespace, sa_name
+        );
+        return Ok(());
     }
-
-    Ok(())
+    delete_child(&sa_api, "ServiceAccount", namespace, sa_name).await
 }
 
 /// Test-only re-exports of the private placement-convergence helpers.
