@@ -448,13 +448,15 @@ pub fn record_resource_updated(resource_type: &str) {
 
 /// Record resource deletion
 ///
+/// Only counts the deletion. It does not decrement `RESOURCES_ACTIVE`:
+/// nothing increments that gauge, so a decrement would drive it negative.
+///
 /// # Arguments
 /// * `resource_type` - The kind of resource deleted
 pub fn record_resource_deleted(resource_type: &str) {
     RESOURCES_DELETED_TOTAL
         .with_label_values(&[resource_type])
         .inc();
-    RESOURCES_ACTIVE.with_label_values(&[resource_type]).dec();
 }
 
 /// Record an error
@@ -578,6 +580,10 @@ pub fn record_watch_restart(kind: &str, namespace: &str) {
         .with_label_values(&[kind, namespace])
         .inc();
 }
+
+#[cfg(test)]
+#[path = "metrics_tests.rs"]
+mod metrics_tests;
 
 #[cfg(test)]
 mod tests {

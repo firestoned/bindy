@@ -6,7 +6,7 @@
 //! This module provides utilities for efficiently listing large resource sets
 //! by fetching them in pages, reducing memory usage and API server load.
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use bindy_api::constants::KUBE_LIST_PAGE_SIZE;
 use kube::{api::ListParams, Api, Resource};
 use serde::de::DeserializeOwned;
@@ -54,7 +54,10 @@ const MAX_REASONABLE_PAGES: usize = 10_000;
 ///
 /// # Errors
 ///
-/// Returns an error if Kubernetes API operations fail.
+/// Returns an error if Kubernetes API operations fail, or if the pages are
+/// anomalous (a repeated continue token, an empty page that still has a
+/// continue token, or more than [`MAX_REASONABLE_PAGES`] pages). Callers act
+/// on the full list, so a partial one is never returned.
 pub async fn list_all_paginated<K>(api: &Api<K>, mut list_params: ListParams) -> Result<Vec<K>>
 where
     K: Resource<DynamicType = ()> + Clone + DeserializeOwned + Debug,
@@ -79,40 +82,25 @@ where
         );
 
         let result = api.list(&list_params).await?;
-
         let item_count = result.items.len();
 
-        // CRITICAL: Treat empty string continue tokens as None
-        // The Kubernetes API sometimes returns Some("") instead of None for the last page
-        let new_continue_token = result
-            .metadata
-            .continue_
-            .clone()
-            .filter(|token| !token.is_empty());
-
-        // CRITICAL: Check if we're stuck in an infinite loop (same continue token repeated)
-        if let Some(ref new_token) = new_continue_token {
-            if last_continue_token.as_ref() == Some(new_token) {
-                error!(
-                    page = page_count,
-                    continue_token = ?new_token,
-                    items_in_page = item_count,
-                    "PAGINATION INFINITE LOOP DETECTED: Same continue token returned twice! Breaking loop to prevent infinite paging."
-                );
-                break;
-            }
-        }
-
-        // CRITICAL: Check for empty page with continue token (API bug)
-        if item_count == 0 && new_continue_token.is_some() {
+        // Decide before keeping the page: an anomalous page fails the whole
+        // list, the caller never sees a truncated one.
+        let step = next_page_step(
+            page_count,
+            item_count,
+            last_continue_token.as_deref(),
+            result.metadata.continue_,
+        )
+        .inspect_err(|e| {
             error!(
                 page = page_count,
-                continue_token = ?new_continue_token,
+                items_in_page = item_count,
                 total_items = all_items.len(),
-                "PAGINATION API BUG DETECTED: Received 0 items but got a continue token! Breaking loop to prevent infinite paging."
+                "Paginated list of {} aborted: {e:#}",
+                K::kind(&())
             );
-            break;
-        }
+        })?;
 
         all_items.extend(result.items);
 
@@ -120,33 +108,20 @@ where
             page = page_count,
             items_in_page = item_count,
             total_items = all_items.len(),
-            continue_token = ?new_continue_token,
+            ?step,
             "Fetched page from Kubernetes API"
         );
 
-        // Check if there are more pages
-        if let Some(continue_token) = new_continue_token.clone() {
-            last_continue_token = Some(continue_token.clone());
-            list_params.continue_token = Some(continue_token);
-        } else {
+        let PageStep::Next(continue_token) = step else {
             debug!(
                 page = page_count,
                 total_items = all_items.len(),
                 "No continue token - pagination complete"
             );
             break;
-        }
-
-        // Safety check: Prevent infinite loops if we somehow exceed a reasonable page count
-        if page_count >= MAX_REASONABLE_PAGES {
-            error!(
-                page = page_count,
-                total_items = all_items.len(),
-                "PAGINATION SAFETY LIMIT EXCEEDED: More than {} pages fetched! Breaking loop to prevent infinite paging. This indicates a serious bug.",
-                MAX_REASONABLE_PAGES
-            );
-            break;
-        }
+        };
+        last_continue_token = Some(continue_token.clone());
+        list_params.continue_token = Some(continue_token);
     }
 
     debug!(
@@ -158,6 +133,60 @@ where
     crate::metrics::record_kube_api_pagination_pages(K::kind(&()).as_ref(), page_count);
 
     Ok(all_items)
+}
+
+/// What [`list_all_paginated`] does after fetching a page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PageStep {
+    /// The page was the last one: the list is complete.
+    Done,
+    /// Fetch the next page with this continue token.
+    Next(String),
+}
+
+/// Decide what follows a fetched page, failing on every pagination anomaly.
+///
+/// An empty continue token is treated as none: the Kubernetes API sometimes
+/// returns `Some("")` instead of `None` for the last page.
+///
+/// # Arguments
+///
+/// * `page_count` - 1-based number of the page just fetched
+/// * `items_in_page` - Number of items in that page
+/// * `last_token` - The continue token the page was fetched with, if any
+/// * `continue_token` - The continue token the page returned, if any
+///
+/// # Errors
+///
+/// Returns an error, so the caller never acts on a partial list, when the
+/// page returned the token it was fetched with (an infinite loop), when an
+/// empty page still carries a continue token (an API bug), or when more pages
+/// remain after [`MAX_REASONABLE_PAGES`] pages.
+pub(crate) fn next_page_step(
+    page_count: usize,
+    items_in_page: usize,
+    last_token: Option<&str>,
+    continue_token: Option<String>,
+) -> Result<PageStep> {
+    let Some(token) = continue_token.filter(|token| !token.is_empty()) else {
+        return Ok(PageStep::Done);
+    };
+
+    if last_token == Some(token.as_str()) {
+        bail!("pagination infinite loop: page {page_count} returned the same continue token twice");
+    }
+
+    if items_in_page == 0 {
+        bail!("pagination API bug: page {page_count} returned 0 items but a continue token");
+    }
+
+    if page_count >= MAX_REASONABLE_PAGES {
+        bail!(
+            "pagination safety limit: more than {MAX_REASONABLE_PAGES} pages, refusing a partial list"
+        );
+    }
+
+    Ok(PageStep::Next(token))
 }
 
 #[cfg(test)]

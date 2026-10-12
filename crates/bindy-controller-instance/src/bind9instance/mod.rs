@@ -243,7 +243,7 @@ async fn cleanup_bind9instance(resource: &Bind9Instance, client: &Client) -> Res
             "Running cleanup for standalone Bind9Instance {}/{}",
             namespace, name
         );
-        delete_resources(client, &namespace, &name).await
+        delete_resources(client, resource).await
     }
 }
 
@@ -343,17 +343,9 @@ pub(crate) async fn reconcile_bind9instance(
     let current_generation = instance.metadata.generation;
     let observed_generation = instance.status.as_ref().and_then(|s| s.observed_generation);
 
-    // Check if this instance is managed by a Bind9Cluster
-    let is_managed: bool = instance
-        .metadata
-        .labels
-        .as_ref()
-        .and_then(|labels| labels.get(BINDY_MANAGED_BY_LABEL))
-        .is_some();
-
     // Fetch cluster information early for rotation checking and zone reconciliation
     // We need this to set the cluster reference in DNSZone status
-    let (cluster, cluster_provider) = fetch_cluster_info(&client, &namespace, &instance).await;
+    let (cluster, cluster_provider) = fetch_cluster_info(&client, &namespace, &instance).await?;
 
     // Check if parent cluster configuration has changed since last reconciliation
     // This is critical for detecting when RNDC config is added/changed at the cluster level.
@@ -416,13 +408,17 @@ pub(crate) async fn reconcile_bind9instance(
 
         let service_exists = service_api.get(&name).await.is_ok();
 
-        // Check ConfigMap - managed instances use cluster ConfigMap, standalone use instance ConfigMap
-        let configmap_name = if is_managed {
-            format!("{}-config", spec.cluster_ref)
-        } else {
-            format!("{name}-config")
-        };
-        let current_configmap = configmap_api.get(&configmap_name).await.ok();
+        // The children the writer creates and the Deployment mounts, named by
+        // the same helpers: the cluster's shared ConfigMap for any instance
+        // with a clusterRef (managed or hand-made), and the RNDC Secret the
+        // resolved rndcKey config names (a secretRef is not `{name}-rndc-key`).
+        let rndc_config = resources::resolve_full_rndc_config(
+            &instance,
+            cluster.as_ref(),
+            cluster_provider.as_ref(),
+        );
+        let child_names = resources::drift_child_names(&name, &instance, &rndc_config);
+        let current_configmap = configmap_api.get(&child_names.configmap).await.ok();
         let configmap_exists = current_configmap.is_some();
 
         // Config drift: the mounted config is behind what this operator renders
@@ -444,53 +440,48 @@ pub(crate) async fn reconcile_bind9instance(
 
         // Volume drift: the running Deployment lacks a pod volume or bind9
         // mount this operator renders (the DNSSEC key volume, once signing is
-        // enabled on an existing cluster). Compared by name only, so the RNDC
-        // Secret name passed here does not matter.
+        // enabled on an existing cluster). Compared by name only. A build
+        // error counts as drift so the reconcile runs and reports it.
         let volumes_drifted = current_deployment.as_ref().is_some_and(|deployment| {
-            let desired = crate::bind9_resources::build_deployment(
+            crate::bind9_resources::build_deployment(
                 &name,
                 &namespace,
                 &instance,
                 cluster.as_ref(),
                 cluster_provider.as_ref(),
-                &format!("{name}-rndc-key"),
-            );
-            resources::volumes_missing(deployment, &desired)
+                &child_names.rndc_secret,
+            )
+            .map_or(true, |desired| {
+                resources::volumes_missing(deployment, &desired)
+            })
         });
         let config_drifted = config_drifted || volumes_drifted;
 
         // Check Secret existence AND rotation status
-        let secret_name = format!("{name}-rndc-key");
-        let (secret_exists, needs_rotation, rotation_wake) =
-            match secret_api.get(&secret_name).await {
-                Ok(secret) => {
-                    // Resolve RNDC config to check if rotation is due
-                    let rndc_config = resources::resolve_full_rndc_config(
-                        &instance,
-                        cluster.as_ref(),
-                        cluster_provider.as_ref(),
+        let secret_name = &child_names.rndc_secret;
+        let (secret_exists, needs_rotation, rotation_wake) = match secret_api.get(secret_name).await
+        {
+            Ok(secret) => {
+                // Check if rotation is needed using the existing function
+                let needs_rotation =
+                    resources::should_rotate_secret(&secret, &rndc_config).unwrap_or(false);
+
+                if needs_rotation {
+                    debug!(
+                        "RNDC Secret {}/{} rotation is due, will trigger reconciliation",
+                        namespace, secret_name
                     );
-
-                    // Check if rotation is needed using the existing function
-                    let needs_rotation =
-                        resources::should_rotate_secret(&secret, &rndc_config).unwrap_or(false);
-
-                    if needs_rotation {
-                        debug!(
-                            "RNDC Secret {}/{} rotation is due, will trigger reconciliation",
-                            namespace, secret_name
-                        );
-                    }
-
-                    // Nothing announces that a key has fallen due, so the instance
-                    // schedules its own wake for that instant (ADR-0016).
-                    let rotation_wake =
-                        calculate_requeue_duration(&rndc_config, &secret, chrono::Utc::now());
-
-                    (true, needs_rotation, rotation_wake)
                 }
-                Err(_) => (false, false, None),
-            };
+
+                // Nothing announces that a key has fallen due, so the instance
+                // schedules its own wake for that instant (ADR-0016).
+                let rotation_wake =
+                    calculate_requeue_duration(&rndc_config, &secret, chrono::Utc::now());
+
+                (true, needs_rotation, rotation_wake)
+            }
+            Err(_) => (false, false, None),
+        };
 
         let all_exist = deployment_exists && service_exists && configmap_exists && secret_exists;
         (

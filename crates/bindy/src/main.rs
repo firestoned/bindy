@@ -18,7 +18,7 @@ use bindy_api::constants::{
 use bindy_controller_sdk::context::Context;
 use bindy_controller_sdk::leader::{acquire_leadership, leadership_lost, LeaderElectionConfig};
 use bindy_controller_sdk::namespace_scope::NamespaceScope;
-use bindy_controller_sdk::shutdown::{self, supervise, ShutdownSignal};
+use bindy_controller_sdk::shutdown::{self, supervise, ShutdownSignal, ShutdownTrigger};
 use bindy_controller_sdk::{metrics, rate_limit, request_timeout};
 use clap::{CommandFactory, Parser};
 use cli::{Cli, Commands};
@@ -125,33 +125,97 @@ fn start_metrics_server() -> tokio::task::JoinHandle<()> {
     })
 }
 
-/// Resolve on SIGINT (Ctrl+C) or SIGTERM (Kubernetes deleting the pod).
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        if let Err(e) = tokio::signal::ctrl_c().await {
-            error!("Cannot listen for SIGINT: {e}");
-            std::future::pending::<()>().await;
-        }
-    };
+/// A future that resolves on SIGINT (Ctrl+C) or SIGTERM (Kubernetes deleting
+/// the pod).
+///
+/// On Unix the OS listeners are registered when this is called, not when the
+/// future is first polled, so a signal delivered in between is still seen.
+/// Call it once, before leader election: one listener then covers the wait
+/// for the lease and the controllers' run, and a SIGTERM that arrives while
+/// the replica waits for the lease is never lost.
+fn shutdown_signal() -> impl std::future::Future<Output = ()> + Send + 'static {
     #[cfg(unix)]
-    let terminate = async {
+    {
         use tokio::signal::unix::{signal, SignalKind};
-        match signal(SignalKind::terminate()) {
-            Ok(mut sigterm) => {
-                sigterm.recv().await;
+        let sigint = signal(SignalKind::interrupt())
+            .inspect_err(|e| error!("Cannot listen for SIGINT: {e}"))
+            .ok();
+        let sigterm = signal(SignalKind::terminate())
+            .inspect_err(|e| error!("Cannot listen for SIGTERM: {e}"))
+            .ok();
+        async move {
+            let ctrl_c = async {
+                match sigint {
+                    Some(mut sigint) => {
+                        sigint.recv().await;
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            };
+            let terminate = async {
+                match sigterm {
+                    Some(mut sigterm) => {
+                        sigterm.recv().await;
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            };
+            tokio::select! {
+                () = ctrl_c => info!("Received SIGINT (Ctrl+C), draining controllers"),
+                () = terminate => info!("Received SIGTERM (pod termination), draining controllers"),
             }
-            Err(e) => {
-                error!("Cannot listen for SIGTERM: {e}");
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        async {
+            if let Err(e) = tokio::signal::ctrl_c().await {
+                error!("Cannot listen for Ctrl+C: {e}");
                 std::future::pending::<()>().await;
             }
+            info!("Received Ctrl+C, draining controllers");
         }
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
+    }
+}
 
+/// Fire `trigger` once `signal` resolves, from a task of its own.
+///
+/// # Arguments
+/// * `signal` - Resolves when the process is asked to stop
+/// * `trigger` - The shared shutdown trigger the controllers drain on
+fn fire_on_signal<S>(signal: S, trigger: ShutdownTrigger) -> tokio::task::JoinHandle<()>
+where
+    S: std::future::Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(async move {
+        signal.await;
+        trigger.fire();
+    })
+}
+
+/// Wait for `acquire` (leader election) unless the shutdown fires first.
+///
+/// The shutdown wins a tie, and a shutdown that fired before this was called
+/// is still seen: the trigger holds its state, it is not a one-off event.
+///
+/// # Arguments
+/// * `acquire` - The leader-election future
+/// * `shutdown` - The shared shutdown signal
+///
+/// # Returns
+/// `Some` with what `acquire` produced, or `None` when the shutdown fired
+/// before leadership was acquired.
+///
+/// # Errors
+/// Returns `acquire`'s error.
+async fn acquire_unless_shutdown<F, T>(acquire: F, shutdown: &ShutdownSignal) -> Result<Option<T>>
+where
+    F: std::future::Future<Output = Result<T>>,
+{
     tokio::select! {
-        () = ctrl_c => info!("Received SIGINT (Ctrl+C), draining controllers"),
-        () = terminate => info!("Received SIGTERM (pod termination), draining controllers"),
+        biased;
+        () = shutdown.wait() => Ok(None),
+        acquired = acquire => acquired.map(Some),
     }
 }
 
@@ -181,6 +245,11 @@ async fn run_operator() -> Result<()> {
     )?);
     let _metrics_server = start_metrics_server();
 
+    // Listen for SIGTERM/SIGINT once, before leader election: the same
+    // listener covers the wait for the lease and the controllers' run, so a
+    // signal in between is never dropped.
+    let _signal_listener = fire_on_signal(shutdown_signal(), trigger.clone());
+
     let leader_election = LeaderElectionConfig::from_env();
     let lease_lost = Arc::new(AtomicBool::new(false));
     let _leadership = if leader_election.enabled {
@@ -204,9 +273,14 @@ async fn run_operator() -> Result<()> {
             },
             leader_election.lease_request_timeout(),
         )?;
-        let leadership = tokio::select! {
-            leadership = acquire_leadership(lease_client, &leader_election) => leadership?,
-            () = shutdown_signal() => return Ok(()),
+        let Some(leadership) = acquire_unless_shutdown(
+            acquire_leadership(lease_client, &leader_election),
+            &shutdown,
+        )
+        .await?
+        else {
+            info!("Shutdown requested before leadership was acquired");
+            return Ok(());
         };
         info!("🎉 Leadership acquired! Starting controllers...");
 
@@ -228,12 +302,15 @@ async fn run_operator() -> Result<()> {
         None
     };
 
-    tokio::spawn(async move {
-        shutdown_signal().await;
-        trigger.fire();
-    });
-
-    run_controllers(ctx, shutdown).await?;
+    // No controller reconciles before the caches it reads have listed once:
+    // an unlisted store reads "nothing exists" (B16).
+    info!("Waiting for the watch caches to finish their initial list...");
+    if acquire_unless_shutdown(ctx.stores.wait_until_ready(), &shutdown)
+        .await?
+        .is_some()
+    {
+        run_controllers(ctx, shutdown).await?;
+    }
 
     if lease_lost.load(Ordering::SeqCst) {
         anyhow::bail!("Leadership lost - stepping down");

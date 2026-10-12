@@ -56,6 +56,47 @@ mod tests {
         }
     }
 
+    // ========== Tests for check_replace_delete_response() ==========
+    //
+    // The delete half of a delete-then-append RRset replacement must not be
+    // fire-and-forget: a REFUSED/NOTAUTH delete means the stale RRset is
+    // still live, so the write must fail instead of appending on top of it.
+
+    #[test]
+    fn test_check_replace_delete_response_accepts_idempotent_codes() {
+        let fqdn = Name::from_str("www.example.com.").expect("valid test name");
+        for code in [
+            ResponseCode::NoError,
+            ResponseCode::NXDomain,
+            ResponseCode::NXRRSet,
+        ] {
+            assert!(
+                check_replace_delete_response(code, &fqdn, RecordType::A).is_ok(),
+                "{code:?} must be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn test_check_replace_delete_response_rejects_failures() {
+        let fqdn = Name::from_str("www.example.com.").expect("valid test name");
+        for code in [
+            ResponseCode::Refused,
+            ResponseCode::NotAuth,
+            ResponseCode::NotZone,
+            ResponseCode::ServFail,
+        ] {
+            let err = check_replace_delete_response(code, &fqdn, RecordType::MX)
+                .expect_err("a rejected delete must fail the write");
+            let msg = err.to_string();
+            assert!(
+                msg.contains(&format!("{code:?}")),
+                "error must carry the code: {msg}"
+            );
+            assert!(msg.contains("MX"), "error must name the type: {msg}");
+        }
+    }
+
     // ========== Tests for effective_record_ttl() ==========
 
     #[test]

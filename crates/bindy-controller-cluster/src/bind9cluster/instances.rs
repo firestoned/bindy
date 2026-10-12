@@ -8,7 +8,7 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::types::*;
-use crate::constants::{API_GROUP_VERSION, KIND_BIND9_CLUSTER, KIND_BIND9_INSTANCE};
+use crate::constants::{API_GROUP_VERSION, KIND_BIND9_INSTANCE};
 use bindy_controller_sdk::pagination::list_all_paginated;
 
 /// Reconcile managed `Bind9Instance` resources for a cluster
@@ -111,14 +111,9 @@ pub(super) async fn reconcile_managed_instances(
     );
 
     // Create ownerReference to the Bind9Cluster
-    let owner_ref = k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference {
-        api_version: API_GROUP_VERSION.to_string(),
-        kind: KIND_BIND9_CLUSTER.to_string(),
-        name: cluster_name.clone(),
-        uid: cluster.metadata.uid.clone().unwrap_or_default(),
-        controller: Some(true),
-        block_owner_deletion: Some(true),
-    };
+    // Fails fast when the cluster has no UID: an ownerReference with an
+    // empty UID is invalid.
+    let owner_ref = crate::bind9_resources::controller_owner_reference(cluster)?;
 
     // Handle scale-up: Create missing primary instances
     // CRITICAL: Compare desired vs current state to find missing instances
@@ -488,8 +483,17 @@ pub(super) async fn ensure_managed_instance_resources(
             missing_resources.push("ConfigMap");
         }
 
-        // Check RNDC Secret
-        let secret_name = format!("{instance_name}-rndc-key");
+        // Check Deployment
+        let deployment = deployment_api.get(&instance_name).await.ok();
+        if deployment.is_none() {
+            missing_resources.push("Deployment");
+        }
+
+        // Check RNDC Secret: the one the Deployment mounts (a cluster- or
+        // instance-level `rndcKey.secretRef` is not `{instance}-rndc-key`),
+        // else the generated default
+        let secret_name =
+            bindy_bind9::instances::effective_rndc_secret_name(&instance_name, deployment.as_ref());
         if secret_api.get(&secret_name).await.is_err() {
             missing_resources.push("Secret");
         }
@@ -497,11 +501,6 @@ pub(super) async fn ensure_managed_instance_resources(
         // Check Service
         if service_api.get(&instance_name).await.is_err() {
             missing_resources.push("Service");
-        }
-
-        // Check Deployment
-        if deployment_api.get(&instance_name).await.is_err() {
-            missing_resources.push("Deployment");
         }
 
         // If any resources are missing, trigger instance reconciliation

@@ -186,6 +186,14 @@ pub const BINDCAR_TOKEN_EXPIRATION_SECONDS: i64 = 3600;
 /// from operators installed in any other namespace.
 pub const POD_NAMESPACE_ENV: &str = "POD_NAMESPACE";
 
+/// Environment variable naming the namespace Scout writes `ARecord`s into.
+///
+/// `bindy scout` reads it when `--namespace` is not passed and otherwise falls
+/// back to `bindy-system`. Bootstrap creates the scout writer Role/RoleBinding
+/// in the `--namespace` it was given, so the Deployment must point the scout at
+/// that same namespace or it writes where it has no RBAC.
+pub const SCOUT_TARGET_NAMESPACE_ENV: &str = "BINDY_SCOUT_NAMESPACE";
+
 // ---------------------------------------------------------------------------
 // Scout constants
 // ---------------------------------------------------------------------------
@@ -1961,6 +1969,8 @@ fn read_cluster_info() -> Result<(String, Option<String>, String)> {
 ///
 /// Scout CLI args (`--cluster-name`, `--default-ips`, `--default-zone`) are passed
 /// directly to the container command so the scout behaves consistently with `bindy scout`.
+/// [`SCOUT_TARGET_NAMESPACE_ENV`] is set to `namespace`, so the scout writes
+/// `ARecord`s into the namespace where bootstrap created its writer Role.
 pub fn build_scout_deployment(
     namespace: &str,
     opts: &ScoutDeploymentOptions<'_>,
@@ -1986,6 +1996,8 @@ pub fn build_scout_deployment(
             "name": "POD_NAMESPACE",
             "valueFrom": {"fieldRef": {"fieldPath": "metadata.namespace"}}
         }),
+        // ARecords go where the writer Role was created (see run_bootstrap_scout).
+        serde_json::json!({"name": SCOUT_TARGET_NAMESPACE_ENV, "value": namespace}),
         serde_json::json!({"name": "RUST_LOG", "value": "info"}),
         serde_json::json!({"name": "RUST_LOG_FORMAT", "value": "text"}),
     ];

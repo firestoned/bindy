@@ -4156,14 +4156,14 @@ impl PartialEq for InstanceReference {
 // Implement Eq for InstanceReference
 impl Eq for InstanceReference {}
 
-// Implement Hash to hash only identity fields
+// Implement Hash to hash only identity fields, matching PartialEq: values
+// that compare equal must hash equally, so last_reconciled_at is left out.
 impl std::hash::Hash for InstanceReference {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.api_version.hash(state);
         self.kind.hash(state);
         self.name.hash(state);
         self.namespace.hash(state);
-        self.last_reconciled_at.hash(state);
     }
 }
 

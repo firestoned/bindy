@@ -25,6 +25,7 @@
 use crate::bind9::RndcKeyData;
 use crate::crd::DNSZone;
 use anyhow::{anyhow, Context as AnyhowContext, Result};
+use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{Endpoints, Pod, Secret};
 use kube::{Api, Client, ResourceExt};
 use std::collections::HashMap;
@@ -1105,7 +1106,40 @@ pub fn running_pod_name_and_ip(pod: &Pod) -> Option<(String, String)> {
     Some((pod_name.to_string(), pod_ip.clone()))
 }
 
+/// The RNDC `Secret` an instance's pods mount, given its Deployment.
+///
+/// The Deployment's `rndc-key` volume is the effective choice of every
+/// configuration level (`rndcKey.secretRef`, an inline `rndcKey.secret`, a
+/// role-level key on the cluster, or the generated default), and it names
+/// the key BIND9 in those pods actually loaded. Without a Deployment, or
+/// one that mounts no RNDC Secret, the generated `{instance}-rndc-key` is
+/// assumed ([`crate::bind9_resources::default_rndc_secret_name`]).
+///
+/// # Arguments
+///
+/// * `instance_name` - Name of the `Bind9Instance` (and its Deployment)
+/// * `deployment` - The instance's Deployment, if it exists
+///
+/// # Returns
+///
+/// The name of the `Secret` holding the instance's RNDC key.
+#[must_use]
+pub fn effective_rndc_secret_name(instance_name: &str, deployment: Option<&Deployment>) -> String {
+    deployment
+        .and_then(crate::bind9_resources::rndc_secret_name_from_deployment)
+        .unwrap_or_else(|| crate::bind9_resources::default_rndc_secret_name(instance_name))
+}
+
 /// Load RNDC key from the instance's secret.
+///
+/// The Secret is the one the instance's Deployment mounts
+/// ([`effective_rndc_secret_name`]), so an instance on `rndcKey.secretRef`
+/// or an inline `rndcKey.secret` is read from that Secret, not from
+/// `{instance}-rndc-key`. Reading the mount rather than re-resolving the
+/// instance, cluster and provider specs keeps the [`InstanceLookup`]
+/// signature as is and costs one GET, and it names the key the running pods
+/// hold even while a pod-template change waits in the rollout queue
+/// (ADR-0018).
 ///
 /// # Arguments
 ///
@@ -1119,15 +1153,23 @@ pub fn running_pod_name_and_ip(pod: &Pod) -> Option<(String, String)> {
 ///
 /// # Errors
 ///
-/// Returns an error if the secret is not found or cannot be parsed
+/// Returns an error if the Deployment cannot be read (other than not
+/// found), or the secret is not found or cannot be parsed
 pub async fn load_rndc_key(
     client: &Client,
     namespace: &str,
     instance_name: &str,
 ) -> Result<RndcKeyData> {
-    let secret_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
-    let secret_name = format!("{instance_name}-rndc-key");
+    let deployment_api: Api<Deployment> = Api::namespaced(client.clone(), namespace);
+    let deployment = deployment_api
+        .get_opt(instance_name)
+        .await
+        .context(format!(
+            "Failed to get Deployment {instance_name} in namespace {namespace} for its RNDC Secret"
+        ))?;
+    let secret_name = effective_rndc_secret_name(instance_name, deployment.as_ref());
 
+    let secret_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
     let secret = secret_api.get(&secret_name).await.context(format!(
         "Failed to get RNDC secret {secret_name} in namespace {namespace}"
     ))?;

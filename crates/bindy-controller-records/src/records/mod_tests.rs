@@ -66,3 +66,71 @@ mod tests {
         assert!(got.unwrap_err().to_string().contains("timeout"));
     }
 }
+
+/// Unit tests for the deletion decisions in `delete_record`: an API failure
+/// must keep the finalizer (retry), and only a definite "nothing is
+/// published" lets the finalizer go (bug B2, ADR-0015).
+#[cfg(test)]
+mod delete_step_tests {
+    use super::super::{instances_step, primaries_step, zone_lookup_step, DeleteStep};
+
+    #[test]
+    fn a_found_zone_proceeds() {
+        let step = zone_lookup_step(Ok(Some("zone")));
+        assert!(matches!(step, DeleteStep::Proceed("zone")));
+    }
+
+    #[test]
+    fn a_zone_that_does_not_exist_allows_deletion() {
+        let step = zone_lookup_step::<&str>(Ok(None));
+        assert!(matches!(step, DeleteStep::AllowDeletion));
+    }
+
+    #[test]
+    fn a_failed_zone_lookup_retries() {
+        let step = zone_lookup_step::<&str>(Err(anyhow::anyhow!("apiserver timeout")));
+        let DeleteStep::Retry(err) = step else {
+            panic!("an API failure on the zone lookup must retry, not drop the finalizer");
+        };
+        assert!(err.to_string().contains("apiserver timeout"));
+    }
+
+    #[test]
+    fn selected_instances_proceed() {
+        let step = instances_step(Ok(vec!["primary-0"]));
+        assert!(matches!(step, DeleteStep::Proceed(ref v) if v == &vec!["primary-0"]));
+    }
+
+    #[test]
+    fn a_zone_that_selects_no_instances_allows_deletion() {
+        let step = instances_step::<&str>(Err(anyhow::anyhow!("no instances matching")));
+        assert!(matches!(step, DeleteStep::AllowDeletion));
+    }
+
+    #[test]
+    fn an_empty_instance_list_allows_deletion() {
+        let step = instances_step::<&str>(Ok(Vec::new()));
+        assert!(matches!(step, DeleteStep::AllowDeletion));
+    }
+
+    #[test]
+    fn found_primaries_proceed() {
+        let step = primaries_step(Ok(vec!["primary-0", "primary-1"]));
+        assert!(matches!(step, DeleteStep::Proceed(ref v) if v.len() == 2));
+    }
+
+    #[test]
+    fn no_primaries_allows_deletion() {
+        let step = primaries_step::<&str>(Ok(Vec::new()));
+        assert!(matches!(step, DeleteStep::AllowDeletion));
+    }
+
+    #[test]
+    fn a_failed_primary_role_lookup_retries() {
+        let step = primaries_step::<&str>(Err(anyhow::anyhow!("GET bind9instance: 503")));
+        let DeleteStep::Retry(err) = step else {
+            panic!("a failed role GET must retry, not drop the finalizer");
+        };
+        assert!(err.to_string().contains("503"));
+    }
+}

@@ -562,3 +562,32 @@ mod context_new {
         assert!(ctx.shutdown.is_triggered());
     }
 }
+
+/// The zones-loaded gate reads the record stores (`records_tagged_with_zone`),
+/// so the startup gate must wait for them too: an unlisted record store would
+/// replay an empty record list onto a new pod and admit it (B16).
+#[cfg(test)]
+mod record_stores_ready_tests {
+    use crate::context::{RecordStores, RECORD_KINDS};
+    use std::time::Duration;
+
+    /// Long enough for a ready store to answer, short enough to keep the suite fast.
+    const NOT_READY_PROBE: Duration = Duration::from_millis(50);
+
+    #[tokio::test]
+    async fn unlisted_record_stores_are_not_ready() {
+        let mut records = RecordStores::default();
+        for ops in &RECORD_KINDS {
+            (ops.insert_empty)(&mut records);
+        }
+
+        let waited = tokio::time::timeout(NOT_READY_PROBE, records.wait_until_ready()).await;
+
+        // Either still waiting or an error (these test views have no
+        // writer): never "ready".
+        assert!(
+            !matches!(waited, Ok(Ok(()))),
+            "record stores that never listed must not report ready"
+        );
+    }
+}

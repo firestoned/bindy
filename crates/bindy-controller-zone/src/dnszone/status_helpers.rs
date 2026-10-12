@@ -35,7 +35,9 @@ use crate::crd::{DNSSECStatus, InstanceReference};
 ///
 /// # Errors
 ///
-/// Does not currently fail; the `Result` keeps the established signature.
+/// Returns an error if an instance's role cannot be read. A failed lookup is
+/// never counted as zero expected instances: with zero expected, the final
+/// conditions could report `Ready=True` for a zone that was not configured.
 pub async fn calculate_expected_instance_counts(
     client: &Client,
     store: &crate::context::MultiStore<crate::crd::Bind9Instance>,
@@ -43,15 +45,13 @@ pub async fn calculate_expected_instance_counts(
 ) -> Result<(usize, usize)> {
     let expected_primary_count =
         super::primary::filter_primary_instances_cached(client, store, instance_refs)
-            .await
-            .map(|refs| refs.len())
-            .unwrap_or(0);
+            .await?
+            .len();
 
     let expected_secondary_count =
         super::secondary::filter_secondary_instances(client, store, instance_refs)
-            .await
-            .map(|refs| refs.len())
-            .unwrap_or(0);
+            .await?
+            .len();
 
     Ok((expected_primary_count, expected_secondary_count))
 }

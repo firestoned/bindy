@@ -161,4 +161,95 @@ mod tests {
 
         assert!(result.is_ok());
     }
+
+    // ========== parse_ipv4_addresses / parse_ipv6_addresses ==========
+    //
+    // Every address is validated before the live RRset is touched, so a spec
+    // with one bad entry never wipes the existing records.
+
+    #[test]
+    fn test_parse_ipv4_addresses_accepts_valid_list() {
+        let input = vec!["10.0.0.1".to_string(), "10.0.0.2".to_string()];
+        let parsed = parse_ipv4_addresses(&input).expect("valid IPv4 list");
+        assert_eq!(
+            parsed,
+            vec![Ipv4Addr::new(10, 0, 0, 1), Ipv4Addr::new(10, 0, 0, 2)]
+        );
+    }
+
+    #[test]
+    fn test_parse_ipv4_addresses_rejects_list_with_a_bad_entry() {
+        let input = vec!["10.0.0.1".to_string(), "bogus".to_string()];
+        let err = parse_ipv4_addresses(&input).expect_err("a bad IPv4 must reject the list");
+        assert!(
+            err.to_string().contains("bogus"),
+            "error must name the bad address: {err}"
+        );
+    }
+
+    #[test]
+    fn test_parse_ipv4_addresses_rejects_ipv6_entry() {
+        let input = vec!["2001:db8::1".to_string()];
+        assert!(parse_ipv4_addresses(&input).is_err());
+    }
+
+    #[test]
+    fn test_parse_ipv4_addresses_empty_list_is_ok() {
+        let parsed = parse_ipv4_addresses(&[]).expect("empty list parses");
+        assert!(parsed.is_empty());
+    }
+
+    #[test]
+    fn test_parse_ipv6_addresses_accepts_valid_list() {
+        let input = vec!["2001:db8::1".to_string(), "2001:DB8::2".to_string()];
+        let parsed = parse_ipv6_addresses(&input).expect("valid IPv6 list");
+        assert_eq!(
+            parsed,
+            vec![
+                Ipv6Addr::from_str("2001:db8::1").expect("valid test IP"),
+                Ipv6Addr::from_str("2001:db8::2").expect("valid test IP"),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_ipv6_addresses_rejects_list_with_a_bad_entry() {
+        let input = vec!["2001:db8::1".to_string(), "not-an-ip".to_string()];
+        let err = parse_ipv6_addresses(&input).expect_err("a bad IPv6 must reject the list");
+        assert!(
+            err.to_string().contains("not-an-ip"),
+            "error must name the bad address: {err}"
+        );
+    }
+
+    /// An invalid address fails before any DNS traffic: the server here does
+    /// not exist, so reaching the network would surface as a different error
+    /// (or a hang, bounded by the timeout).
+    #[tokio::test]
+    async fn test_add_a_record_with_bad_ip_fails_before_any_network_call() {
+        let key_data = RndcKeyData {
+            name: "test".to_string(),
+            algorithm: crate::crd::RndcAlgorithm::HmacSha256,
+            secret: "dGVzdA==".to_string(),
+        };
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            add_a_record(
+                "example.com",
+                "www",
+                &["10.0.0.1".to_string(), "bogus".to_string()],
+                Some(300),
+                "127.0.0.1:9",
+                &key_data,
+            ),
+        )
+        .await
+        .expect("validation must not wait on the network");
+
+        let err = result.expect_err("a bad IP must fail the write");
+        assert!(
+            format!("{err:#}").contains("Invalid IPv4 address: bogus"),
+            "unexpected error: {err:#}"
+        );
+    }
 }

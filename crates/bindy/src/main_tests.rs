@@ -285,6 +285,103 @@ mod tests {
     }
 }
 
+/// The OS shutdown signal is listened for once, before leader election, and
+/// fires the shared trigger; leader acquisition races that trigger.
+#[cfg(test)]
+mod shutdown_wiring_tests {
+    use crate::{acquire_unless_shutdown, fire_on_signal};
+    use bindy_controller_sdk::shutdown;
+    use std::time::Duration;
+    use tokio::time::timeout;
+
+    const WAIT: Duration = Duration::from_secs(5);
+    const LEADERSHIP: u32 = 7;
+
+    #[tokio::test]
+    async fn test_fire_on_signal_fires_the_trigger() {
+        let (trigger, signal) = shutdown::channel();
+
+        let task = fire_on_signal(std::future::ready(()), trigger);
+
+        timeout(WAIT, signal.wait())
+            .await
+            .expect("the signal task must fire the trigger");
+        task.await.expect("the signal task completes");
+        assert!(signal.is_triggered());
+    }
+
+    #[tokio::test]
+    async fn test_trigger_fired_before_the_waiter_subscribes_is_observed() {
+        let (trigger, signal) = shutdown::channel();
+
+        fire_on_signal(std::future::ready(()), trigger)
+            .await
+            .expect("the signal task completes");
+        let late_waiter = signal.clone();
+
+        assert!(late_waiter.is_triggered());
+        timeout(WAIT, late_waiter.wait())
+            .await
+            .expect("a waiter created after the shutdown fired still sees it");
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_during_leader_election_stops_waiting() {
+        let (trigger, signal) = shutdown::channel();
+        trigger.fire();
+
+        let outcome = timeout(
+            WAIT,
+            acquire_unless_shutdown(std::future::pending::<anyhow::Result<u32>>(), &signal),
+        )
+        .await
+        .expect("a fired shutdown must end the leader wait");
+
+        assert!(outcome.expect("shutdown is not an error").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_fired_mid_election_stops_waiting() {
+        let (trigger, signal) = shutdown::channel();
+        let waiter = signal.clone();
+
+        let election = tokio::spawn(async move {
+            acquire_unless_shutdown(std::future::pending::<anyhow::Result<u32>>(), &waiter).await
+        });
+        trigger.fire();
+
+        let outcome = timeout(WAIT, election)
+            .await
+            .expect("a shutdown fired mid-election must end the leader wait")
+            .expect("the election task completes");
+        assert!(outcome.expect("shutdown is not an error").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_acquired_leadership_is_returned() {
+        let (_trigger, signal) = shutdown::channel();
+
+        let outcome = acquire_unless_shutdown(async { Ok(LEADERSHIP) }, &signal)
+            .await
+            .expect("acquisition succeeded");
+
+        assert_eq!(outcome, Some(LEADERSHIP));
+    }
+
+    #[tokio::test]
+    async fn test_acquisition_error_is_propagated() {
+        let (_trigger, signal) = shutdown::channel();
+
+        let outcome = acquire_unless_shutdown(
+            async { Err::<u32, _>(anyhow::anyhow!("lease API unreachable")) },
+            &signal,
+        )
+        .await;
+
+        assert!(outcome.is_err());
+    }
+}
+
 // Integration test documentation
 // ================================
 // The signal handling functionality should also be tested manually:

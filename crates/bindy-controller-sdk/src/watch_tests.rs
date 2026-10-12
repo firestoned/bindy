@@ -581,3 +581,73 @@ mod tests {
         assert!(out[0].is_err());
     }
 }
+
+/// B16: controllers must not reconcile against a store that has not finished
+/// its initial list, or a lookup in it reads "nothing exists" and, for
+/// example, lets a record finalizer go while the instances are still there.
+#[cfg(test)]
+mod store_ready_tests {
+    use super::super::MultiStore;
+    use k8s_openapi::api::core::v1::ConfigMap;
+    use kube::runtime::{reflector, watcher};
+    use std::time::Duration;
+
+    /// Long enough for a ready store to answer, short enough to keep the suite fast.
+    const NOT_READY_PROBE: Duration = Duration::from_millis(50);
+
+    #[tokio::test]
+    async fn a_store_that_has_not_listed_is_not_ready() {
+        let (store, _writer) = reflector::store::<ConfigMap>();
+        let view = MultiStore::new(vec![store]);
+
+        let waited = tokio::time::timeout(NOT_READY_PROBE, view.wait_until_ready()).await;
+
+        assert!(waited.is_err(), "an unlisted store must not report ready");
+    }
+
+    #[tokio::test]
+    async fn every_shard_must_finish_its_initial_list() {
+        let (listed, mut listed_writer) = reflector::store::<ConfigMap>();
+        let (unlisted, _unlisted_writer) = reflector::store::<ConfigMap>();
+        listed_writer.apply_watcher_event(&watcher::Event::Init);
+        listed_writer.apply_watcher_event(&watcher::Event::InitDone);
+        let view = MultiStore::new(vec![listed, unlisted]);
+
+        let waited = tokio::time::timeout(NOT_READY_PROBE, view.wait_until_ready()).await;
+
+        assert!(
+            waited.is_err(),
+            "one unlisted shard keeps the view not ready"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_store_is_ready_after_its_initial_list() {
+        let (store, mut writer) = reflector::store::<ConfigMap>();
+        writer.apply_watcher_event(&watcher::Event::Init);
+        writer.apply_watcher_event(&watcher::Event::InitDone);
+        let view = MultiStore::new(vec![store]);
+
+        let waited = tokio::time::timeout(NOT_READY_PROBE, view.wait_until_ready())
+            .await
+            .expect("a listed store is ready");
+
+        assert!(waited.is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_dropped_writer_is_an_error() {
+        let (store, writer) = reflector::store::<ConfigMap>();
+        drop(writer);
+        let view = MultiStore::new(vec![store]);
+
+        let waited = tokio::time::timeout(NOT_READY_PROBE, view.wait_until_ready())
+            .await
+            .expect("a dropped writer answers at once");
+
+        assert!(
+            waited.is_err(),
+            "a store whose watch is gone can never become ready"
+        );
+    }
+}

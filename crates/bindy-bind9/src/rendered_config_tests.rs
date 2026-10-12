@@ -106,7 +106,7 @@ mod tests {
         serde_json::from_value(json!({
             "apiVersion": "bindy.firestoned.io/v1beta1",
             "kind": "Bind9Instance",
-            "metadata": {"name": "dns", "namespace": "dns-system"},
+            "metadata": {"name": "dns", "namespace": "dns-system", "uid": "test-instance-uid"},
             "spec": {"clusterRef": "dns", "role": "primary", "config": config}
         }))
         .expect("valid Bind9Instance")
@@ -238,8 +238,11 @@ mod tests {
                 );
                 let configmap = match kind {
                     "Bind9Instance" => {
-                        let instance: Bind9Instance = serde_yaml::from_value(value)
+                        let mut instance: Bind9Instance = serde_yaml::from_value(value)
                             .unwrap_or_else(|e| panic!("{label} does not deserialize: {e}"));
+                        // The API server assigns the UID the owner reference
+                        // needs; an example manifest has none.
+                        instance.metadata.uid = Some("example-uid".into());
                         build_configmap("x", "ns", &instance, None, None)
                     }
                     "Bind9Cluster" => {

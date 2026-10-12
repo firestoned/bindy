@@ -235,6 +235,7 @@ pub struct RecordKindOps {
     pub insert_empty: fn(&mut RecordStores),
     collect: fn(&RecordStores, &LabelSelector, &str, &mut Vec<RecordRef>),
     collect_tagged: fn(&RecordStores, &str, &str, &mut Vec<RecordReferenceWithTimestamp>),
+    wait_ready: fn(&RecordStores) -> futures::future::BoxFuture<'_, anyhow::Result<()>>,
 }
 
 const fn ops<K: RecordKind>() -> RecordKindOps {
@@ -244,6 +245,7 @@ const fn ops<K: RecordKind>() -> RecordKindOps {
         insert_empty: insert_empty_kind::<K>,
         collect: collect_matching::<K>,
         collect_tagged: collect_tagged::<K>,
+        wait_ready: wait_ready_kind::<K>,
     }
 }
 
@@ -262,6 +264,12 @@ pub const RECORD_KINDS: [RecordKindOps; 9] = [
 
 fn register_kind<K: RecordKind>(watch: &mut WatchSet, records: &mut RecordStores) {
     records.insert(watch.register::<K>(K::KIND));
+}
+
+fn wait_ready_kind<K: RecordKind>(
+    records: &RecordStores,
+) -> futures::future::BoxFuture<'_, anyhow::Result<()>> {
+    Box::pin(records.get::<K>().wait_until_ready())
 }
 
 fn insert_empty_kind<K: RecordKind>(records: &mut RecordStores) {
@@ -331,6 +339,21 @@ impl RecordStores {
         self.stores.insert(TypeId::of::<K>(), Arc::new(view));
     }
 
+    /// Wait until the store of every kind in [`RECORD_KINDS`] has finished
+    /// its initial list.
+    ///
+    /// # Errors
+    /// Returns an error if a kind's watch ended before it ever listed.
+    ///
+    /// # Panics
+    /// Panics if a kind was never inserted (see [`RecordStores::get`]).
+    pub async fn wait_until_ready(&self) -> anyhow::Result<()> {
+        for ops in &RECORD_KINDS {
+            (ops.wait_ready)(self).await?;
+        }
+        Ok(())
+    }
+
     /// The store of `K`.
     ///
     /// # Panics
@@ -370,6 +393,27 @@ pub struct Stores {
 }
 
 impl Stores {
+    /// Wait until every store, the record stores included, has finished its
+    /// initial list, so no controller reconciles against a store that still
+    /// reads empty (the zones-loaded gate replays records from the record
+    /// stores onto a new pod).
+    ///
+    /// # Errors
+    /// Returns an error if a store's watch ended before it ever listed.
+    pub async fn wait_until_ready(&self) -> anyhow::Result<()> {
+        futures::try_join!(
+            self.cluster_bind9_providers.wait_until_ready(),
+            self.bind9_clusters.wait_until_ready(),
+            self.bind9_instances.wait_until_ready(),
+            self.bind9_deployments.wait_until_ready(),
+            self.endpoints.wait_until_ready(),
+            self.bind9_pods.wait_until_ready(),
+            self.dnszones.wait_until_ready(),
+            self.records.wait_until_ready(),
+        )?;
+        Ok(())
+    }
+
     /// Records of every kind in `namespace` whose labels match `selector`,
     /// grouped by kind in [`RECORD_KINDS`] order.
     ///

@@ -5,7 +5,7 @@
 
 use super::super::types::RndcKeyData;
 use super::{
-    build_authenticated_client, build_delete_rrset_record, build_record_fqdn, effective_record_ttl,
+    build_authenticated_client, build_record_fqdn, delete_rrset_for_replace, effective_record_ttl,
     rrset_ttl_matches, should_update_record,
 };
 use anyhow::{Context, Result};
@@ -112,12 +112,47 @@ fn compare_ipv6_rrset(
     existing_ips == desired_set
 }
 
+/// Parse every desired IPv4 address, failing on the first invalid one.
+///
+/// Called before any DNS traffic so a spec with one bad entry never deletes
+/// the live `RRset` and leaves it partially recreated.
+///
+/// # Errors
+///
+/// Returns an error naming the first address that is not a valid IPv4 address.
+pub(crate) fn parse_ipv4_addresses(addresses: &[String]) -> Result<Vec<Ipv4Addr>> {
+    addresses
+        .iter()
+        .map(|ip_str| {
+            Ipv4Addr::from_str(ip_str).with_context(|| format!("Invalid IPv4 address: {ip_str}"))
+        })
+        .collect()
+}
+
+/// Parse every desired IPv6 address, failing on the first invalid one.
+///
+/// Called before any DNS traffic so a spec with one bad entry never deletes
+/// the live `RRset` and leaves it partially recreated.
+///
+/// # Errors
+///
+/// Returns an error naming the first address that is not a valid IPv6 address.
+pub(crate) fn parse_ipv6_addresses(addresses: &[String]) -> Result<Vec<Ipv6Addr>> {
+    addresses
+        .iter()
+        .map(|ip_str| {
+            Ipv6Addr::from_str(ip_str).with_context(|| format!("Invalid IPv6 address: {ip_str}"))
+        })
+        .collect()
+}
+
 /// Add A records using dynamic DNS update (RFC 2136) with `RRset` synchronization.
 ///
 /// This function implements declarative `RRset` management:
-/// 1. Compares existing DNS records with desired IPs
-/// 2. If mismatch, deletes entire `RRset` and recreates with desired IPs
-/// 3. If match, skips update (idempotent)
+/// 1. Validates every desired IP (before any DNS traffic)
+/// 2. Compares existing DNS records with desired IPs
+/// 3. If mismatch, deletes entire `RRset` and recreates with desired IPs
+/// 4. If match, skips update (idempotent)
 ///
 /// # Arguments
 /// * `zone_name` - DNS zone name (e.g., "example.com")
@@ -129,7 +164,8 @@ fn compare_ipv6_rrset(
 ///
 /// # Errors
 ///
-/// Returns an error if the DNS update fails or the server rejects it.
+/// Returns an error if any address is not valid IPv4 (nothing is sent), the
+/// DNS update fails, or the server rejects the delete or an append.
 #[allow(clippy::too_many_arguments)]
 pub async fn add_a_record(
     zone_name: &str,
@@ -139,6 +175,10 @@ pub async fn add_a_record(
     server: &str,
     key_data: &RndcKeyData,
 ) -> Result<()> {
+    // Validate every address before touching DNS: a bad entry must not wipe
+    // the live RRset and leave it partially recreated.
+    let parsed_ips = parse_ipv4_addresses(ipv4_addresses)?;
+
     let ttl_value = effective_record_ttl(ttl);
     let should_update = should_update_record(
         zone_name,
@@ -160,9 +200,9 @@ pub async fn add_a_record(
 
     let mut client = build_authenticated_client(server, key_data).await?;
 
-    // Step 1: delete existing RRset (ignore errors — may not exist).
-    let delete_record = build_delete_rrset_record(&fqdn, RecordType::A);
-    let _ = client.delete_rrset(delete_record, zone.clone()).await;
+    // Step 1: delete the existing RRset. NXRRSET (nothing there) is fine; a
+    // transport failure or REFUSED/NOTAUTH fails the write.
+    delete_rrset_for_replace(&mut client, &fqdn, RecordType::A, &zone).await?;
 
     debug!(
         "Adding A record RRset: {} -> {:?} (TTL: {}, {} addresses)",
@@ -173,10 +213,8 @@ pub async fn add_a_record(
     );
 
     // Step 2: append all desired IPs to create the new RRset.
-    for ip_str in ipv4_addresses {
-        let ipv4_addr = Ipv4Addr::from_str(ip_str)
-            .with_context(|| format!("Invalid IPv4 address: {ip_str}"))?;
-
+    for ipv4_addr in parsed_ips {
+        let ip_str = ipv4_addr.to_string();
         let mut record = Record::from_rdata(fqdn.clone(), ttl_value, RData::A(ipv4_addr.into()));
         record.dns_class = DNSClass::IN;
 
@@ -207,9 +245,10 @@ pub async fn add_a_record(
 /// Add AAAA records using dynamic DNS update (RFC 2136) with `RRset` synchronization.
 ///
 /// This function implements declarative `RRset` management:
-/// 1. Compares existing DNS records with desired IPv6 addresses
-/// 2. If mismatch, deletes entire `RRset` and recreates with desired IPs
-/// 3. If match, skips update (idempotent)
+/// 1. Validates every desired IPv6 address (before any DNS traffic)
+/// 2. Compares existing DNS records with desired IPv6 addresses
+/// 3. If mismatch, deletes entire `RRset` and recreates with desired IPs
+/// 4. If match, skips update (idempotent)
 ///
 /// # Arguments
 /// * `zone_name` - DNS zone name (e.g., "example.com")
@@ -221,7 +260,8 @@ pub async fn add_a_record(
 ///
 /// # Errors
 ///
-/// Returns an error if the DNS update fails or the server rejects it.
+/// Returns an error if any address is not valid IPv6 (nothing is sent), the
+/// DNS update fails, or the server rejects the delete or an append.
 #[allow(clippy::too_many_arguments)]
 pub async fn add_aaaa_record(
     zone_name: &str,
@@ -231,6 +271,10 @@ pub async fn add_aaaa_record(
     server: &str,
     key_data: &RndcKeyData,
 ) -> Result<()> {
+    // Validate every address before touching DNS: a bad entry must not wipe
+    // the live RRset and leave it partially recreated.
+    let parsed_ips = parse_ipv6_addresses(ipv6_addresses)?;
+
     let ttl_value = effective_record_ttl(ttl);
     let should_update = should_update_record(
         zone_name,
@@ -252,8 +296,7 @@ pub async fn add_aaaa_record(
 
     let mut client = build_authenticated_client(server, key_data).await?;
 
-    let delete_record = build_delete_rrset_record(&fqdn, RecordType::AAAA);
-    let _ = client.delete_rrset(delete_record, zone.clone()).await;
+    delete_rrset_for_replace(&mut client, &fqdn, RecordType::AAAA, &zone).await?;
 
     debug!(
         "Adding AAAA record RRset: {} -> {:?} (TTL: {}, {} addresses)",
@@ -263,10 +306,8 @@ pub async fn add_aaaa_record(
         ipv6_addresses.len()
     );
 
-    for ip_str in ipv6_addresses {
-        let ipv6_addr = Ipv6Addr::from_str(ip_str)
-            .with_context(|| format!("Invalid IPv6 address: {ip_str}"))?;
-
+    for ipv6_addr in parsed_ips {
+        let ip_str = ipv6_addr.to_string();
         let mut record = Record::from_rdata(fqdn.clone(), ttl_value, RData::AAAA(ipv6_addr.into()));
         record.dns_class = DNSClass::IN;
 

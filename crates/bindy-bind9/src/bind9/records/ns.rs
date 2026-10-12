@@ -5,7 +5,7 @@
 
 use super::super::types::RndcKeyData;
 use super::{
-    build_authenticated_client, build_delete_rrset_record, build_record_fqdn, effective_record_ttl,
+    build_authenticated_client, build_record_fqdn, delete_rrset_for_replace, effective_record_ttl,
     rrset_ttl_matches, should_update_record,
 };
 use anyhow::Result;
@@ -87,9 +87,9 @@ pub async fn add_ns_record(
 
     let mut client = build_authenticated_client(server, key_data).await?;
 
-    // Step 1: delete existing RRset (ignore errors — may not exist).
-    let delete_record = build_delete_rrset_record(&fqdn, RecordType::NS);
-    let _ = client.delete_rrset(delete_record, zone.clone()).await;
+    // Step 1: delete the existing RRset. NXRRSET (nothing there) is fine; a
+    // transport failure or REFUSED/NOTAUTH fails the write.
+    delete_rrset_for_replace(&mut client, &fqdn, RecordType::NS, &zone).await?;
 
     // Step 2: append the desired record to create the new RRset.
     let response = client.append(record, zone, false).await?;

@@ -142,7 +142,8 @@ mod tests {
         let client = super::super::build_http_client_with_timeouts(
             std::time::Duration::from_millis(500),
             std::time::Duration::from_millis(500),
-        );
+        )
+        .expect("HTTP client with timeouts builds");
 
         let result = client
             .get(format!("http://{addr}/api/v1/server/status"))
@@ -153,6 +154,43 @@ mod tests {
 
         let err = result.expect_err("request to an unresponsive server must fail");
         assert!(err.is_timeout(), "expected a timeout error, got: {err}");
+    }
+
+    /// If the timeout-bounded client cannot be built, the manager must fail
+    /// every request rather than fall back to a client with no timeouts (which
+    /// would reintroduce the indefinite hang the timeouts exist to prevent).
+    #[tokio::test]
+    async fn test_manager_with_unbuildable_http_client_fails_requests() {
+        let manager = Bind9Manager::from_client_result(
+            Err(anyhow::anyhow!("builder exploded")),
+            None,
+            None,
+            None,
+        );
+
+        let err = manager
+            .resolve_client()
+            .await
+            .expect_err("no untimed fallback client may be handed out");
+        assert!(
+            format!("{err:#}").contains("builder exploded"),
+            "the build failure must be surfaced: {err:#}"
+        );
+        assert!(manager.client().is_err());
+    }
+
+    /// A manager built for an instance without a Deployment in the store still
+    /// knows the instance's namespace (bug B15a).
+    #[test]
+    fn test_new_for_instance_keeps_the_namespace() {
+        ensure_crypto_provider();
+        let manager = Bind9Manager::new_for_instance("inst".to_string(), "dns".to_string());
+
+        assert_eq!(manager.instance_namespace(), Some("dns"));
+        assert!(
+            manager.is_auth_enabled(),
+            "without a Deployment, auth is assumed enabled"
+        );
     }
 }
 
@@ -267,5 +305,68 @@ mod tls_transport_tests {
         cfg.ca_bundle = None;
         let m = Bind9Manager::new().with_tls(Some(cfg));
         assert!(m.resolve_client().await.is_err());
+    }
+
+    fn unreachable_kube_client() -> kube::Client {
+        let config =
+            kube::Config::new("http://127.0.0.1:9".parse().expect("valid unreachable URL"));
+        kube::Client::try_from(config).expect("client builds without connecting")
+    }
+
+    /// Without the instance namespace the CA bundle location is unknown. The
+    /// manager must say so, not silently read the bundle from `default`.
+    #[tokio::test]
+    async fn test_resolve_client_without_namespace_does_not_read_default() {
+        ensure_crypto_provider();
+        let m = Bind9Manager::new()
+            .with_tls(Some(tls(true)))
+            .with_kube_client(unreachable_kube_client());
+
+        let err = m
+            .resolve_client()
+            .await
+            .expect_err("no namespace must fail closed");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("namespace"), "error should say why: {msg}");
+        assert!(
+            !msg.contains("default/"),
+            "must not have tried the default namespace: {msg}"
+        );
+    }
+
+    /// The CA bundle is read from the instance's own namespace.
+    #[tokio::test]
+    async fn test_ca_bundle_is_read_from_the_instance_namespace() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        ensure_crypto_provider();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/namespaces/dns/configmaps/bindcar-ca"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": {"name": "bindcar-ca", "namespace": "dns"},
+                "data": {"other-key": "x"},
+            })))
+            .mount(&server)
+            .await;
+        let config = kube::Config::new(server.uri().parse().expect("mock server uri"));
+        let kube_client = kube::Client::try_from(config).expect("client from mock config");
+
+        let m = Bind9Manager::new_for_instance("inst".to_string(), "dns".to_string())
+            .with_tls(Some(tls(true)))
+            .with_kube_client(kube_client);
+
+        let err = m
+            .resolve_client()
+            .await
+            .expect_err("the fixture ConfigMap has no ca.crt key");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("dns/bindcar-ca has no key"),
+            "the ConfigMap must be read from the instance namespace: {msg}"
+        );
     }
 }

@@ -580,6 +580,72 @@ pub(crate) fn detect_renamed_record(
     Some(published.to_string())
 }
 
+/// What one lookup in [`delete_record`] decided about the record's finalizer.
+///
+/// Deleting a record must not drop its finalizer while the record may still be
+/// published in BIND9: a removed finalizer is never retried, so the record
+/// would be served forever (bug B2, the failure class of ADR-0015). Only a
+/// definite "nothing is published" allows the deletion; an API failure
+/// retries it with backoff through the finalizer's error policy.
+#[derive(Debug)]
+pub(crate) enum DeleteStep<T> {
+    /// The lookup succeeded: carry on with its result.
+    Proceed(T),
+    /// The record is definitely not published here: the finalizer may go.
+    AllowDeletion,
+    /// The lookup failed: keep the finalizer and retry.
+    Retry(anyhow::Error),
+}
+
+/// Map the record's `DNSZone` lookup to a deletion step.
+///
+/// A zone that does not exist allows the deletion: a deleted zone takes all
+/// of its data off every server (ADR-0015 amended). A failed lookup (the
+/// fallback GET errored) retries, because the zone may still exist and still
+/// publish the record.
+pub(crate) fn zone_lookup_step<Z>(lookup: Result<Option<Z>>) -> DeleteStep<Z> {
+    match lookup {
+        Ok(Some(zone)) => DeleteStep::Proceed(zone),
+        Ok(None) => DeleteStep::AllowDeletion,
+        Err(e) => DeleteStep::Retry(e),
+    }
+}
+
+/// Map the zone's instance selection to a deletion step.
+///
+/// `get_instances_from_zone` makes no API call: it evaluates the zone's
+/// `spec.bind9InstancesFrom` selectors (and the F-003 namespace gate) against
+/// the `Bind9Instance` reflector store. Its `Err` therefore never means "the
+/// API is failing"; it means the zone has no selectors or selects no
+/// instance, so no server holds the zone and the record is not published.
+/// That allows the deletion, as does an empty list.
+///
+/// The store is never read empty at startup: no controller runs before every
+/// store has finished its initial list (`Stores::wait_until_ready`). A retry
+/// here would be wrong: on "no instances" it would block deletion forever for
+/// a zone whose instances are genuinely gone.
+pub(crate) fn instances_step<I>(selection: Result<Vec<I>>) -> DeleteStep<Vec<I>> {
+    match selection {
+        Ok(refs) if !refs.is_empty() => DeleteStep::Proceed(refs),
+        Ok(_) | Err(_) => DeleteStep::AllowDeletion,
+    }
+}
+
+/// Map the primary-role filter to a deletion step.
+///
+/// `filter_primary_instances_cached` reads roles from the store and GETs only
+/// an instance the store does not hold yet; its `Err` is that GET failing, so
+/// the instance may be a primary still holding the record: retry. An empty
+/// list (every selected instance is a secondary) allows the deletion, since
+/// records are only ever written to primaries.
+pub(crate) fn primaries_step<I>(filtered: Result<Vec<I>>) -> DeleteStep<Vec<I>> {
+    match filtered {
+        Ok(refs) if !refs.is_empty() => DeleteStep::Proceed(refs),
+        Ok(_) => DeleteStep::AllowDeletion,
+        Err(e) => DeleteStep::Retry(e),
+    }
+}
+
 /// Generic function to delete a DNS record from BIND9 primaries.
 ///
 /// This function handles deletion of any record type using the generic approach:
@@ -600,11 +666,15 @@ pub(crate) fn detect_renamed_record(
 ///
 /// # Returns
 ///
-/// Returns `Ok(())` if deletion succeeded (or if record didn't exist).
+/// Returns `Ok(())` if deletion succeeded, or if the record is definitely not
+/// published: no `zoneRef`, the zone does not exist or is being deleted, the
+/// zone selects no instances, or none of them is a primary.
 ///
 /// # Errors
 ///
-/// Returns an error if instance lookup fails or DNS deletion fails critically.
+/// Returns an error, so the finalizer is kept and the deletion retried with
+/// backoff, if the `DNSZone` lookup fails, a primary-role GET fails, or a
+/// primary that still holds the zone cannot be reached.
 ///
 /// # Panics
 ///
@@ -649,22 +719,26 @@ where
         return Ok(());
     };
 
-    // Get the DNSZone (from the store, ADR-0016)
-    let dnszone = match get_zone_from_ref(client, stores, &zone_ref).await {
-        Ok(Some(zone)) => zone,
-        Ok(None) => {
+    // Get the DNSZone (from the store, ADR-0016). A failed lookup keeps the
+    // finalizer: the zone may still exist and publish the record (bug B2).
+    let dnszone = match zone_lookup_step(get_zone_from_ref(client, stores, &zone_ref).await) {
+        DeleteStep::Proceed(zone) => zone,
+        DeleteStep::AllowDeletion => {
             warn!(
-                "DNSZone {}/{} not found for {} record {}/{}. Allowing deletion anyway.",
+                "DNSZone {}/{} not found for {} record {}/{}. Allowing deletion.",
                 zone_ref.namespace, zone_ref.name, record_type, namespace, name
             );
             return Ok(());
         }
-        Err(e) => {
+        DeleteStep::Retry(e) => {
             warn!(
-                "DNSZone {}/{} not found for {} record {}/{}: {}. Allowing deletion anyway.",
+                "Failed to look up DNSZone {}/{} for {} record {}/{}: {:#}. Keeping the finalizer; deletion will be retried.",
                 zone_ref.namespace, zone_ref.name, record_type, namespace, name, e
             );
-            return Ok(());
+            return Err(e.context(format!(
+                "deleting {record_type} record {namespace}/{name}: DNSZone {}/{} lookup failed",
+                zone_ref.namespace, zone_ref.name
+            )));
         }
     };
 
@@ -678,46 +752,48 @@ where
         return Ok(());
     }
 
-    // Get instances from DNSZone
-    let instance_refs =
-        match bindy_bind9::instances::get_instances_from_zone(&dnszone, &stores.bind9_instances) {
-            Ok(refs) => refs,
-            Err(e) => {
-                warn!(
-                "DNSZone {}/{} has no instances for {} record {}/{}: {}. Allowing deletion anyway.",
-                zone_ref.namespace, zone_ref.name, record_type, namespace, name, e
-            );
-                return Ok(());
-            }
-        };
+    // Get instances from DNSZone. This is a store-only selector evaluation, so
+    // an error means "no instance selected", never an API failure (see
+    // `instances_step`): the zone is on no server and neither is the record.
+    let selection =
+        bindy_bind9::instances::get_instances_from_zone(&dnszone, &stores.bind9_instances);
+    let DeleteStep::Proceed(instance_refs) = instances_step(selection) else {
+        warn!(
+            "DNSZone {}/{} selects no instances for {} record {}/{}. Allowing deletion.",
+            zone_ref.namespace, zone_ref.name, record_type, namespace, name
+        );
+        return Ok(());
+    };
 
     // Filter to primary instances. Roles come from the reflector store: under
     // API pressure a failed GET here used to drop the instance and leave the
-    // record's data on it after the finalizer was removed (ADR-0015).
-    let primary_refs = match bindy_bind9::primary::filter_primary_instances_cached(
+    // record's data on it after the finalizer was removed (ADR-0015). A failed
+    // GET for an instance the store does not hold yet keeps the finalizer.
+    let filtered = bindy_bind9::primary::filter_primary_instances_cached(
         client,
         &stores.bind9_instances,
         &instance_refs,
     )
-    .await
-    {
-        Ok(refs) => refs,
-        Err(e) => {
+    .await;
+    let primary_refs = match primaries_step(filtered) {
+        DeleteStep::Proceed(refs) => refs,
+        DeleteStep::AllowDeletion => {
             warn!(
-                    "Failed to filter primary instances for {} record {}/{}: {}. Allowing deletion anyway.",
-                    record_type, namespace, name, e
-                );
+                "No primary instances found for {} record {}/{}. Allowing deletion.",
+                record_type, namespace, name
+            );
             return Ok(());
         }
+        DeleteStep::Retry(e) => {
+            warn!(
+                "Failed to filter primary instances for {} record {}/{}: {:#}. Keeping the finalizer; deletion will be retried.",
+                record_type, namespace, name, e
+            );
+            return Err(e.context(format!(
+                "deleting {record_type} record {namespace}/{name}: primary instance lookup failed"
+            )));
+        }
     };
-
-    if primary_refs.is_empty() {
-        warn!(
-            "No primary instances found for {} record {}/{}. Allowing deletion anyway.",
-            record_type, namespace, name
-        );
-        return Ok(());
-    }
 
     // Determine the DNS name actually published to BIND9. Prefer
     // status.publishedName (handles renames), then spec.name, then the

@@ -364,3 +364,86 @@ mod tests {
         assert_eq!(page_count, 3, "Third page should be page 3");
     }
 }
+
+/// Tests for the per-page decision of `list_all_paginated`: every anomaly
+/// must be an error, never a silently truncated list.
+#[cfg(test)]
+mod next_page_step_tests {
+    use super::super::{next_page_step, PageStep, MAX_REASONABLE_PAGES};
+
+    const TOKEN_A: &str = "token-a";
+    const TOKEN_B: &str = "token-b";
+    const FULL_PAGE: usize = 100;
+
+    #[test]
+    fn test_no_continue_token_is_done() {
+        let step = next_page_step(1, FULL_PAGE, None, None).expect("last page is not an error");
+        assert_eq!(step, PageStep::Done);
+    }
+
+    #[test]
+    fn test_empty_continue_token_is_done() {
+        let step = next_page_step(1, FULL_PAGE, Some(TOKEN_A), Some(String::new()))
+            .expect("an empty token marks the last page");
+        assert_eq!(step, PageStep::Done);
+    }
+
+    #[test]
+    fn test_empty_last_page_without_token_is_done() {
+        let step = next_page_step(1, 0, None, None).expect("an empty list is not an error");
+        assert_eq!(step, PageStep::Done);
+    }
+
+    #[test]
+    fn test_new_continue_token_fetches_next_page() {
+        let step = next_page_step(2, FULL_PAGE, Some(TOKEN_A), Some(TOKEN_B.to_string()))
+            .expect("a fresh token continues");
+        assert_eq!(step, PageStep::Next(TOKEN_B.to_string()));
+    }
+
+    #[test]
+    fn test_first_page_token_fetches_next_page() {
+        let step = next_page_step(1, FULL_PAGE, None, Some(TOKEN_A.to_string()))
+            .expect("a first token continues");
+        assert_eq!(step, PageStep::Next(TOKEN_A.to_string()));
+    }
+
+    #[test]
+    fn test_repeated_continue_token_is_an_error() {
+        let result = next_page_step(2, FULL_PAGE, Some(TOKEN_A), Some(TOKEN_A.to_string()));
+        assert!(
+            result.is_err(),
+            "a repeated token must fail the list, not return a partial one"
+        );
+    }
+
+    #[test]
+    fn test_empty_page_with_continue_token_is_an_error() {
+        let result = next_page_step(2, 0, Some(TOKEN_A), Some(TOKEN_B.to_string()));
+        assert!(
+            result.is_err(),
+            "an empty page that still has a token must fail the list"
+        );
+    }
+
+    #[test]
+    fn test_page_cap_with_continue_token_is_an_error() {
+        let result = next_page_step(
+            MAX_REASONABLE_PAGES,
+            FULL_PAGE,
+            Some(TOKEN_A),
+            Some(TOKEN_B.to_string()),
+        );
+        assert!(
+            result.is_err(),
+            "reaching the page cap with more pages left must fail the list"
+        );
+    }
+
+    #[test]
+    fn test_page_cap_on_last_page_is_done() {
+        let step = next_page_step(MAX_REASONABLE_PAGES, FULL_PAGE, Some(TOKEN_A), None)
+            .expect("the last page at the cap is complete");
+        assert_eq!(step, PageStep::Done);
+    }
+}

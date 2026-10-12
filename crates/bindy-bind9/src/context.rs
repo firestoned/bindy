@@ -34,8 +34,9 @@ pub trait StoresBind9Ext {
     /// This helper function looks up the deployment for the given instance and creates
     /// a `Bind9Manager` with proper authentication detection. If the deployment is found,
     /// it creates a manager that can determine auth status by inspecting the bindcar
-    /// container's environment variables. If not found, it falls back to a basic manager
-    /// that assumes auth is enabled.
+    /// container's environment variables. If not found, it falls back to a manager
+    /// that assumes auth is enabled but still carries the instance name and
+    /// namespace (so a TLS CA bundle is read from the instance's namespace).
     ///
     /// # Arguments
     /// * `instance_name` - Name of the `Bind9Instance`
@@ -158,13 +159,21 @@ impl StoresBind9Ext for Stores {
                 instance_namespace.to_string(),
             ))
         } else {
-            // No deployment found - fall back to basic manager (auth assumed enabled)
+            // No deployment found: auth assumed enabled, but keep the instance
+            // namespace so a TLS CA bundle is read from the right place.
             tracing::debug!(
                 instance = instance_name,
                 namespace = instance_namespace,
-                "Deployment not found in store, using basic Bind9Manager (auth enabled)"
+                "Deployment not found in store, using Bind9Manager without deployment (auth enabled)"
             );
-            apply(crate::bind9::Bind9Manager::new())
+            apply(crate::bind9::Bind9Manager::new_for_instance(
+                instance_name.to_string(),
+                instance_namespace.to_string(),
+            ))
         }
     }
 }
+
+#[cfg(test)]
+#[path = "context_tests.rs"]
+mod context_tests;
