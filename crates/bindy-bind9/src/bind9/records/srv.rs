@@ -65,7 +65,6 @@ fn compare_srv_rrset(
 /// - TSIG signer creation fails
 /// - DNS update is rejected by the server
 /// - Invalid domain name or target
-#[allow(clippy::too_many_arguments)]
 pub async fn add_srv_record(
     zone_name: &str,
     name: &str,

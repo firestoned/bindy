@@ -153,6 +153,7 @@ where
     }
 
     /// Number of shards backing this view (1 when cluster-wide).
+    #[cfg(test)]
     #[must_use]
     pub fn shard_count(&self) -> usize {
         self.shards.len()
@@ -170,6 +171,9 @@ where
     // Keeps the channel open while no controller is subscribed, without
     // holding messages back (an inactive receiver gets nothing).
     _keep_open: InactiveReceiver<Arc<K>>,
+    /// Restart count kept by the watch task; only tests read it (the
+    /// production signal is the `watch_restarts_total` metric).
+    #[cfg(test)]
     restarts: Arc<AtomicU64>,
     listing: Listing<K>,
 }
@@ -245,6 +249,7 @@ where
             store,
             tx,
             _keep_open: rx.deactivate(),
+            #[cfg(test)]
             restarts,
             listing,
         }
@@ -257,6 +262,7 @@ where
     }
 
     /// Times this shard's watch stream ended and was restarted.
+    #[cfg(test)]
     #[must_use]
     pub fn restarts(&self) -> u64 {
         self.restarts.load(Ordering::Relaxed)
@@ -518,12 +524,6 @@ impl WatchSet {
             scope,
             kinds: HashMap::new(),
         }
-    }
-
-    /// The namespace scope the set shards by.
-    #[must_use]
-    pub fn scope(&self) -> &NamespaceScope {
-        &self.scope
     }
 
     /// Start one watch per namespace target for a namespaced kind.

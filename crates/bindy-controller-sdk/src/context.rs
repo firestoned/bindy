@@ -16,8 +16,8 @@
 use crate::watch::{MultiStore, WatchSet};
 use bindy_api::crd::{
     AAAARecord, ARecord, Bind9Cluster, Bind9Instance, CAARecord, CNAMERecord, ClusterBind9Provider,
-    DNSZone, LabelSelector, MXRecord, NSRecord, PTRRecord, RecordReferenceWithTimestamp,
-    RecordStatus, SRVRecord, TXTRecord,
+    DNSZone, MXRecord, NSRecord, PTRRecord, RecordReferenceWithTimestamp, RecordStatus, SRVRecord,
+    TXTRecord,
 };
 use bindy_api::selector::matches_selector;
 use k8s_openapi::api::apps::v1::Deployment;
@@ -46,9 +46,6 @@ pub struct Context {
 
     /// HTTP client for bindcar zone synchronization API calls
     pub http_client: reqwest::Client,
-
-    /// Metrics registry for observability
-    pub metrics: Metrics,
 
     /// The set of namespaces this operator watches and manages.
     ///
@@ -168,7 +165,6 @@ impl Context {
             },
             watch: Arc::new(watch),
             http_client,
-            metrics: Metrics::default(),
             namespace_scope: scope,
             shutdown,
         })
@@ -191,20 +187,14 @@ pub trait RecordKind:
     /// The kind name, e.g. `ARecord`
     const KIND: &'static str;
 
-    /// The [`RecordRef`] variant for a record of this kind.
-    fn record_ref(name: String, namespace: String) -> RecordRef;
-
     /// The record's status, if it has one.
     fn record_status(&self) -> Option<&RecordStatus>;
 }
 
 macro_rules! record_kind {
-    ($ty:ty, $kind:literal, $variant:ident) => {
+    ($ty:ty, $kind:literal) => {
         impl RecordKind for $ty {
             const KIND: &'static str = $kind;
-            fn record_ref(name: String, namespace: String) -> RecordRef {
-                RecordRef::$variant(name, namespace)
-            }
             fn record_status(&self) -> Option<&RecordStatus> {
                 self.status.as_ref()
             }
@@ -212,15 +202,15 @@ macro_rules! record_kind {
     };
 }
 
-record_kind!(ARecord, "ARecord", A);
-record_kind!(AAAARecord, "AAAARecord", AAAA);
-record_kind!(CNAMERecord, "CNAMERecord", CNAME);
-record_kind!(TXTRecord, "TXTRecord", TXT);
-record_kind!(MXRecord, "MXRecord", MX);
-record_kind!(NSRecord, "NSRecord", NS);
-record_kind!(SRVRecord, "SRVRecord", SRV);
-record_kind!(CAARecord, "CAARecord", CAA);
-record_kind!(PTRRecord, "PTRRecord", PTR);
+record_kind!(ARecord, "ARecord");
+record_kind!(AAAARecord, "AAAARecord");
+record_kind!(CNAMERecord, "CNAMERecord");
+record_kind!(TXTRecord, "TXTRecord");
+record_kind!(MXRecord, "MXRecord");
+record_kind!(NSRecord, "NSRecord");
+record_kind!(SRVRecord, "SRVRecord");
+record_kind!(CAARecord, "CAARecord");
+record_kind!(PTRRecord, "PTRRecord");
 
 /// The type-erased operations for one record kind.
 #[derive(Clone, Copy)]
@@ -230,10 +220,10 @@ pub struct RecordKindOps {
     /// Register the kind in the [`WatchSet`] and keep its view in the
     /// [`RecordStores`].
     pub register: fn(&mut WatchSet, &mut RecordStores),
-    /// Add an empty view of the kind to the [`RecordStores`] (for tests and
-    /// tools that run without a `WatchSet`).
+    /// Add an empty view of the kind to the [`RecordStores`], for tests that
+    /// run without a `WatchSet`.
+    #[cfg(test)]
     pub insert_empty: fn(&mut RecordStores),
-    collect: fn(&RecordStores, &LabelSelector, &str, &mut Vec<RecordRef>),
     collect_tagged: fn(&RecordStores, &str, &str, &mut Vec<RecordReferenceWithTimestamp>),
     wait_ready: fn(&RecordStores) -> futures::future::BoxFuture<'_, anyhow::Result<()>>,
 }
@@ -242,8 +232,8 @@ const fn ops<K: RecordKind>() -> RecordKindOps {
     RecordKindOps {
         kind: K::KIND,
         register: register_kind::<K>,
+        #[cfg(test)]
         insert_empty: insert_empty_kind::<K>,
-        collect: collect_matching::<K>,
         collect_tagged: collect_tagged::<K>,
         wait_ready: wait_ready_kind::<K>,
     }
@@ -272,27 +262,10 @@ fn wait_ready_kind<K: RecordKind>(
     Box::pin(records.get::<K>().wait_until_ready())
 }
 
+#[cfg(test)]
 fn insert_empty_kind<K: RecordKind>(records: &mut RecordStores) {
     let (store, _writer) = kube::runtime::reflector::store::<K>();
     records.insert(MultiStore::new(vec![store]));
-}
-
-fn collect_matching<K: RecordKind>(
-    records: &RecordStores,
-    selector: &LabelSelector,
-    namespace: &str,
-    out: &mut Vec<RecordRef>,
-) {
-    for record in records.get::<K>().state() {
-        if record.namespace().as_deref() == Some(namespace)
-            && matches_selector(selector, record.labels())
-        {
-            out.push(K::record_ref(
-                record.name_any(),
-                record.namespace().unwrap_or_default(),
-            ));
-        }
-    }
 }
 
 /// Push every record of kind `K` whose `status.zoneRef` names the zone
@@ -414,28 +387,6 @@ impl Stores {
         Ok(())
     }
 
-    /// Records of every kind in `namespace` whose labels match `selector`,
-    /// grouped by kind in [`RECORD_KINDS`] order.
-    ///
-    /// # Arguments
-    /// * `selector` - The label selector to match against record labels
-    /// * `namespace` - The namespace to search within (namespace-isolated)
-    ///
-    /// # Returns
-    /// A [`RecordRef`] per matching record
-    #[must_use]
-    pub fn records_matching_selector(
-        &self,
-        selector: &LabelSelector,
-        namespace: &str,
-    ) -> Vec<RecordRef> {
-        let mut results = Vec::new();
-        for ops in &RECORD_KINDS {
-            (ops.collect)(&self.records, selector, namespace, &mut results);
-        }
-        results
-    }
-
     /// Every record, of every kind, tagged with a zone through its
     /// `status.zoneRef` and not being deleted, in [`RECORD_KINDS`] order.
     ///
@@ -460,56 +411,6 @@ impl Stores {
             (ops.collect_tagged)(&self.records, zone_namespace, zone_name, &mut results);
         }
         results
-    }
-
-    /// Query dnszones matching a label selector.
-    ///
-    /// # Arguments
-    /// * `selector` - The label selector to match against zone labels
-    /// * `namespace` - The namespace to search within
-    ///
-    /// # Returns
-    /// A vector of (name, namespace) tuples for matching zones
-    #[must_use]
-    pub fn dnszones_matching_selector(
-        &self,
-        selector: &LabelSelector,
-        namespace: &str,
-    ) -> Vec<(String, String)> {
-        self.dnszones
-            .state()
-            .iter()
-            .filter(|zone| {
-                zone.namespace().as_deref() == Some(namespace)
-                    && matches_selector(selector, zone.labels())
-            })
-            .map(|zone| (zone.name_any(), zone.namespace().unwrap_or_default()))
-            .collect()
-    }
-
-    /// Query `Bind9Instance`s matching a label selector.
-    ///
-    /// # Arguments
-    /// * `selector` - The label selector to match against instance labels
-    /// * `namespace` - The namespace to search within
-    ///
-    /// # Returns
-    /// A vector of (name, namespace) tuples for matching instances
-    #[must_use]
-    pub fn bind9instances_matching_selector(
-        &self,
-        selector: &LabelSelector,
-        namespace: &str,
-    ) -> Vec<(String, String)> {
-        self.bind9_instances
-            .state()
-            .iter()
-            .filter(|inst| {
-                inst.namespace().as_deref() == Some(namespace)
-                    && matches_selector(selector, inst.labels())
-            })
-            .map(|inst| (inst.name_any(), inst.namespace().unwrap_or_default()))
-            .collect()
     }
 
     /// Find all `DNSZone`s whose `recordsFrom` selector matches given record labels.
@@ -599,89 +500,6 @@ impl Stores {
             .cloned()
     }
 }
-
-/// Enum representing a reference to any DNS record type.
-///
-/// This enum provides a type-safe way to reference records of different types
-/// in a unified collection. Each variant contains the name and namespace of the record.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RecordRef {
-    /// A record (IPv4 address)
-    A(String, String),
-    /// AAAA record (IPv6 address)
-    AAAA(String, String),
-    /// CNAME record (canonical name)
-    CNAME(String, String),
-    /// TXT record (text data)
-    TXT(String, String),
-    /// MX record (mail exchange)
-    MX(String, String),
-    /// NS record (name server)
-    NS(String, String),
-    /// SRV record (service locator)
-    SRV(String, String),
-    /// CAA record (certificate authority authorization)
-    CAA(String, String),
-    /// PTR record (reverse DNS pointer)
-    PTR(String, String),
-}
-
-impl RecordRef {
-    /// Get the name of the record.
-    #[must_use]
-    pub fn name(&self) -> &str {
-        match self {
-            RecordRef::A(name, _)
-            | RecordRef::AAAA(name, _)
-            | RecordRef::CNAME(name, _)
-            | RecordRef::TXT(name, _)
-            | RecordRef::MX(name, _)
-            | RecordRef::NS(name, _)
-            | RecordRef::SRV(name, _)
-            | RecordRef::CAA(name, _)
-            | RecordRef::PTR(name, _) => name,
-        }
-    }
-
-    /// Get the namespace of the record.
-    #[must_use]
-    pub fn namespace(&self) -> &str {
-        match self {
-            RecordRef::A(_, ns)
-            | RecordRef::AAAA(_, ns)
-            | RecordRef::CNAME(_, ns)
-            | RecordRef::TXT(_, ns)
-            | RecordRef::MX(_, ns)
-            | RecordRef::NS(_, ns)
-            | RecordRef::SRV(_, ns)
-            | RecordRef::CAA(_, ns)
-            | RecordRef::PTR(_, ns) => ns,
-        }
-    }
-
-    /// Get the record type as a string.
-    #[must_use]
-    pub fn record_type(&self) -> &str {
-        match self {
-            RecordRef::A(_, _) => "A",
-            RecordRef::AAAA(_, _) => "AAAA",
-            RecordRef::CNAME(_, _) => "CNAME",
-            RecordRef::TXT(_, _) => "TXT",
-            RecordRef::MX(_, _) => "MX",
-            RecordRef::NS(_, _) => "NS",
-            RecordRef::SRV(_, _) => "SRV",
-            RecordRef::CAA(_, _) => "CAA",
-            RecordRef::PTR(_, _) => "PTR",
-        }
-    }
-}
-
-/// Metrics for observability.
-///
-/// A placeholder that can be extended with per-controller metrics; the
-/// Prometheus metrics themselves live in [`crate::metrics`].
-#[derive(Clone, Default)]
-pub struct Metrics {}
 
 #[cfg(test)]
 #[path = "context_tests.rs"]

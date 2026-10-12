@@ -1,12 +1,12 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: Apache-2.0
 
-//! The `bindy` command line: subcommands, flags, and the dispatch for the
-//! subcommands that are not the operator (`bootstrap`, `scout`). `bindy run`
-//! is wired in `main.rs`.
+//! The `bindy` command line: subcommands, flags, and the entry points of the
+//! subcommands that are not the operator (`bootstrap`, `scout`). `main.rs`
+//! dispatches every subcommand and wires `bindy run` itself.
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use clap_complete::Shell;
 use tracing::info;
 
@@ -143,6 +143,61 @@ pub(crate) enum BootstrapCommands {
     },
 }
 
+/// Run the ingress scout controller (creates ARecords from annotated Ingresses)
+#[derive(Args)]
+pub(crate) struct ScoutArgs {
+    /// Logical name of this cluster stamped on created ARecord labels.
+    /// Overrides the BINDY_SCOUT_CLUSTER_NAME environment variable.
+    #[arg(long)]
+    pub(crate) cluster_name: Option<String>,
+    /// Namespace where ARecords are created.
+    /// Overrides the BINDY_SCOUT_NAMESPACE environment variable.
+    #[arg(long)]
+    pub(crate) namespace: Option<String>,
+    /// Default IP addresses used for all Ingresses when no per-Ingress annotation override
+    /// or LoadBalancer status IP is available. Accepts one or more comma-separated values.
+    /// Overrides the BINDY_SCOUT_DEFAULT_IPS environment variable.
+    /// Useful for shared-ingress topologies (e.g. Traefik) where all Ingresses resolve
+    /// to the same IP(s).
+    #[arg(long, value_delimiter = ',')]
+    pub(crate) default_ips: Vec<String>,
+    /// Map a gatewayClass to the LoadBalancer Service whose external IP backs it,
+    /// as `class=namespace/name` (repeatable). When an HTTPRoute/TLSRoute/TCPRoute has no IP
+    /// annotation, scout follows its parentRefs to a Gateway of a configured class
+    /// and uses the mapped Service's external IP. Overrides BINDY_SCOUT_GATEWAY_SERVICES.
+    /// Example: --gateway-service traefik=traefik/traefik
+    #[arg(long = "gateway-service")]
+    pub(crate) gateway_service: Vec<String>,
+    /// Default DNS zone applied to all Ingresses when no bindy.firestoned.io/zone annotation
+    /// is present. Overrides the BINDY_SCOUT_DEFAULT_ZONE environment variable.
+    /// When combined with --default-ips, Ingresses only need: bindy.firestoned.io/scout-enabled: "true"
+    #[arg(long)]
+    pub(crate) default_zone: Option<String>,
+    /// Kubernetes label selector (e.g. "bindy.firestoned.io/scout-enabled=true") restricting
+    /// which namespaces scout will act in. A source object's per-resource opt-in annotation
+    /// is still required in addition to this: the namespace must match the selector AND the
+    /// object must carry the annotation. When unset, every namespace is eligible (unchanged
+    /// default, for backward compatibility); production deployments are strongly encouraged
+    /// to set this rather than run with cluster-wide scope. Overrides the
+    /// BINDY_SCOUT_NAMESPACE_SELECTOR environment variable.
+    #[arg(long = "namespace-selector")]
+    pub(crate) namespace_selector: Option<String>,
+    /// Bindy cluster API URL for the endpoint remote mode (ADR-0008): a
+    /// Linkerd-mirrored meshed proxy, a konnectivity endpoint, or the API
+    /// server itself. Requires --remote-token-file. Mutually exclusive with
+    /// BINDY_SCOUT_REMOTE_SECRET. Overrides BINDY_SCOUT_REMOTE_ENDPOINT.
+    #[arg(long = "remote-endpoint")]
+    pub(crate) remote_endpoint: Option<String>,
+    /// Path to a bearer-token file minted by the bindy cluster, re-read on
+    /// rotation. Overrides BINDY_SCOUT_REMOTE_TOKEN_FILE.
+    #[arg(long = "remote-token-file")]
+    pub(crate) remote_token_file: Option<String>,
+    /// Path to the remote endpoint's CA bundle (PEM). When unset, webpki
+    /// public roots are used. Overrides BINDY_SCOUT_REMOTE_CA_FILE.
+    #[arg(long = "remote-ca-file")]
+    pub(crate) remote_ca_file: Option<String>,
+}
+
 #[derive(Subcommand)]
 pub(crate) enum Commands {
     /// Bootstrap bindy components into the cluster
@@ -153,58 +208,7 @@ pub(crate) enum Commands {
     /// Run the BIND9 DNS operator
     Run,
     /// Run the ingress scout controller (creates ARecords from annotated Ingresses)
-    Scout {
-        /// Logical name of this cluster stamped on created ARecord labels.
-        /// Overrides the BINDY_SCOUT_CLUSTER_NAME environment variable.
-        #[arg(long)]
-        cluster_name: Option<String>,
-        /// Namespace where ARecords are created.
-        /// Overrides the BINDY_SCOUT_NAMESPACE environment variable.
-        #[arg(long)]
-        namespace: Option<String>,
-        /// Default IP addresses used for all Ingresses when no per-Ingress annotation override
-        /// or LoadBalancer status IP is available. Accepts one or more comma-separated values.
-        /// Overrides the BINDY_SCOUT_DEFAULT_IPS environment variable.
-        /// Useful for shared-ingress topologies (e.g. Traefik) where all Ingresses resolve
-        /// to the same IP(s).
-        #[arg(long, value_delimiter = ',')]
-        default_ips: Vec<String>,
-        /// Map a gatewayClass to the LoadBalancer Service whose external IP backs it,
-        /// as `class=namespace/name` (repeatable). When an HTTPRoute/TLSRoute/TCPRoute has no IP
-        /// annotation, scout follows its parentRefs to a Gateway of a configured class
-        /// and uses the mapped Service's external IP. Overrides BINDY_SCOUT_GATEWAY_SERVICES.
-        /// Example: --gateway-service traefik=traefik/traefik
-        #[arg(long = "gateway-service")]
-        gateway_service: Vec<String>,
-        /// Default DNS zone applied to all Ingresses when no bindy.firestoned.io/zone annotation
-        /// is present. Overrides the BINDY_SCOUT_DEFAULT_ZONE environment variable.
-        /// When combined with --default-ips, Ingresses only need: bindy.firestoned.io/scout-enabled: "true"
-        #[arg(long)]
-        default_zone: Option<String>,
-        /// Kubernetes label selector (e.g. "bindy.firestoned.io/scout-enabled=true") restricting
-        /// which namespaces scout will act in. A source object's per-resource opt-in annotation
-        /// is still required in addition to this — the namespace must match the selector AND the
-        /// object must carry the annotation. When unset, every namespace is eligible (unchanged
-        /// default, for backward compatibility) — production deployments are strongly encouraged
-        /// to set this rather than run with cluster-wide scope. Overrides the
-        /// BINDY_SCOUT_NAMESPACE_SELECTOR environment variable.
-        #[arg(long = "namespace-selector")]
-        namespace_selector: Option<String>,
-        /// Bindy cluster API URL for the endpoint remote mode (ADR-0008): a
-        /// Linkerd-mirrored meshed proxy, a konnectivity endpoint, or the API
-        /// server itself. Requires --remote-token-file. Mutually exclusive with
-        /// BINDY_SCOUT_REMOTE_SECRET. Overrides BINDY_SCOUT_REMOTE_ENDPOINT.
-        #[arg(long = "remote-endpoint")]
-        remote_endpoint: Option<String>,
-        /// Path to a bearer-token file minted by the bindy cluster, re-read on
-        /// rotation. Overrides BINDY_SCOUT_REMOTE_TOKEN_FILE.
-        #[arg(long = "remote-token-file")]
-        remote_token_file: Option<String>,
-        /// Path to the remote endpoint's CA bundle (PEM). When unset, webpki
-        /// public roots are used. Overrides BINDY_SCOUT_REMOTE_CA_FILE.
-        #[arg(long = "remote-ca-file")]
-        remote_ca_file: Option<String>,
-    },
+    Scout(ScoutArgs),
     /// Output shell completion code for the specified shell
     Completion {
         /// Shell to generate completions for
@@ -230,55 +234,52 @@ impl Commands {
                 subcommand: BootstrapCommands::MultiCluster { .. },
             } => "bindy-bootstrap-mc",
             Self::Run => "bindy-run",
-            Self::Scout { .. } => "bindy-scout",
+            Self::Scout(_) => "bindy-scout",
             Self::Completion { .. } | Self::Version => "bindy",
         }
     }
 }
 
-/// Run `bindy bootstrap …` or `bindy scout …`.
+/// Run `bindy scout …`: the ingress scout controller.
+///
+/// # Errors
+/// Returns the scout's error.
+pub(crate) async fn run_scout(args: ScoutArgs) -> Result<()> {
+    let ScoutArgs {
+        cluster_name,
+        namespace,
+        default_ips,
+        gateway_service,
+        default_zone,
+        namespace_selector,
+        remote_endpoint,
+        remote_token_file,
+        remote_ca_file,
+    } = args;
+    // Phase 1 (same-cluster) and Phase 2 (remote cluster) are tracked in
+    // `.github/community/12-scout-ingress-controller.md`.
+    info!("Starting Scout controller");
+    bindy_scout::run_scout(
+        cluster_name,
+        namespace,
+        default_ips,
+        gateway_service,
+        default_zone,
+        namespace_selector,
+        bindy_scout::ScoutRemoteOverrides {
+            endpoint: remote_endpoint,
+            token_file: remote_token_file,
+            ca_file: remote_ca_file,
+        },
+    )
+    .await
+}
+
+/// Run `bindy bootstrap …`.
 ///
 /// # Errors
 /// Returns the subcommand's error.
-pub(crate) async fn run(command: Commands) -> Result<()> {
-    match command {
-        Commands::Bootstrap { subcommand } => run_bootstrap(subcommand).await,
-        Commands::Scout {
-            cluster_name,
-            namespace,
-            default_ips,
-            gateway_service,
-            default_zone,
-            namespace_selector,
-            remote_endpoint,
-            remote_token_file,
-            remote_ca_file,
-        } => {
-            // Phase 1 (same-cluster) and Phase 2 (remote cluster) are tracked in
-            // `.github/community/12-scout-ingress-controller.md`.
-            info!("Starting Scout controller");
-            bindy_scout::run_scout(
-                cluster_name,
-                namespace,
-                default_ips,
-                gateway_service,
-                default_zone,
-                namespace_selector,
-                bindy_scout::ScoutRemoteOverrides {
-                    endpoint: remote_endpoint,
-                    token_file: remote_token_file,
-                    ca_file: remote_ca_file,
-                },
-            )
-            .await
-        }
-        Commands::Run | Commands::Completion { .. } | Commands::Version => {
-            unreachable!("handled in main")
-        }
-    }
-}
-
-async fn run_bootstrap(subcommand: BootstrapCommands) -> Result<()> {
+pub(crate) async fn run_bootstrap(subcommand: BootstrapCommands) -> Result<()> {
     match subcommand {
         // Applies namespace, CRDs, RBAC, and the operator Deployment.
         BootstrapCommands::Operator {

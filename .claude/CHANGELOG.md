@@ -1,3 +1,54 @@
+## [2026-10-12 12:00] - Remove dead code across the workspace
+
+**Author:** Erick Bourgeois
+
+### Removed
+- `crates/bindy-bind9`:
+  - The unused `dns_errors` module and `docs/dns_error_usage.md`.
+  - From `primary.rs`: `find_all_primary_pods`, `for_each_primary_endpoint`, the infallible `filter_instances_by_role_cached` and `primary_role_in_store`.
+  - From `instances.rs`: `PodInfo` and `running_pod_name_and_ip`.
+  - `Bind9Manager` methods with no caller: `client`, `build_api_url`, `reload_zone`, `reload_all_zones`, `freeze_zone`, `thaw_zone`, `server_status`, `add_primary_zone`, `add_secondary_zone`, `create_zone_http`. Also their `zone_ops` counterparts and `verify_zone_signed`.
+  - `update_primary_zone`'s always-`None` `secondary_ips` argument. The PATCH body is unchanged.
+  - `RndcError`, `is_dnssec_signing_enabled`, and the duplicate `DEFAULT_KSK_LIFETIME`/`DEFAULT_ZSK_LIFETIME`.
+  - `build_service_account`'s unused instance argument.
+- `crates/bindy-controller-sdk`:
+  - The unused `http_errors` module.
+  - `resources::create_or_replace` and `create_or_patch_json`. The 591 lines of empty `#[ignore]` tests are replaced by three real tests of `create_or_apply`.
+  - The record-selector machinery: `RecordRef`, `records_matching_selector`, `dnszones_matching_selector`, `bind9instances_matching_selector`.
+  - The `Metrics {}` placeholder, and from `status.rs`: `condition_changed`, `get_last_transition_time`, `status_changed`.
+  - From `retry.rs`: `write_in_cooldown` and `write_in_cooldown_at`.
+  - Test-only accessors (now removed or `#[cfg(test)]`).
+- `crates/bindy-controller-sdk/src/metrics.rs`: metrics nothing ever recorded: `requeue_total`, `resources_created_total`, `resources_updated_total`, `resources_active`, `generation_observation_lag_seconds`. They are also removed from `docs/src/operations/metrics.md` and `docs/grafana-dashboard.json`.
+- `crates/bindy-api`:
+  - Unused constants and annotations, including the nine `KIND_*_RECORD` constants, which only tests used.
+  - 20 status reasons the operator never sets, among them the six bindcar HTTP reasons that only the deleted `http_errors` mapped to.
+  - `extract_child_index`, `RndcAlgorithm::as_rndc_str`, `BindcarTlsConfig::verifies_hostname`, and the doctest-only `crd_docs` module.
+  - The generated CRDs are unchanged.
+- `crates/bindy-controller-zone`: change detection that could never fire. `last_reconciled_at` is always `None`, so `detect_instance_changes`, `detect_spec_changes` and `filter_instances_needing_reconciliation` are gone, along with the unused `_unreconciled_instances` argument.
+- `crates/bindy-controller-instance`: the dead `create_or_update_rndc_secret`.
+- All crates:
+  - Stale `#[allow(..)]` attributes.
+  - Test functions whose bodies were only comments, and the test files that held nothing else.
+  - Doc comments attached to the wrong item.
+
+### Changed
+- `crates/bindy/src/main.rs`, `crates/bindy-controller-sdk/src/metrics.rs`: the documented leader metrics are now recorded. Before, nothing ever recorded them.
+  - `bindy_firestoned_io_leader_elections_total{status="acquired"|"lost"}`.
+  - `bindy_firestoned_io_leader_status` is 1 while leading, 0 while waiting or after a loss, and 1 with leader election disabled.
+  - `docs/src/operations/operator-ha.md` queries now use the real metric names.
+- `crates/bindy/src/cli.rs`: one exhaustive subcommand match in `main`. The `unreachable!` arm is gone, and CLI behaviour is unchanged.
+- `crates/bindy-scout`, `crates/bindy-bootstrap`: about 145 internal items are now `pub(crate)`. The public API is what `crates/bindy` and the scout integration test use.
+- Docs no longer name removed code: `error-handling.md`, `architecture-diagrams.md` (the record flow shows the RFC 2136 update, not a zone reload), `reconciler-hierarchy.md`, `status.md` (a reason the operator actually sets), the `add-new-crd` skill, and `.claude/CLAUDE.md`.
+
+### Why
+The review behind PR 1 found about 3,000 lines of code with no production caller, plus tests that tested nothing. Removing them makes the remaining code easier to follow before the duplication work.
+
+### Impact
+- [ ] Breaking change (the removed metrics were never recorded, so no series disappears)
+- [x] Requires cluster rollout (operator binary; leader metrics start reporting)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-11 23:45] - Fail-fast fixes: errors stop the operation instead of proceeding on partial data
 
 **Author:** Erick Bourgeois

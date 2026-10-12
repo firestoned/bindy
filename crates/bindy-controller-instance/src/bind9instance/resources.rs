@@ -201,7 +201,7 @@ pub(super) async fn create_or_update_resources(
 
     // 1. Create/update ServiceAccount (must be first, as deployment will reference it)
     debug!("Step 1: Creating/updating ServiceAccount");
-    create_or_update_service_account(client, namespace, instance).await?;
+    create_or_update_service_account(client, namespace).await?;
 
     // 2. Create/update RNDC Secret with rotation support (must be before deployment, as it will be mounted)
     debug!("Step 2: Creating/updating RNDC Secret with rotation support");
@@ -259,12 +259,8 @@ pub(super) async fn create_or_update_resources(
 }
 
 /// Create or update the `ServiceAccount` for BIND9 pods
-async fn create_or_update_service_account(
-    client: &Client,
-    namespace: &str,
-    instance: &Bind9Instance,
-) -> Result<()> {
-    let service_account = build_service_account(namespace, instance);
+async fn create_or_update_service_account(client: &Client, namespace: &str) -> Result<()> {
+    let service_account = build_service_account(namespace);
     create_or_apply(client, namespace, &service_account, "bindy-controller").await
 }
 
@@ -379,7 +375,6 @@ pub(super) fn evaluate_existing_rndc_secret(
 ///
 /// Returns error if `Secret` creation/update fails, the instance has no UID
 /// for the owner reference, or an API call fails.
-#[allow(dead_code)] // Will be used when integrated into reconciler
 #[allow(clippy::too_many_lines)] // Function implements three Secret modes
 async fn create_or_update_rndc_secret_with_config(
     client: &Client,
@@ -518,92 +513,6 @@ async fn create_or_update_rndc_secret_with_config(
         .await?;
 
     Ok(secret_name)
-}
-
-/// Legacy Secret creation function (backward compatibility).
-///
-/// This function maintains the original behavior for existing reconciler code.
-/// New code should use `create_or_update_rndc_secret_with_config` instead.
-#[allow(dead_code)] // Kept for backward compatibility, may be removed in future
-async fn create_or_update_rndc_secret(
-    client: &Client,
-    namespace: &str,
-    name: &str,
-    instance: &Bind9Instance,
-) -> Result<()> {
-    let secret_name = crate::bind9_resources::default_rndc_secret_name(name);
-    let secret_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
-
-    // Check if secret already exists
-    match secret_api.get(&secret_name).await {
-        Ok(existing_secret) => {
-            // Secret exists, don't regenerate the key
-            info!(
-                "RNDC Secret {}/{} already exists, skipping",
-                namespace, secret_name
-            );
-            // Verify it has the required keys
-            if let Some(ref data) = existing_secret.data {
-                if !data.contains_key("key-name")
-                    || !data.contains_key("algorithm")
-                    || !data.contains_key("secret")
-                {
-                    warn!(
-                        "RNDC Secret {}/{} is missing required keys, will recreate",
-                        namespace, secret_name
-                    );
-                    // Delete and recreate
-                    secret_api
-                        .delete(&secret_name, &kube::api::DeleteParams::default())
-                        .await?;
-                } else {
-                    return Ok(());
-                }
-            } else {
-                warn!(
-                    "RNDC Secret {}/{} has no data, will recreate",
-                    namespace, secret_name
-                );
-                secret_api
-                    .delete(&secret_name, &kube::api::DeleteParams::default())
-                    .await?;
-            }
-        }
-        Err(_) => {
-            info!(
-                "RNDC Secret {}/{} does not exist, creating",
-                namespace, secret_name
-            );
-        }
-    }
-
-    // Generate new RNDC key
-    let mut key_data = Bind9Manager::generate_rndc_key();
-    key_data.name = "bindy-operator".to_string();
-
-    // Create Secret data
-    let secret_data = Bind9Manager::create_rndc_secret_data(&key_data);
-
-    // Create owner reference to the Bind9Instance
-    let owner_ref = controller_owner_reference(instance)?;
-
-    // Build Secret object
-    let secret = Secret {
-        metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
-            name: Some(secret_name.clone()),
-            namespace: Some(namespace.to_string()),
-            owner_references: Some(vec![owner_ref]),
-            ..Default::default()
-        },
-        string_data: Some(secret_data),
-        ..Default::default()
-    };
-
-    // Create the secret
-    info!("Creating RNDC Secret {}/{}", namespace, secret_name);
-    secret_api.create(&PostParams::default(), &secret).await?;
-
-    Ok(())
 }
 
 /// Adds rotation annotations to an existing RNDC `Secret` without regenerating the key.
@@ -747,7 +656,6 @@ pub(super) fn should_rotate_secret(
 /// # Errors
 ///
 /// Returns error if `Secret` update fails or annotation parsing fails.
-#[allow(dead_code)] // Will be used when integrated into reconciler
 async fn rotate_rndc_secret(
     client: &Client,
     namespace: &str,

@@ -62,12 +62,6 @@ impl RequestTimeoutError {
     pub fn new(timeout: Duration) -> Self {
         Self { timeout }
     }
-
-    /// The deadline that passed.
-    #[must_use]
-    pub fn timeout(&self) -> Duration {
-        self.timeout
-    }
 }
 
 /// Read the request deadline from `BINDY_KUBE_REQUEST_TIMEOUT_SECS`, falling
@@ -127,12 +121,6 @@ impl RequestTimeoutLayer {
     #[must_use]
     pub fn new(timeout: Duration) -> Self {
         Self { timeout }
-    }
-
-    /// The per-request deadline.
-    #[must_use]
-    pub fn timeout(&self) -> Duration {
-        self.timeout
     }
 }
 

@@ -7,8 +7,7 @@
 //! HTTP API sidecar container that executes rndc commands locally. It handles:
 //!
 //! - Creating and managing DNS zones via the HTTP API
-//! - Adding and updating DNS zones via dynamic updates (nsupdate protocol)
-//! - Reloading zones after changes
+//! - Adding and updating DNS records via dynamic updates (nsupdate protocol)
 //! - Managing zone transfers
 //! - RNDC key generation and management
 //!
@@ -27,7 +26,7 @@
 //! let manager = Bind9Manager::new();
 //!
 //! // Manage zones via HTTP API
-//! manager.reload_zone(
+//! manager.notify_zone(
 //!     "example.com",
 //!     "bind9-primary-api.bindy-system.svc.cluster.local:8080"
 //! ).await?;
@@ -47,12 +46,10 @@ pub use rndc::{
     create_rndc_secret_data, create_tsig_signer, generate_rndc_key, parse_rndc_secret_data,
 };
 pub use types::{
-    PTRRecordData, RndcError, RndcKeyData, SRVRecordData, BINDCAR_TOKEN_PATH,
-    SERVICE_ACCOUNT_TOKEN_PATH,
+    PTRRecordData, RndcKeyData, SRVRecordData, BINDCAR_TOKEN_PATH, SERVICE_ACCOUNT_TOKEN_PATH,
 };
 
 use anyhow::{Context, Result};
-use bindcar::ZoneConfig;
 use k8s_openapi::api::apps::v1::Deployment;
 pub mod tls_client;
 
@@ -625,61 +622,7 @@ impl Bind9Manager {
         token
     }
 
-    /// Get a reference to the plaintext HTTP client for making API requests.
-    ///
-    /// This allows external code to make custom HTTP requests to the bindcar API
-    /// while still respecting the authentication configuration. For a
-    /// TLS-aware client use [`Self::resolve_client`].
-    ///
-    /// # Errors
-    /// Fails when the timeout-bounded client could not be built at
-    /// construction; there is no untimed fallback.
-    pub fn client(&self) -> Result<&Arc<HttpClient>> {
-        self.plain_client()
-    }
-
-    /// Build the API base URL from a server address
-    ///
-    /// Converts "service-name.namespace.svc.cluster.local:8080" or "service-name:8080"
-    /// to `<http://service-name.namespace.svc.cluster.local:8080>` or `<http://service-name:8080>`
-    ///
-    /// This is a public method for testing purposes.
-    #[must_use]
-    pub fn build_api_url(server: &str) -> String {
-        zone_ops::build_api_url(server)
-    }
-
     // ===== Zone management methods =====
-
-    /// Reload a specific zone via HTTP API.
-    ///
-    /// This operation is idempotent - if the zone doesn't exist, it returns an error
-    /// with a clear message indicating the zone was not found.
-    ///
-    /// # Arguments
-    /// * `zone_name` - Name of the zone to reload
-    /// * `server` - API server address (e.g., "bind9-primary-api:8080")
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the HTTP request fails or the zone cannot be reloaded.
-    pub async fn reload_zone(&self, zone_name: &str, server: &str) -> Result<()> {
-        let token = self.get_token();
-        let client = self.resolve_client().await?;
-        let server = &self.qualify_server(server);
-        zone_ops::reload_zone(&client, token.as_deref(), zone_name, server).await
-    }
-
-    /// Reload all zones via HTTP API.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the HTTP request fails.
-    pub async fn reload_all_zones(&self, server: &str) -> Result<()> {
-        let client = self.resolve_client().await?;
-        let server = &self.qualify_server(server);
-        zone_ops::reload_all_zones(&client, self.get_token().as_deref(), server).await
-    }
 
     /// Trigger zone transfer via HTTP API.
     ///
@@ -690,28 +633,6 @@ impl Bind9Manager {
         let client = self.resolve_client().await?;
         let server = &self.qualify_server(server);
         zone_ops::retransfer_zone(&client, self.get_token().as_deref(), zone_name, server).await
-    }
-
-    /// Freeze a zone to prevent dynamic updates via HTTP API.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the HTTP request fails or the zone cannot be frozen.
-    pub async fn freeze_zone(&self, zone_name: &str, server: &str) -> Result<()> {
-        let client = self.resolve_client().await?;
-        let server = &self.qualify_server(server);
-        zone_ops::freeze_zone(&client, self.get_token().as_deref(), zone_name, server).await
-    }
-
-    /// Thaw a frozen zone to allow dynamic updates via HTTP API.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the HTTP request fails or the zone cannot be thawed.
-    pub async fn thaw_zone(&self, zone_name: &str, server: &str) -> Result<()> {
-        let client = self.resolve_client().await?;
-        let server = &self.qualify_server(server);
-        zone_ops::thaw_zone(&client, self.get_token().as_deref(), zone_name, server).await
     }
 
     /// Get zone status via HTTP API.
@@ -822,21 +743,10 @@ impl Bind9Manager {
         .await
     }
 
-    /// Get server status via HTTP API.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the HTTP request fails or the server status cannot be retrieved.
-    pub async fn server_status(&self, server: &str) -> Result<String> {
-        let client = self.resolve_client().await?;
-        let server = &self.qualify_server(server);
-        zone_ops::server_status(&client, self.get_token().as_deref(), server).await
-    }
-
     /// Add a zone via HTTP API (primary or secondary).
     ///
     /// This is the centralized zone addition method that dispatches to either
-    /// `add_primary_zone` or `add_secondary_zone` based on the zone type.
+    /// `zone_ops::add_primary_zone` or `zone_ops::add_secondary_zone` based on the zone type.
     ///
     /// This operation is idempotent - if the zone already exists, it returns success
     /// without attempting to re-add it.
@@ -896,145 +806,6 @@ impl Bind9Manager {
         .await
     }
 
-    /// Add a new primary zone via HTTP API.
-    ///
-    /// This operation is idempotent - if the zone already exists, it returns success
-    /// without attempting to re-add it.
-    ///
-    /// The zone is created with `allow-update` enabled for the TSIG key used by the operator.
-    /// This allows dynamic DNS updates (RFC 2136) to add/update/delete records in the zone.
-    ///
-    /// **Note:** This method creates a zone without initial content. For creating zones with
-    /// initial SOA/NS records, use `create_zone_http()` instead.
-    ///
-    /// # Arguments
-    /// * `zone_name` - Name of the zone (e.g., "example.com")
-    /// * `server` - API endpoint (e.g., "bind9-primary-api:8080")
-    /// * `key_data` - RNDC key data (used for allow-update configuration)
-    /// * `soa_record` - SOA record data
-    /// * `name_servers` - Optional list of ALL authoritative nameserver hostnames
-    /// * `name_server_ips` - Optional map of nameserver hostnames to IP addresses for glue records
-    /// * `secondary_ips` - Optional list of secondary pod IPs for allow-transfer
-    /// * `notify_targets` - Optional also-notify targets on port 53 (ADR-0019)
-    ///
-    /// # Returns
-    ///
-    /// Returns `Ok(true)` if the zone was added, `Ok(false)` if it already existed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the HTTP request fails or the zone cannot be added.
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::too_many_arguments
-    )]
-    pub async fn add_primary_zone(
-        &self,
-        zone_name: &str,
-        server: &str,
-        key_data: &RndcKeyData,
-        soa_record: &crate::crd::SOARecord,
-        name_servers: Option<&[String]>,
-        name_server_ips: Option<&HashMap<String, String>>,
-        secondary_ips: Option<&[String]>,
-        notify_targets: Option<&[String]>,
-        dnssec_policy: Option<&str>,
-    ) -> Result<bool> {
-        let client = self.resolve_client().await?;
-        let server = &self.qualify_server(server);
-        zone_ops::add_primary_zone(
-            &client,
-            self.get_token().as_deref(),
-            zone_name,
-            server,
-            key_data,
-            soa_record,
-            name_servers,
-            name_server_ips,
-            secondary_ips,
-            notify_targets,
-            dnssec_policy,
-        )
-        .await
-    }
-
-    /// Add a secondary zone via HTTP API.
-    ///
-    /// Creates a secondary zone that will transfer from the specified primary servers.
-    /// This is a convenience method specifically for secondary zones.
-    ///
-    /// # Arguments
-    /// * `zone_name` - Name of the zone (e.g., "example.com")
-    /// * `server` - API endpoint of the secondary server (e.g., "bind9-secondary-api:8080")
-    /// * `key_data` - RNDC key data
-    /// * `primary_ips` - List of primary server IP addresses to transfer from
-    ///
-    /// # Returns
-    ///
-    /// Returns `Ok(true)` if the zone was added, `Ok(false)` if it already existed.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the HTTP request fails or the zone cannot be added.
-    pub async fn add_secondary_zone(
-        &self,
-        zone_name: &str,
-        server: &str,
-        key_data: &RndcKeyData,
-        primary_ips: &[String],
-    ) -> Result<bool> {
-        let client = self.resolve_client().await?;
-        let server = &self.qualify_server(server);
-        zone_ops::add_secondary_zone(
-            &client,
-            self.get_token().as_deref(),
-            zone_name,
-            server,
-            key_data,
-            primary_ips,
-        )
-        .await
-    }
-
-    /// Create a zone via HTTP API with structured configuration.
-    ///
-    /// This method sends a POST request to the API sidecar to create a zone using
-    /// structured zone configuration from the bindcar library.
-    ///
-    /// # Arguments
-    /// * `zone_name` - Name of the zone (e.g., "example.com")
-    /// * `zone_type` - Zone type (use `ZONE_TYPE_PRIMARY` or `ZONE_TYPE_SECONDARY` constants)
-    /// * `zone_config` - Structured zone configuration (converted to zone file by bindcar)
-    /// * `server` - API endpoint (e.g., "bind9-primary-api:8080")
-    /// * `key_data` - RNDC authentication key (used as updateKeyName)
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the HTTP request fails or the zone cannot be created.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn create_zone_http(
-        &self,
-        zone_name: &str,
-        zone_type: &str,
-        zone_config: ZoneConfig,
-        server: &str,
-        key_data: &RndcKeyData,
-    ) -> Result<()> {
-        let client = self.resolve_client().await?;
-        let server = &self.qualify_server(server);
-        zone_ops::create_zone_http(
-            &client,
-            self.get_token().as_deref(),
-            zone_name,
-            zone_type,
-            zone_config,
-            server,
-            key_data,
-        )
-        .await
-    }
-
     /// Delete a zone via HTTP API. A zone that is not on the server counts as
     /// deleted; see [`zone_ops::delete_zone`].
     ///
@@ -1078,7 +849,6 @@ impl Bind9Manager {
     /// # Errors
     ///
     /// Returns an error if the DNS update fails or the server rejects it.
-    #[allow(clippy::too_many_arguments)]
     pub async fn add_a_record(
         &self,
         zone_name: &str,
@@ -1104,7 +874,6 @@ impl Bind9Manager {
     /// # Errors
     ///
     /// Returns an error if the DNS update fails or the server rejects it.
-    #[allow(clippy::too_many_arguments)]
     pub async fn add_aaaa_record(
         &self,
         zone_name: &str,
@@ -1122,7 +891,6 @@ impl Bind9Manager {
     /// # Errors
     ///
     /// Returns an error if the DNS update fails or the server rejects it.
-    #[allow(clippy::too_many_arguments)]
     pub async fn add_cname_record(
         &self,
         zone_name: &str,
@@ -1140,7 +908,6 @@ impl Bind9Manager {
     /// # Errors
     ///
     /// Returns an error if the DNS update fails or the server rejects it.
-    #[allow(clippy::too_many_arguments)]
     pub async fn add_txt_record(
         &self,
         zone_name: &str,
@@ -1186,7 +953,6 @@ impl Bind9Manager {
     /// # Errors
     ///
     /// Returns an error if the DNS update fails or the server rejects it.
-    #[allow(clippy::too_many_arguments)]
     pub async fn add_ns_record(
         &self,
         zone_name: &str,
@@ -1208,7 +974,6 @@ impl Bind9Manager {
     /// - TSIG signer creation fails
     /// - DNS update is rejected by the server
     /// - Invalid domain name or target
-    #[allow(clippy::too_many_arguments)]
     pub async fn add_srv_record(
         &self,
         zone_name: &str,
@@ -1230,7 +995,6 @@ impl Bind9Manager {
     /// - DNS update is rejected by the server
     /// - Invalid domain name, flags, tag, or value
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_lines)]
     pub async fn add_caa_record(
         &self,
         zone_name: &str,
@@ -1255,7 +1019,6 @@ impl Bind9Manager {
     /// - TSIG signer creation fails
     /// - DNS update is rejected by the server
     /// - Invalid domain name or target
-    #[allow(clippy::too_many_arguments)]
     pub async fn add_ptr_record(
         &self,
         zone_name: &str,

@@ -996,10 +996,17 @@ mod tests {
 
     mod status_records_tests {
         use crate::crd::{DNSZoneStatus, RecordReference, RecordReferenceWithTimestamp};
-        use bindy_api::constants::{
-            API_GROUP_VERSION, KIND_AAAA_RECORD, KIND_A_RECORD, KIND_CAA_RECORD, KIND_CNAME_RECORD,
-            KIND_MX_RECORD, KIND_NS_RECORD, KIND_PTR_RECORD, KIND_SRV_RECORD, KIND_TXT_RECORD,
-        };
+        use bindy_api::constants::API_GROUP_VERSION;
+
+        const KIND_A_RECORD: &str = "ARecord";
+        const KIND_AAAA_RECORD: &str = "AAAARecord";
+        const KIND_TXT_RECORD: &str = "TXTRecord";
+        const KIND_CNAME_RECORD: &str = "CNAMERecord";
+        const KIND_MX_RECORD: &str = "MXRecord";
+        const KIND_NS_RECORD: &str = "NSRecord";
+        const KIND_SRV_RECORD: &str = "SRVRecord";
+        const KIND_CAA_RECORD: &str = "CAARecord";
+        const KIND_PTR_RECORD: &str = "PTRRecord";
         use serde_json::json;
 
         // ====================================================================

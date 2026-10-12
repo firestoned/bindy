@@ -35,19 +35,6 @@ use std::sync::{LazyLock, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 use tracing::{debug, error, warn};
 
-/// Information about a BIND9 pod discovered during reconciliation.
-#[derive(Debug, Clone)]
-pub struct PodInfo {
-    /// Pod name
-    pub name: String,
-    /// Pod IP address
-    pub ip: String,
-    /// Name of the Bind9Instance this pod belongs to
-    pub instance_name: String,
-    /// Namespace of the pod
-    pub namespace: String,
-}
-
 /// Endpoint address (IP + port) for connecting to BIND9 API.
 #[derive(Debug, Clone)]
 pub struct EndpointAddress {
@@ -1065,45 +1052,6 @@ pub fn ready_endpoint_addresses(endpoints: &Endpoints, port_name: &str) -> Vec<E
 /// The error reported when a Service has no ready address on `port_name`.
 fn no_ready_endpoints_error(service_name: &str, port_name: &str) -> anyhow::Error {
     anyhow!("No ready endpoints found for service {service_name} with port '{port_name}'")
-}
-
-/// Extract the name and IP of a pod that is Running and has an IP assigned.
-///
-/// Used when listing BIND9 pods for zone operations: pods that are not yet
-/// Running, or that are so freshly scheduled they have no IP, must be SKIPPED
-/// rather than failing the entire pod listing - a single Pending pod must not
-/// abort operations against the healthy pods.
-///
-/// # Arguments
-///
-/// * `pod` - The pod to inspect
-///
-/// # Returns
-///
-/// `Some((name, ip))` if the pod is Running with an IP, `None` otherwise.
-#[must_use]
-pub fn running_pod_name_and_ip(pod: &Pod) -> Option<(String, String)> {
-    let pod_name = pod.metadata.name.as_deref().unwrap_or("unknown");
-
-    let phase = pod
-        .status
-        .as_ref()
-        .and_then(|s| s.phase.as_deref())
-        .unwrap_or("Unknown");
-    if phase != "Running" {
-        tracing::debug!("Skipping pod {} (phase: {}, not running)", pod_name, phase);
-        return None;
-    }
-
-    let Some(pod_ip) = pod.status.as_ref().and_then(|s| s.pod_ip.as_ref()) else {
-        tracing::debug!(
-            "Skipping pod {} without an IP address (likely just scheduled)",
-            pod_name
-        );
-        return None;
-    };
-
-    Some((pod_name.to_string(), pod_ip.clone()))
 }
 
 /// The RNDC `Secret` an instance's pods mount, given its Deployment.

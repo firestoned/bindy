@@ -1955,21 +1955,6 @@ impl RndcAlgorithm {
             Self::HmacSha512 => "hmac-sha512",
         }
     }
-
-    /// Convert enum to string format expected by the rndc Rust crate.
-    ///
-    /// The rndc crate expects algorithm strings without the "hmac-" prefix
-    /// (e.g., "sha256" instead of "hmac-sha256").
-    #[must_use]
-    pub fn as_rndc_str(&self) -> &'static str {
-        match self {
-            Self::HmacSha1 => "sha1",
-            Self::HmacSha224 => "sha224",
-            Self::HmacSha256 => "sha256",
-            Self::HmacSha384 => "sha384",
-            Self::HmacSha512 => "sha512",
-        }
-    }
 }
 
 /// Reference to a Kubernetes Secret containing RNDC/TSIG credentials.
@@ -4319,15 +4304,6 @@ impl BindcarTlsConfig {
     #[must_use]
     pub fn is_enabled(&self) -> bool {
         self.enabled.unwrap_or(false)
-    }
-
-    /// Whether the operator should verify the certificate's hostname.
-    ///
-    /// Only when an explicit [`server_name`](Self::server_name) is configured;
-    /// see the type documentation for why the default is off.
-    #[must_use]
-    pub fn verifies_hostname(&self) -> bool {
-        self.server_name.is_some()
     }
 }
 

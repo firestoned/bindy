@@ -17,8 +17,7 @@
 //! - [`instances`] - which instances a zone targets, and their BIND9 endpoints
 //! - [`primary`] - primary instances, their pods and endpoints
 //! - [`record_push`] - writing, deleting and replaying records on BIND9 primaries
-//! - [`ddns`] - record hashing and dynamic-update helpers
-//! - [`dns_errors`] - typed errors for DNS operations
+//! - [`ddns`] - record hashing for change detection
 //! - [`safe_volume`] - validation of user-supplied volume and Secret references
 //! - [`context`] - the shared [`context::Context`] plus [`context::StoresBind9Ext`],
 //!   which builds a [`bind9::Bind9Manager`] for an instance
@@ -32,7 +31,6 @@ pub mod bind9_resources;
 pub mod config_check;
 pub mod context;
 pub mod ddns;
-pub mod dns_errors;
 pub mod instances;
 pub mod peers;
 pub mod placement;
@@ -44,5 +42,3 @@ pub mod safe_volume;
 mod bind9_acl_tests;
 #[cfg(test)]
 mod bind9_resources_tests;
-#[cfg(test)]
-mod dns_errors_tests;

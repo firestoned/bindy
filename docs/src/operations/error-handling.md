@@ -66,7 +66,6 @@ All bindcar HTTP API operations automatically benefit from retry:
 - Zone creation (`create_zone()`)
 - Zone updates (`update_zone()`)
 - Zone deletion (`delete_zone()`)
-- Zone reload (`reload_zone()`)
 - Zone listing (`list_zones()`)
 - Zone status checks (`get_zone_status()`)
 - Primary/secondary zone operations

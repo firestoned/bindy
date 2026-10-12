@@ -53,7 +53,6 @@ fn compare_txt_rrset(existing_records: &[Record], texts: &[String], desired_ttl:
 /// # Errors
 ///
 /// Returns an error if the DNS update fails or the server rejects it.
-#[allow(clippy::too_many_arguments)]
 pub async fn add_txt_record(
     zone_name: &str,
     name: &str,

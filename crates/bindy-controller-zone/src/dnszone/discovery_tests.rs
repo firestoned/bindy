@@ -12,17 +12,6 @@ mod tests {
     use crate::crd::LabelSelector;
     use std::collections::BTreeMap;
 
-    #[tokio::test]
-    async fn test_reconcile_zone_records_no_selectors() {
-        // This test requires mocking the Kubernetes API
-        // For now, we document the expected behavior:
-        //
-        // Given: A zone with no recordsFrom selectors
-        // When: reconcile_zone_records is called
-        // Then: Should return Ok(vec![]) immediately
-        //       AND log "No label selectors defined - skipping record discovery"
-    }
-
     #[test]
     fn test_label_selector_matches_exact() {
         let mut labels = BTreeMap::new();

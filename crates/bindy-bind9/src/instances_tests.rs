@@ -7,7 +7,6 @@
 mod tests {
     use crate::crd::{Bind9Instance, InstanceSource};
     use crate::instances::*;
-    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 
     fn single_shard<K>(store: kube::runtime::reflector::Store<K>) -> crate::context::MultiStore<K>
     where
@@ -540,64 +539,6 @@ mod tests {
         // deletion: skip with a warning
         let err = anyhow::anyhow!("No ready endpoints found for service foo with port 'http'");
         assert!(is_unavailable_for_deletion(&err));
-    }
-
-    // ========================================================================
-    // Pod listing helpers (running_pod_name_and_ip)
-    // ========================================================================
-
-    fn make_pod(
-        name: &str,
-        phase: Option<&str>,
-        ip: Option<&str>,
-    ) -> k8s_openapi::api::core::v1::Pod {
-        k8s_openapi::api::core::v1::Pod {
-            metadata: ObjectMeta {
-                name: Some(name.to_string()),
-                ..Default::default()
-            },
-            status: Some(k8s_openapi::api::core::v1::PodStatus {
-                phase: phase.map(ToString::to_string),
-                pod_ip: ip.map(ToString::to_string),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn test_running_pod_name_and_ip_running_with_ip() {
-        let pod = make_pod("pod-1", Some("Running"), Some("10.0.0.1"));
-        assert_eq!(
-            running_pod_name_and_ip(&pod),
-            Some(("pod-1".to_string(), "10.0.0.1".to_string()))
-        );
-    }
-
-    #[test]
-    fn test_running_pod_name_and_ip_pending_pod_is_skipped() {
-        let pod = make_pod("pod-pending", Some("Pending"), None);
-        assert_eq!(running_pod_name_and_ip(&pod), None);
-    }
-
-    #[test]
-    fn test_running_pod_name_and_ip_running_without_ip_is_skipped() {
-        // A pod can briefly report Running before its IP is populated in the
-        // cache; it must be skipped, not fail the whole pod listing
-        let pod = make_pod("pod-no-ip", Some("Running"), None);
-        assert_eq!(running_pod_name_and_ip(&pod), None);
-    }
-
-    #[test]
-    fn test_running_pod_name_and_ip_no_status() {
-        let pod = k8s_openapi::api::core::v1::Pod {
-            metadata: ObjectMeta {
-                name: Some("pod-nostatus".to_string()),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        assert_eq!(running_pod_name_and_ip(&pod), None);
     }
 }
 

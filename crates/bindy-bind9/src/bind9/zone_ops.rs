@@ -7,7 +7,7 @@
 
 use super::types::RndcKeyData;
 use anyhow::{Context, Result};
-use bindcar::{CreateZoneRequest, SoaRecord, ZoneConfig, ZoneResponse};
+use bindcar::{CreateZoneRequest, SoaRecord, ZoneConfig};
 use reqwest::{Client as HttpClient, StatusCode};
 use serde::Serialize;
 use std::collections::HashMap;
@@ -388,64 +388,6 @@ async fn bindcar_request_internal<T: Serialize + std::fmt::Debug>(
     Ok(text)
 }
 
-/// Reload a specific zone via HTTP API.
-///
-/// This operation is idempotent - if the zone doesn't exist, it returns an error
-/// with a clear message indicating the zone was not found.
-///
-/// # Arguments
-/// * `client` - HTTP client
-/// * `token` - Optional authentication token (None if auth disabled)
-/// * `zone_name` - Name of the zone to reload
-/// * `server` - API server address (e.g., "bind9-primary-api:8080")
-///
-/// # Errors
-///
-/// Returns an error if the HTTP request fails or the zone cannot be reloaded.
-pub async fn reload_zone(
-    client: &Arc<HttpClient>,
-    token: Option<&str>,
-    zone_name: &str,
-    server: &str,
-) -> Result<()> {
-    let base_url = build_api_url(server);
-    let url = format!("{base_url}/api/v1/zones/{zone_name}/reload");
-
-    let result = bindcar_request(client, token, "POST", &url, None::<&()>).await;
-
-    match result {
-        Ok(_) => Ok(()),
-        Err(e) => {
-            let err_msg = e.to_string();
-            if err_msg.contains("not found") || err_msg.contains("does not exist") {
-                Err(anyhow::anyhow!("Zone {zone_name} not found on {server}"))
-            } else {
-                Err(e).context("Failed to reload zone")
-            }
-        }
-    }
-}
-
-/// Reload all zones via HTTP API.
-///
-/// # Errors
-///
-/// Returns an error if the HTTP request fails.
-pub async fn reload_all_zones(
-    client: &Arc<HttpClient>,
-    token: Option<&str>,
-    server: &str,
-) -> Result<()> {
-    let base_url = build_api_url(server);
-    let url = format!("{base_url}/api/v1/server/reload");
-
-    bindcar_request(client, token, "POST", &url, None::<&()>)
-        .await
-        .context("Failed to reload all zones")?;
-
-    Ok(())
-}
-
 /// Trigger zone transfer via HTTP API.
 ///
 /// # Errors
@@ -463,48 +405,6 @@ pub async fn retransfer_zone(
     bindcar_request(client, token, "POST", &url, None::<&()>)
         .await
         .context("Failed to retransfer zone")?;
-
-    Ok(())
-}
-
-/// Freeze a zone to prevent dynamic updates via HTTP API.
-///
-/// # Errors
-///
-/// Returns an error if the HTTP request fails or the zone cannot be frozen.
-pub async fn freeze_zone(
-    client: &Arc<HttpClient>,
-    token: Option<&str>,
-    zone_name: &str,
-    server: &str,
-) -> Result<()> {
-    let base_url = build_api_url(server);
-    let url = format!("{base_url}/api/v1/zones/{zone_name}/freeze");
-
-    bindcar_request(client, token, "POST", &url, None::<&()>)
-        .await
-        .context("Failed to freeze zone")?;
-
-    Ok(())
-}
-
-/// Thaw a frozen zone to allow dynamic updates via HTTP API.
-///
-/// # Errors
-///
-/// Returns an error if the HTTP request fails or the zone cannot be thawed.
-pub async fn thaw_zone(
-    client: &Arc<HttpClient>,
-    token: Option<&str>,
-    zone_name: &str,
-    server: &str,
-) -> Result<()> {
-    let base_url = build_api_url(server);
-    let url = format!("{base_url}/api/v1/zones/{zone_name}/thaw");
-
-    bindcar_request(client, token, "POST", &url, None::<&()>)
-        .await
-        .context("Failed to thaw zone")?;
 
     Ok(())
 }
@@ -732,26 +632,6 @@ pub async fn zone_exists(
     }
 }
 
-/// Get server status via HTTP API.
-///
-/// # Errors
-///
-/// Returns an error if the HTTP request fails or the server status cannot be retrieved.
-pub async fn server_status(
-    client: &Arc<HttpClient>,
-    token: Option<&str>,
-    server: &str,
-) -> Result<String> {
-    let base_url = build_api_url(server);
-    let url = format!("{base_url}/api/v1/server/status");
-
-    let status = bindcar_request(client, token, "GET", &url, None::<&()>)
-        .await
-        .context("Failed to get server status")?;
-
-    Ok(status)
-}
-
 /// Add a new primary zone via HTTP API.
 ///
 /// This operation is idempotent - if the zone already exists, it returns success
@@ -759,9 +639,6 @@ pub async fn server_status(
 ///
 /// The zone is created with `allow-update` enabled for the TSIG key used by the operator.
 /// This allows dynamic DNS updates (RFC 2136) to add/update/delete records in the zone.
-///
-/// **Note:** This method creates a zone without initial content. For creating zones with
-/// initial SOA/NS records, use `create_zone_http()` instead.
 ///
 /// # Arguments
 /// * `client` - HTTP client
@@ -903,7 +780,7 @@ pub async fn add_primary_zone(
                         "Zone {zone_name} already exists on {server}, updating dnssec-policy {dnssec_policy:?}"
                     );
                     let _updated =
-                        update_primary_zone(client, token, zone_name, server, None, dnssec_policy)
+                        update_primary_zone(client, token, zone_name, server, dnssec_policy)
                             .await?;
                 }
                 // IMPORTANT: Ok(false) because the zone was NOT newly added.
@@ -917,11 +794,9 @@ pub async fn add_primary_zone(
     }
 }
 
-/// Update an existing primary zone's configuration via HTTP API.
-///
-/// Updates a zone's `also-notify` and `allow-transfer` configuration without
-/// deleting and re-adding the zone. This is used when secondary pod IPs change
-/// (e.g., after pod restart) to keep zone transfer ACLs up to date.
+/// Update an existing primary zone's `dnssec-policy` via HTTP API, without
+/// deleting and re-adding the zone. Transfer peers are rewritten by
+/// [`update_primary_transfer_peers`].
 ///
 /// **Implementation:** Uses bindcar's PATCH endpoint introduced in v0.4.0.
 ///
@@ -930,8 +805,6 @@ pub async fn add_primary_zone(
 /// * `token` - Authentication token
 /// * `zone_name` - Name of the zone (e.g., "example.com")
 /// * `server` - API endpoint (e.g., "bind9-primary-api:8080")
-/// * `secondary_ips` - Updated secondary server IPs for also-notify and
-///   allow-transfer; `None` leaves both as they are
 /// * `dnssec_policy` - The zone's `dnssec-policy`; `None` leaves signing as
 ///   it is (bindcar's merge semantics, its ADR-0001), never "unsign"
 ///
@@ -947,7 +820,6 @@ pub async fn update_primary_zone(
     token: Option<&str>,
     zone_name: &str,
     server: &str,
-    secondary_ips: Option<&[String]>,
     dnssec_policy: Option<&str>,
 ) -> Result<bool> {
     // Define the update request structure
@@ -957,10 +829,6 @@ pub async fn update_primary_zone(
     #[serde(rename_all = "camelCase")]
     struct ZoneUpdateRequest {
         #[serde(skip_serializing_if = "Option::is_none")]
-        also_notify: Option<Vec<String>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        allow_transfer: Option<Vec<String>>,
-        #[serde(skip_serializing_if = "Option::is_none")]
         dnssec_policy: Option<String>,
     }
 
@@ -968,23 +836,16 @@ pub async fn update_primary_zone(
     let url = format!("{base_url}/api/v1/zones/{zone_name}");
 
     let update_request = ZoneUpdateRequest {
-        // NOTIFY targets the secondaries' operand port (5353); allow-transfer is
-        // a bare-IP ACL.
-        also_notify: secondary_ips.map(with_transfer_port),
-        allow_transfer: secondary_ips.map(<[String]>::to_vec),
         dnssec_policy: dnssec_policy.map(String::from),
     };
 
-    let secondary_count = secondary_ips.map_or(0, <[String]>::len);
-    info!(
-        "Updating zone {zone_name} on {server}: {secondary_count} secondary server(s), dnssec-policy {dnssec_policy:?}"
-    );
+    info!("Updating zone {zone_name} on {server}: dnssec-policy {dnssec_policy:?}");
 
     // Use PATCH to update only the specified fields
     match bindcar_request(client, token, "PATCH", &url, Some(&update_request)).await {
         Ok(_) => {
             info!(
-                "Successfully updated zone {zone_name} on {server} ({secondary_count} secondary server(s), dnssec-policy {dnssec_policy:?})"
+                "Successfully updated zone {zone_name} on {server} (dnssec-policy {dnssec_policy:?})"
             );
             Ok(true)
         }
@@ -1326,105 +1187,6 @@ pub async fn add_zones(
     }
 }
 
-/// Create a zone via HTTP API with structured configuration.
-///
-/// This method sends a POST request to the API sidecar (via the shared
-/// `bindcar_request` retry path, so it gets the same retry/backoff and
-/// timeout behavior as all other zone operations) to create a zone using
-/// structured zone configuration from the bindcar library.
-///
-/// This operation is idempotent: an HTTP 409 Conflict (or a BIND9
-/// "already exists"-style message) is treated as success.
-///
-/// # Arguments
-/// * `client` - HTTP client
-/// * `token` - Authentication token
-/// * `zone_name` - Name of the zone (e.g., "example.com")
-/// * `zone_type` - Zone type (use `ZONE_TYPE_PRIMARY` or `ZONE_TYPE_SECONDARY` constants)
-/// * `zone_config` - Structured zone configuration (converted to zone file by bindcar)
-/// * `server` - API endpoint (e.g., "bind9-primary-api:8080")
-/// * `key_data` - RNDC authentication key (used as updateKeyName)
-///
-/// # Errors
-///
-/// Returns an error if the HTTP request fails or the zone cannot be created.
-#[allow(clippy::too_many_arguments)]
-pub async fn create_zone_http(
-    client: &Arc<HttpClient>,
-    token: Option<&str>,
-    zone_name: &str,
-    zone_type: &str,
-    zone_config: ZoneConfig,
-    server: &str,
-    key_data: &RndcKeyData,
-) -> Result<()> {
-    let base_url = build_api_url(server);
-    let url = format!("{base_url}/api/v1/zones");
-
-    let request = CreateZoneRequest {
-        zone_name: zone_name.to_string(),
-        zone_type: zone_type.to_string(),
-        zone_config,
-        update_key_name: Some(key_data.name.clone()),
-    };
-
-    debug!(
-        zone_name = %zone_name,
-        zone_type = %zone_type,
-        server = %server,
-        "Creating zone via HTTP API"
-    );
-
-    let body = match bindcar_request(client, token, "POST", &url, Some(&request)).await {
-        Ok(body) => body,
-        // HTTP 409 Conflict (or an "already exists" message) means the zone
-        // is already present - treat as success (idempotent)
-        Err(e) if is_zone_already_exists_error(&e) => {
-            info!("Zone {zone_name} already exists on {server}, treating as success");
-            return Ok(());
-        }
-        Err(e) => {
-            error!(
-                zone_name = %zone_name,
-                server = %server,
-                error = %e,
-                "Failed to create zone via HTTP API"
-            );
-            return Err(e)
-                .with_context(|| format!("Failed to create zone '{zone_name}' via HTTP API"));
-        }
-    };
-
-    let result: ZoneResponse =
-        serde_json::from_str(&body).context("Failed to parse API response")?;
-
-    if !result.success {
-        // Check if the error message indicates zone already exists (idempotent)
-        if is_zone_already_exists_message(&result.message) {
-            info!("Zone {zone_name} already exists on {server} (detected via API response), treating as success");
-            return Ok(());
-        }
-
-        error!(
-            zone_name = %zone_name,
-            server = %server,
-            message = %result.message,
-            details = ?result.details,
-            "API returned error when creating zone"
-        );
-        anyhow::bail!("Failed to create zone '{}': {}", zone_name, result.message);
-    }
-
-    info!(
-        zone_name = %zone_name,
-        server = %server,
-        message = %result.message,
-        "Zone created successfully via HTTP API"
-    );
-
-    Ok(())
-}
-
 /// Retry budget for each HTTP call made while deleting a zone.
 ///
 /// Long enough to ride out a bindcar restart; short enough that an endpoint
@@ -1527,104 +1289,6 @@ pub async fn notify_zone(
 
     info!("Notified secondaries for zone {zone_name} from {server}");
     Ok(())
-}
-
-/// Verify that a zone is signed with DNSSEC by querying for DNSKEY records.
-///
-/// This function performs a DNS query to check if the zone has been signed
-/// with DNSSEC. It queries for DNSKEY records, which are present in signed zones.
-///
-/// # Arguments
-///
-/// * `zone_name` - The DNS zone name to verify (e.g., "example.com")
-/// * `server` - The DNS server address (e.g., "bind9-primary.bindy-system.svc.cluster.local:53")
-///
-/// # Returns
-///
-/// * `Ok(true)` - Zone is signed (DNSKEY records found)
-/// * `Ok(false)` - Zone is not signed (no DNSKEY records)
-/// * `Err(_)` - Query failed (network error, invalid zone name, etc.)
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - The DNS server address cannot be parsed
-/// - The zone name is invalid
-/// - The DNS query fails (network error, timeout, etc.)
-///
-/// # Example
-///
-/// ```no_run
-/// use bindy_bind9::bind9::zone_ops::verify_zone_signed;
-///
-/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-/// let signed = verify_zone_signed(
-///     "example.com",
-///     "10.0.0.1:53"
-/// ).await?;
-///
-/// if signed {
-///     println!("Zone is signed with DNSSEC");
-/// } else {
-///     println!("Zone is not signed");
-/// }
-/// # Ok(())
-/// # }
-/// ```
-pub async fn verify_zone_signed(zone_name: &str, server: &str) -> Result<bool> {
-    use hickory_net::client::{Client, ClientHandle};
-    use hickory_net::runtime::TokioRuntimeProvider;
-    use hickory_net::udp::UdpClientStream;
-    use hickory_proto::rr::{DNSClass, Name, RecordType};
-    use std::net::SocketAddr;
-    use std::str::FromStr;
-
-    // Parse server address
-    let server_addr: SocketAddr = server
-        .parse()
-        .with_context(|| format!("Invalid DNS server address: {server}"))?;
-
-    debug!(
-        "Verifying DNSSEC signing for zone {} on {}",
-        zone_name, server_addr
-    );
-
-    // Create UDP client connection (unauthenticated read-only query).
-    let stream = UdpClientStream::builder(server_addr, TokioRuntimeProvider::default()).build();
-    let (mut client, bg) = Client::<TokioRuntimeProvider>::from_sender(stream);
-
-    // Spawn the background task that drives the connection.
-    tokio::spawn(bg);
-
-    // Parse zone name
-    let name =
-        Name::from_str(zone_name).with_context(|| format!("Invalid zone name: {zone_name}"))?;
-
-    // Query for DNSKEY records
-    let response = client
-        .query(name.clone(), DNSClass::IN, RecordType::DNSKEY)
-        .await
-        .with_context(|| {
-            format!("Failed to query DNSKEY records for zone {zone_name} on {server_addr}")
-        })?;
-
-    // If we got DNSKEY records, the zone is signed
-    let is_signed = !response.answers.is_empty();
-
-    if is_signed {
-        debug!(
-            "Zone {} is signed with DNSSEC (found {} DNSKEY record(s))",
-            zone_name,
-            response.answers.len()
-        );
-    } else {
-        debug!(
-            "Zone {} is not signed with DNSSEC (no DNSKEY records found)",
-            zone_name
-        );
-    }
-
-    Ok(is_signed)
 }
 
 // ============================================================================

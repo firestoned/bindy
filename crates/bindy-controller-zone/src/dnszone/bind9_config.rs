@@ -37,8 +37,6 @@ use crate::crd::{DNSZone, InstanceReference};
 /// * `dnszone` - The DNSZone resource being reconciled
 /// * `status_updater` - Status updater for condition updates
 /// * `instance_refs` - All instance references assigned to the zone
-/// * `_unreconciled_instances` - Unused: every instance is configured on every
-///   reconcile
 ///
 /// # Returns
 ///
@@ -56,14 +54,12 @@ use crate::crd::{DNSZone, InstanceReference};
 /// Note: Secondary configuration failure is non-fatal and reported through
 /// `Degraded`. On every fatal error path the Ready condition is set to False
 /// and the Progressing condition is resolved before the error is returned.
-#[allow(clippy::too_many_arguments)]
 #[allow(clippy::too_many_lines)]
 pub async fn configure_zone_on_instances(
     ctx: Arc<crate::context::Context>,
     dnszone: &DNSZone,
     status_updater: &mut bindy_controller_sdk::status::DNSZoneStatusUpdater,
     instance_refs: &[InstanceReference],
-    _unreconciled_instances: &[InstanceReference],
 ) -> Result<(
     super::types::ZoneConfigOutcome,
     super::types::ZoneConfigOutcome,
@@ -290,7 +286,3 @@ pub fn set_failure_conditions(
         "Reconciliation attempt finished with errors",
     );
 }
-
-#[cfg(test)]
-#[path = "bind9_config_tests.rs"]
-mod bind9_config_tests;

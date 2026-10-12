@@ -1,8 +1,6 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: Apache-2.0
 
-#![allow(unexpected_cfgs)]
-
 //! # bindy-controller-sdk: the shared controller framework
 //!
 //! What every bindy controller needs and none of them owns (ADR-0009):
@@ -28,14 +26,12 @@
 //! - [`reconcile`] - Timing and metrics around one reconcile; success awaits
 //!   the next change, a scheduled wake is capped (ADR-0016)
 //! - [`finalizers`] - Adding, removing and honouring finalizers
-//! - [`http_errors`] - HTTP error mapping to status reasons
 //! - [`metrics`] - Prometheus metrics
 //! - [`watch`] - The shared watch layer: one watch and cache per kind and namespace
 
 pub mod context;
 pub mod error;
 pub mod finalizers;
-pub mod http_errors;
 pub mod leader;
 pub mod metrics;
 pub mod namespace_scope;
@@ -49,7 +45,5 @@ pub mod shutdown;
 pub mod status;
 pub mod watch;
 
-#[cfg(test)]
-mod http_errors_tests;
 #[cfg(test)]
 mod status_tests;

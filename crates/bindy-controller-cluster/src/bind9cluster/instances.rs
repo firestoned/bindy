@@ -118,7 +118,6 @@ pub(super) async fn reconcile_managed_instances(
     // Handle scale-up: Create missing primary instances
     // CRITICAL: Compare desired vs current state to find missing instances
     // Build set of desired instance names, compare with existing, create the difference
-    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     let mut primaries_to_create = 0;
     {
         // Build set of desired primary instance names based on replica count
@@ -190,7 +189,6 @@ pub(super) async fn reconcile_managed_instances(
     // Handle scale-up: Create missing secondary instances
     // CRITICAL: Compare desired vs current state to find missing instances
     // Build set of desired instance names, compare with existing, create the difference
-    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     let mut secondaries_to_create = 0;
     {
         // Build set of desired secondary instance names based on replica count
@@ -554,7 +552,7 @@ pub(super) async fn ensure_managed_instance_resources(
 /// # Arguments
 ///
 /// * `owner_ref` - Optional ownerReference to the parent `Bind9Cluster`
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(clippy::too_many_lines)]
 async fn create_managed_instance_with_owner(
     client: &Client,
     namespace: &str,
@@ -860,7 +858,3 @@ pub(super) async fn delete_cluster_instances(
 
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "instances_tests.rs"]
-mod instances_tests;

@@ -105,14 +105,14 @@ where
                     if let Some(spec_schema) = properties.get("spec") {
                         println!("#### Spec Fields");
                         println!();
-                        print_schema_table(spec_schema, 0);
+                        print_schema_table(spec_schema);
                         println!();
                     }
 
                     if let Some(status_schema) = properties.get("status") {
                         println!("#### Status Fields");
                         println!();
-                        print_schema_table(status_schema, 0);
+                        print_schema_table(status_schema);
                         println!();
                     }
                 }
@@ -124,7 +124,7 @@ where
     println!();
 }
 
-fn print_schema_table(schema: &JSONSchemaProps, _depth: usize) {
+fn print_schema_table(schema: &JSONSchemaProps) {
     if let Some(props) = &schema.properties {
         // Print table header
         println!("| Field | Type | Required | Description |");

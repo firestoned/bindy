@@ -42,9 +42,6 @@ const HTTP_MAX_ELAPSED_TIME_SECS: u64 = 120;
 pub struct ExponentialBackoff {
     /// Current interval duration
     pub current_interval: Duration,
-    /// Initial interval duration (stored for potential reset functionality)
-    #[allow(dead_code)]
-    pub initial_interval: Duration,
     /// Maximum interval duration
     pub max_interval: Duration,
     /// Maximum total elapsed time
@@ -68,7 +65,6 @@ impl ExponentialBackoff {
     ) -> Self {
         Self {
             current_interval: initial_interval,
-            initial_interval,
             max_interval,
             max_elapsed_time,
             multiplier,
@@ -511,52 +507,6 @@ pub fn clear_rejected_write(key: &str) {
     }
 }
 
-/// Whether writing `spec_hash` for `key` should be skipped right now.
-///
-/// # Arguments
-///
-/// * `key` - Stable identity for the object
-/// * `spec_hash` - Hash of the spec about to be written
-///
-/// # Returns
-///
-/// `true` while the identical spec is inside [`REJECTED_WRITE_COOLDOWN`] of its
-/// last rejection. A changed spec is never held back: editing the record is how
-/// a user fixes a permanent rejection, and that fix must take effect at once.
-#[must_use]
-pub fn write_in_cooldown(key: &str, spec_hash: &str) -> bool {
-    write_in_cooldown_at(key, spec_hash, Instant::now())
-}
-
-/// [`write_in_cooldown`] with the current time supplied, so expiry is testable.
-///
-/// # Arguments
-///
-/// * `key` - Stable identity for the object
-/// * `spec_hash` - Hash of the spec about to be written
-/// * `now` - The instant to judge the cooldown against
-///
-/// # Returns
-///
-/// `true` if the write should be skipped at `now`.
-#[must_use]
-pub fn write_in_cooldown_at(key: &str, spec_hash: &str, now: Instant) -> bool {
-    let Ok(rejected) = REJECTED_WRITES.lock() else {
-        // A poisoned lock must not stall writes; attempting one is always safe.
-        return false;
-    };
-
-    let Some((rejected_hash, rejected_at)) = rejected.get(key) else {
-        return false;
-    };
-
-    if rejected_hash != spec_hash {
-        return false;
-    }
-
-    now.duration_since(*rejected_at) < REJECTED_WRITE_COOLDOWN
-}
-
 /// How much of the cooldown is left for writing `spec_hash` for `key`.
 ///
 /// # Arguments
@@ -566,7 +516,10 @@ pub fn write_in_cooldown_at(key: &str, spec_hash: &str, now: Instant) -> bool {
 ///
 /// # Returns
 ///
-/// `Some(remaining)` while [`write_in_cooldown`] holds, otherwise `None`.
+/// `Some(remaining)` while the identical spec is inside
+/// [`REJECTED_WRITE_COOLDOWN`] of its last rejection, otherwise `None`. A
+/// changed spec is never held back: editing the record is how a user fixes a
+/// permanent rejection, and that fix must take effect at once.
 #[must_use]
 pub fn write_cooldown_remaining(key: &str, spec_hash: &str) -> Option<Duration> {
     write_cooldown_remaining_at(key, spec_hash, Instant::now())

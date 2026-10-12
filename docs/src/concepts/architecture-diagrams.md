@@ -261,16 +261,12 @@ sequenceDiagram
     K8sAPI-->>RecRec: RNDC key data
 
     RecRec->>BindMgr: Call add_a_record()
-    Note over BindMgr: Currently placeholder<br/>Will use nsupdate
-    BindMgr-->>RecRec: Ok(())
-
-    RecRec->>BindMgr: Call reload_zone(zone_name)
-    BindMgr->>Primary: RNDC reload zone
+    BindMgr->>Primary: RFC 2136 UPDATE (TSIG-signed)
     activate Primary
-    Primary->>Primary: Reload zone file
-    Primary-->>BindMgr: Success
+    Primary->>Primary: Replace the RRset in the live zone
+    Primary-->>BindMgr: NOERROR
     deactivate Primary
-    BindMgr-->>RecRec: Zone reloaded
+    BindMgr-->>RecRec: Ok(())
 
     RecRec->>K8sAPI: Update ARecord status
     K8sAPI-->>RecRec: Status updated

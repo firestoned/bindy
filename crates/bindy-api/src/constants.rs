@@ -10,9 +10,6 @@
 // API Constants
 // ============================================================================
 
-/// API group for all Bindy DNS CRDs
-pub const API_GROUP: &str = "bindy.firestoned.io";
-
 /// API version for all Bindy DNS CRDs
 pub const API_VERSION: &str = "v1beta1";
 
@@ -21,33 +18,6 @@ pub const API_GROUP_VERSION: &str = "bindy.firestoned.io/v1beta1";
 
 /// Kind name for `DNSZone` resource
 pub const KIND_DNS_ZONE: &str = "DNSZone";
-
-/// Kind name for `ARecord` resource
-pub const KIND_A_RECORD: &str = "ARecord";
-
-/// Kind name for `AAAARecord` resource
-pub const KIND_AAAA_RECORD: &str = "AAAARecord";
-
-/// Kind name for `TXTRecord` resource
-pub const KIND_TXT_RECORD: &str = "TXTRecord";
-
-/// Kind name for `CNAMERecord` resource
-pub const KIND_CNAME_RECORD: &str = "CNAMERecord";
-
-/// Kind name for `MXRecord` resource
-pub const KIND_MX_RECORD: &str = "MXRecord";
-
-/// Kind name for `NSRecord` resource
-pub const KIND_NS_RECORD: &str = "NSRecord";
-
-/// Kind name for `SRVRecord` resource
-pub const KIND_SRV_RECORD: &str = "SRVRecord";
-
-/// Kind name for `CAARecord` resource
-pub const KIND_CAA_RECORD: &str = "CAARecord";
-
-/// Kind name for `PTRRecord` resource
-pub const KIND_PTR_RECORD: &str = "PTRRecord";
 
 /// Kind name for `Bind9Cluster` resource
 pub const KIND_BIND9_CLUSTER: &str = "Bind9Cluster";
@@ -91,21 +61,6 @@ pub const BINDCAR_SERVICE_PORT: u16 = 80;
 
 /// Default TTL for DNS records (5 minutes)
 pub const DEFAULT_DNS_RECORD_TTL_SECS: i32 = 300;
-
-/// Default TTL for zone files (1 hour)
-pub const DEFAULT_ZONE_TTL_SECS: u32 = 3600;
-
-/// Default SOA refresh interval (1 hour)
-pub const DEFAULT_SOA_REFRESH_SECS: u32 = 3600;
-
-/// Default SOA retry interval (10 minutes)
-pub const DEFAULT_SOA_RETRY_SECS: u32 = 600;
-
-/// Default SOA expire time (7 days)
-pub const DEFAULT_SOA_EXPIRE_SECS: u32 = 604_800;
-
-/// Default SOA negative TTL (1 day)
-pub const DEFAULT_SOA_NEGATIVE_TTL_SECS: u32 = 86400;
 
 /// TSIG fudge time in seconds (allows for clock skew)
 pub const TSIG_FUDGE_TIME_SECS: u64 = 300;
@@ -230,13 +185,6 @@ pub const CONDITION_STATUS_TRUE: &str = "True";
 pub const CONDITION_STATUS_FALSE: &str = "False";
 
 // ============================================================================
-// Controller Error Handling Constants
-// ============================================================================
-
-/// Requeue duration for controller errors (30 seconds)
-pub const ERROR_REQUEUE_DURATION_SECS: u64 = 30;
-
-// ============================================================================
 // Leader Election Constants
 // ============================================================================
 
@@ -351,16 +299,6 @@ pub const CONTAINER_NAME_BINDCAR: &str = "api";
 pub const TOKIO_WORKER_THREADS: usize = 4;
 
 // ============================================================================
-// Replica Count Constants
-// ============================================================================
-
-/// Minimum number of replicas for testing
-pub const MIN_TEST_REPLICAS: i32 = 2;
-
-/// Maximum reasonable number of replicas for testing
-pub const MAX_TEST_REPLICAS: i32 = 10;
-
-// ============================================================================
 // Metrics Server Constants
 // ============================================================================
 
@@ -374,22 +312,8 @@ pub const METRICS_SERVER_PATH: &str = "/metrics";
 pub const METRICS_SERVER_BIND_ADDRESS: &str = "0.0.0.0";
 
 // ============================================================================
-// DNSZone Record Ownership Constants
+// Cross-namespace Zone Targeting Constants
 // ============================================================================
-
-/// Annotation key for marking which zone owns a DNS record
-///
-/// When a `DNSZone`'s label selector matches a DNS record, the `DNSZone` controller
-/// sets this annotation on the record with the value being the zone's FQDN.
-/// Record reconcilers read this annotation to determine which zone to update.
-pub const ANNOTATION_ZONE_OWNER: &str = "bindy.firestoned.io/zone";
-
-/// Annotation key for marking which zone previously owned a record
-///
-/// When a record stops matching a zone's selector, the `DNSZone` controller sets
-/// this annotation before removing the zone ownership. This helps track orphaned
-/// records and enables cleanup workflows.
-pub const ANNOTATION_ZONE_PREVIOUS_OWNER: &str = "bindy.firestoned.io/previous-zone";
 
 /// Annotation key on `Bind9Instance` that lists namespaces from which a
 /// `DNSZone` (in a *different* namespace) is permitted to target this

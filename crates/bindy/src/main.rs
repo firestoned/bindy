@@ -35,33 +35,48 @@ fn main() -> Result<()> {
         .expect("Failed to install ring CryptoProvider");
 
     let cli = Cli::parse();
+    let thread_name = cli.command.thread_name();
 
-    // Shell completion and version output are synchronous: no Tokio runtime.
-    // render_version() derives from CARGO_PKG_VERSION, matching --version exactly.
     match cli.command {
+        // Shell completion and version output are synchronous: no Tokio
+        // runtime. render_version() derives from CARGO_PKG_VERSION, matching
+        // --version exactly.
         Commands::Completion { shell } => {
             clap_complete::generate(shell, &mut Cli::command(), "bindy", &mut std::io::stdout());
-            return Ok(());
+            Ok(())
         }
         Commands::Version => {
             print!("{}", Cli::command().render_version());
-            return Ok(());
+            Ok(())
         }
-        _ => {}
+        Commands::Run => block_on(thread_name, run_operator()),
+        Commands::Bootstrap { subcommand } => block_on(thread_name, cli::run_bootstrap(subcommand)),
+        Commands::Scout(args) => block_on(thread_name, cli::run_scout(args)),
     }
+}
 
+/// Run `command` to completion on a multi-threaded Tokio runtime whose worker
+/// threads are named `thread_name`, with logging initialized first.
+///
+/// # Arguments
+/// * `thread_name` - Name for the runtime's worker threads
+/// * `command` - The subcommand's future
+///
+/// # Errors
+/// Returns an error if the runtime cannot be built, or the subcommand's error.
+fn block_on<F>(thread_name: &str, command: F) -> Result<()>
+where
+    F: std::future::Future<Output = Result<()>>,
+{
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(TOKIO_WORKER_THREADS)
-        .thread_name(cli.command.thread_name())
+        .thread_name(thread_name)
         .enable_all()
         .build()?;
 
     runtime.block_on(async {
         initialize_logging();
-        match cli.command {
-            Commands::Run => run_operator().await,
-            command => cli::run(command).await,
-        }
+        command.await
     })
 }
 
@@ -261,6 +276,8 @@ async fn run_operator() -> Result<()> {
             renew_deadline_secs = leader_election.renew_deadline,
             "Leader election enabled, waiting to acquire leadership..."
         );
+        // A replica waiting for the lease is a follower until it wins it.
+        metrics::record_leader_status(&leader_election.identity, false);
         // The lease gets a client of its own: not queued behind the
         // controllers' rate limit, and with a deadline that fits inside the
         // renewal window (a stalled renewal on the shared 30 s deadline let
@@ -283,22 +300,29 @@ async fn run_operator() -> Result<()> {
             return Ok(());
         };
         info!("🎉 Leadership acquired! Starting controllers...");
+        metrics::record_leadership_acquired(&leader_election.identity);
 
         // Losing the lease drains the controllers, then the process exits
         // non-zero so Kubernetes restarts it as a follower.
         let leader_rx = leadership.leader_rx.clone();
         let (trigger, lost) = (trigger.clone(), lease_lost.clone());
+        let identity = leader_election.identity.clone();
         tokio::spawn(async move {
             match leadership_lost(leader_rx).await {
                 Ok(()) => warn!("Leadership lost! Draining controllers..."),
                 Err(e) => error!("Leadership monitor error: {e:?}"),
             }
+            // Either way this replica can no longer claim to lead.
+            metrics::record_leadership_lost(&identity);
             lost.store(true, Ordering::SeqCst);
             trigger.fire();
         });
         Some(leadership)
     } else {
         warn!("Leader election DISABLED - running without high availability");
+        // The only replica runs the controllers, so it leads; no lease
+        // changed hands, so no election is counted.
+        metrics::record_leader_status(&leader_election.identity, true);
         None
     };
 

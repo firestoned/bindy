@@ -1,6 +1,8 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: Apache-2.0
 
+// The fixtures still set deprecated CRD fields (`rndc_secret_ref`,
+// `name_server_ips`) to cover their backward compatibility.
 #![allow(deprecated)]
 
 //! Integration tests for Multi-Tenancy Dual-Cluster Model
@@ -13,10 +15,6 @@
 //! - Cross-namespace resource access control
 //!
 //! Run with: cargo test --test multi_tenancy_integration -- --ignored --test-threads=1
-
-#![allow(clippy::items_after_statements)]
-#![allow(clippy::manual_let_else)]
-#![allow(clippy::doc_markdown)]
 
 // mod common; // Not needed for these tests
 

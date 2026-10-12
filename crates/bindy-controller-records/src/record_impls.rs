@@ -2,10 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Implementations of `DnsRecordType` trait for all DNS record types.
-//!
-//! Note: We cannot use `async fn` syntax in trait implementations that return
-//! `impl Future` until Rust stabilizes return-position impl Trait in traits (RPITIT).
-#![allow(clippy::manual_async_fn)]
 
 use crate::crd::{
     AAAARecord, ARecord, CAARecord, CNAMERecord, MXRecord, NSRecord, PTRRecord, RecordStatus,

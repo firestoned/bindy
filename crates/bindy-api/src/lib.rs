@@ -1,8 +1,6 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: Apache-2.0
 
-#![allow(unexpected_cfgs)]
-
 //! # bindy-api: the Bindy API surface
 //!
 //! The leaf crate of the Bindy workspace (ADR-0009): the Custom Resource
@@ -13,7 +11,6 @@
 //! ## Modules
 //!
 //! - [`crd`] - Custom Resource Definition types for DNS resources
-//! - [`crd_docs`] - Example manifests embedded in the generated API docs
 //! - [`constants`] - Operator-wide constants
 //! - [`labels`] - Label, annotation and finalizer keys
 //! - [`selector`] - Label selector matching utilities
@@ -25,13 +22,10 @@
 
 pub mod constants;
 pub mod crd;
-pub mod crd_docs;
 pub mod labels;
 pub mod selector;
 pub mod status_reasons;
 
-#[cfg(test)]
-mod crd_docs_tests;
 #[cfg(test)]
 mod crd_tests;
 #[cfg(test)]
