@@ -13,9 +13,13 @@
 // The API modules keep their `crate::` paths inside this crate.
 pub(crate) use bindy_api::{constants, crd};
 
+mod pipeline;
 mod scout;
 
 pub use scout::*;
 
 #[cfg(test)]
 mod scout_tests;
+
+#[cfg(test)]
+mod pipeline_tests;

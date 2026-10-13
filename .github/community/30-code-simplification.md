@@ -8,7 +8,7 @@
 > **Stop condition.** The six PRs below are merged; the remaining review
 > findings are either done or recorded as follow-ups with a reason.
 
-**Status:** 🔶 In progress (PRs 1 to 4 merged; PR 5 in review; PR 6 next).
+**Status:** 🔶 In progress (PRs 1 to 5 merged; PR 6 in review; PR 7 sweep next).
 **Owner:** Erick Bourgeois
 
 ## Why
@@ -27,8 +27,9 @@ copies had already drifted apart, and several of the drifts were bugs.
 | 2 (#545) | Dead code removed across every crate; `serde_yaml` replaced by `serde-saphyr` (RUSTSEC-2024-0449); `bootstrap mc` writes its Secret to a `0600` file (M-61) | ✅ Merged |
 | 3 (#546) | Shared SDK helpers (errors, resources, finalizers, conditions, fan-out, instrumentation) and every controller moved onto them; scout's finalizer race fixed; Kubernetes 1.33+ Deployment status noise filtered; `NotifyTargetPending` | ✅ Merged |
 | 4 (#548) | Zone instances partitioned once per reconcile; role accessors; `bind9_resources.rs` split into modules; generic bootstrap `apply` | ✅ Merged |
-| 5 | [ADR-0020](../../docs/adr/0020-record-kinds-declared-once.md) record kinds declared once; [ADR-0021](../../docs/adr/0021-rrset-replaced-in-one-update.md) an RRset replaced in one DNS UPDATE | 🔶 In review |
-| 6 | Generic Scout source reconciler (one pipeline for Ingress, Service, HTTPRoute, TLSRoute, TCPRoute); source-kind label to close threat-model accepted risk 20 | ⛔ Needs an ADR |
+| 5 (#549) | [ADR-0020](../../docs/adr/0020-record-kinds-declared-once.md) record kinds declared once; [ADR-0021](../../docs/adr/0021-rrset-replaced-in-one-update.md) an RRset replaced in one DNS UPDATE (TCP when it exceeds the EDNS payload) | ✅ Merged |
+| 6 | [ADR-0022](../../docs/adr/0022-scout-sources-share-one-pipeline.md) Scout sources share one pipeline; `source-kind` label and hashed names (closes accepted risk 20); the record finalizer keeps a shared name's data | 🔶 In review |
+| 7 | Sweep of the remaining smaller findings (RNDC `secretRef` custom keys, `safe_volume` allow-list, ACL parser duplication, `zone_ops` retry, per-call HTTP clients, log noise on expected 404/409) | ⛔ Not started |
 
 ## Lines (Rust under `crates/`)
 
@@ -40,13 +41,14 @@ copies had already drifted apart, and several of the drifts were bugs.
 | PR 3 | 48,860 | 42,655 |
 | PR 4 | 48,285 | 43,890 |
 | PR 5 | 47,114 | 44,882 |
+| PR 6 | 45,862 | 45,771 |
 
 ## Follow-ups recorded during the work
 
 - [ ] A `secretRef` RNDC Secret with custom `keyNameKey` / `secretKey` is
       not read with those keys (`parse_rndc_secret_data` reads the standard
       keys only).
-- [ ] The scout's cross-kind ARecord name collision (threat model accepted
-      risk 20): addressed by PR 6.
+- [x] The scout's cross-kind ARecord name collision (threat model accepted
+      risk 20): closed by PR 6 (ADR-0022).
 - [ ] `create_or_force_apply` gives the provider's constant labels to the
       `bindy-controller` field manager (values unchanged; noted in PR 3).

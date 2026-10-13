@@ -8,27 +8,27 @@
 #[cfg(test)]
 mod tests {
     use crate::crd::DNSZone;
-    use crate::scout::{
-        add_scout_finalizer, kind_served, remove_scout_finalizer, HTTPRoute, TLSRoute,
+    use crate::pipeline::{
+        add_scout_finalizer, log_unscoped_stale_cluster_arecord_candidates, planned_records,
+        remove_scout_finalizer, SourceRef,
     };
     use crate::scout::{
-        arecord_cr_name, arecord_label_selector, authorizing_zone, build_service_arecord,
-        build_tcproute_arecord, check_zone_authorization, cleanup_grace_expired,
-        derive_record_name, gateway_addresses_as_ips, gateway_parent_refs,
-        get_record_name_annotation, get_zone_annotation, is_arecord_enabled, is_being_deleted,
-        is_loadbalancer_service, is_scout_opted_in, is_valid_zone_label_value,
-        log_unscoped_stale_cluster_arecord_candidates, parse_gateway_service_entry,
-        parse_gateway_services, resolve_ip_from_service_lb_status, resolve_ips,
+        arecord_cr_name, arecord_label_selector, authorizing_zone, check_zone_authorization,
+        cleanup_grace_expired, derive_record_name, env_or, gateway_addresses_as_ips,
+        gateway_parent_refs, get_record_name_annotation, get_zone_annotation, is_arecord_enabled,
+        is_being_deleted, is_loadbalancer_service, is_scout_opted_in, is_valid_zone_label_value,
+        legacy_arecord_label_selector, parse_gateway_service_entry, parse_gateway_services,
+        parse_ttl_annotation, resolve_ip_from_lb_status, resolve_ip_from_service_lb_status,
         resolve_ips_from_annotation, resolve_record_name, resolve_usable_zone, resolve_zone,
-        service_arecord_cr_name, service_arecord_label_selector, service_ref_from_str,
-        stale_arecord_label_selector, stale_cleanup_zones, stale_selector_base,
-        stale_tcproute_arecord_label_selector, tcproute_arecord_cr_name,
-        tcproute_arecord_label_selector, zone_allows_source_namespace, zone_namespace_grant,
-        Gateway, GatewayServiceTarget, NamespaceGrant, NamespacedName, ParentReference,
-        ServiceARecordParams, TCPRouteARecordParams, ZoneAuthz, ZoneResolution, FINALIZER_SCOUT,
-        LABEL_MANAGED_BY, LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER, LABEL_SOURCE_NAME,
-        LABEL_SOURCE_NAMESPACE, LABEL_ZONE, REMOTE_CLEANUP_GRACE_SECS,
+        retain_ipv4, service_ref_from_str, source_identity_hash, stale_arecord_label_selector,
+        stale_cleanup_zones, stale_selector_base, zone_allows_source_namespace,
+        zone_namespace_grant, Gateway, GatewayServiceTarget, NamespaceGrant, NamespacedName,
+        ParentReference, ScoutCli, ScoutConfig, StaleKind, ZoneAuthz, ZoneResolution,
+        ANNOTATION_TTL, FINALIZER_SCOUT, LABEL_MANAGED_BY, LABEL_MANAGED_BY_SCOUT,
+        LABEL_SOURCE_CLUSTER, LABEL_SOURCE_KIND, LABEL_SOURCE_NAME, LABEL_SOURCE_NAMESPACE,
+        LABEL_ZONE, REMOTE_CLEANUP_GRACE_SECS,
     };
+    use crate::scout::{kind_served, HTTPRoute, TLSRoute};
     use k8s_openapi::jiff::{SignedDuration, Timestamp};
     use kube::Api;
     use std::sync::Arc;
@@ -183,9 +183,7 @@ mod tests {
         LoadBalancerIngress as ServiceLoadBalancerIngress, LoadBalancerStatus, Service,
         ServiceSpec, ServiceStatus,
     };
-    use k8s_openapi::api::networking::v1::{
-        Ingress, IngressLoadBalancerIngress, IngressLoadBalancerStatus, IngressStatus,
-    };
+    use k8s_openapi::api::networking::v1::Ingress;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
     use std::collections::BTreeMap;
 
@@ -834,150 +832,13 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_resolve_ips_annotation_multiple_wins_over_defaults() {
-        // Multi-IP annotation flows through resolve_ips for the Ingress path
-        let mut annotations = BTreeMap::new();
-        annotations.insert(
-            "bindy.firestoned.io/ip".to_string(),
-            "1.2.3.4,5.6.7.8".to_string(),
-        );
-        let defaults = vec!["9.9.9.9".to_string()];
-        let ingress = Ingress::default();
-        assert_eq!(
-            resolve_ips(&annotations, &defaults, &ingress),
-            Some(vec!["1.2.3.4".to_string(), "5.6.7.8".to_string()])
-        );
-    }
-
     // =========================================================================
     // arecord_cr_name
     // =========================================================================
 
-    #[test]
-    fn test_arecord_cr_name_basic() {
-        // scout-{cluster}-{namespace}-{ingress}-{index}
-        let name = arecord_cr_name("prod", "default", "my-ingress", 0);
-        assert_eq!(name, "scout-prod-default-my-ingress-0");
-    }
-
-    #[test]
-    fn test_arecord_cr_name_sanitizes_underscores() {
-        // underscores → hyphens
-        let name = arecord_cr_name("prod", "my_namespace", "my_ingress", 1);
-        assert_eq!(name, "scout-prod-my-namespace-my-ingress-1");
-    }
-
-    #[test]
-    fn test_arecord_cr_name_max_253_chars() {
-        // Very long inputs must be truncated to ≤ 253 chars (Kubernetes name limit)
-        let long_cluster = "a".repeat(100);
-        let long_ns = "b".repeat(100);
-        let long_ingress = "c".repeat(100);
-        let name = arecord_cr_name(&long_cluster, &long_ns, &long_ingress, 0);
-        assert!(
-            name.len() <= 253,
-            "CR name exceeded 253 chars: {} chars",
-            name.len()
-        );
-    }
-
-    #[test]
-    fn test_arecord_cr_name_lowercase() {
-        let name = arecord_cr_name("PROD", "Default", "My-Ingress", 0);
-        assert_eq!(name, name.to_lowercase());
-    }
-
-    #[test]
-    fn test_arecord_cr_name_no_trailing_hyphen() {
-        let name = arecord_cr_name("prod", "default", "ingress", 0);
-        assert!(!name.ends_with('-'));
-    }
-
     // =========================================================================
     // resolve_ips (priority: annotation > default_ips > lb_status)
     // =========================================================================
-
-    fn ingress_with_lb_ip(ip: &str) -> Ingress {
-        Ingress {
-            status: Some(IngressStatus {
-                load_balancer: Some(IngressLoadBalancerStatus {
-                    ingress: Some(vec![IngressLoadBalancerIngress {
-                        ip: Some(ip.to_string()),
-                        hostname: None,
-                        ports: None,
-                    }]),
-                }),
-            }),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn test_resolve_ips_annotation_wins_over_defaults() {
-        let mut annotations = BTreeMap::new();
-        annotations.insert("bindy.firestoned.io/ip".to_string(), "1.2.3.4".to_string());
-        let defaults = vec!["9.9.9.9".to_string()];
-        let ingress = Ingress::default();
-        assert_eq!(
-            resolve_ips(&annotations, &defaults, &ingress),
-            Some(vec!["1.2.3.4".to_string()])
-        );
-    }
-
-    #[test]
-    fn test_resolve_ips_annotation_wins_over_lb_status() {
-        let mut annotations = BTreeMap::new();
-        annotations.insert("bindy.firestoned.io/ip".to_string(), "1.2.3.4".to_string());
-        let ingress = ingress_with_lb_ip("10.0.0.1");
-        assert_eq!(
-            resolve_ips(&annotations, &[], &ingress),
-            Some(vec!["1.2.3.4".to_string()])
-        );
-    }
-
-    #[test]
-    fn test_resolve_ips_defaults_win_over_lb_status() {
-        let annotations = BTreeMap::new();
-        let defaults = vec!["9.9.9.9".to_string(), "8.8.8.8".to_string()];
-        let ingress = ingress_with_lb_ip("10.0.0.1");
-        assert_eq!(
-            resolve_ips(&annotations, &defaults, &ingress),
-            Some(vec!["9.9.9.9".to_string(), "8.8.8.8".to_string()])
-        );
-    }
-
-    #[test]
-    fn test_resolve_ips_lb_status_fallback() {
-        let annotations = BTreeMap::new();
-        let ingress = ingress_with_lb_ip("10.0.0.1");
-        assert_eq!(
-            resolve_ips(&annotations, &[], &ingress),
-            Some(vec!["10.0.0.1".to_string()])
-        );
-    }
-
-    #[test]
-    fn test_resolve_ips_none_when_nothing_available() {
-        let annotations = BTreeMap::new();
-        let ingress = Ingress::default();
-        assert_eq!(resolve_ips(&annotations, &[], &ingress), None);
-    }
-
-    #[test]
-    fn test_resolve_ips_multiple_defaults_returned() {
-        let annotations = BTreeMap::new();
-        let defaults = vec![
-            "192.168.1.1".to_string(),
-            "192.168.1.2".to_string(),
-            "192.168.1.3".to_string(),
-        ];
-        let ingress = Ingress::default();
-        assert_eq!(
-            resolve_ips(&annotations, &defaults, &ingress),
-            Some(defaults.clone())
-        );
-    }
 
     // =========================================================================
     // is_being_deleted
@@ -1011,78 +872,9 @@ mod tests {
     // arecord_label_selector
     // =========================================================================
 
-    #[test]
-    fn test_arecord_label_selector_format() {
-        let selector = arecord_label_selector("prod", "my-ns", "my-ingress");
-        assert_eq!(
-            selector,
-            format!(
-                "{}={},{}=prod,{}=my-ns,{}=my-ingress",
-                LABEL_MANAGED_BY,
-                LABEL_MANAGED_BY_SCOUT,
-                LABEL_SOURCE_CLUSTER,
-                LABEL_SOURCE_NAMESPACE,
-                LABEL_SOURCE_NAME,
-            )
-        );
-    }
-
-    #[test]
-    fn test_arecord_label_selector_contains_all_keys() {
-        let selector = arecord_label_selector("prod", "ns", "ing");
-        assert!(selector.contains(LABEL_MANAGED_BY));
-        assert!(selector.contains(LABEL_SOURCE_CLUSTER));
-        assert!(selector.contains(LABEL_SOURCE_NAMESPACE));
-        assert!(selector.contains(LABEL_SOURCE_NAME));
-    }
-
     // =========================================================================
     // stale_arecord_label_selector
     // =========================================================================
-
-    #[test]
-    fn test_stale_arecord_label_selector_uses_not_equal_for_cluster() {
-        // Must use != so it matches ARecords from any previous cluster name,
-        // regardless of what that name was.
-        let selector =
-            stale_arecord_label_selector("new-cluster", "my-ns", "my-ingress", "example.com");
-        assert!(
-            selector.contains(&format!("{}!=new-cluster", LABEL_SOURCE_CLUSTER)),
-            "selector must use != for source-cluster: got {selector}"
-        );
-    }
-
-    #[test]
-    fn test_stale_arecord_label_selector_requires_matching_zone() {
-        // The zone clause is what prevents this selector from matching a live
-        // ARecord belonging to a genuinely different cluster that happens to
-        // share the same namespace + ingress name but publishes into a
-        // different DNS zone.
-        let selector =
-            stale_arecord_label_selector("new-cluster", "my-ns", "my-ingress", "example.com");
-        assert!(
-            selector.contains(&format!("{}=example.com", LABEL_ZONE)),
-            "selector must require an equality match on zone: got {selector}"
-        );
-    }
-
-    #[test]
-    fn test_stale_arecord_label_selector_still_filters_by_managed_by() {
-        let selector =
-            stale_arecord_label_selector("new-cluster", "my-ns", "my-ingress", "example.com");
-        assert!(
-            selector.contains(&format!("{}={}", LABEL_MANAGED_BY, LABEL_MANAGED_BY_SCOUT)),
-            "selector must still filter managed-by=scout"
-        );
-    }
-
-    #[test]
-    fn test_stale_arecord_label_selector_contains_namespace_and_ingress() {
-        let selector =
-            stale_arecord_label_selector("new-cluster", "my-ns", "my-ingress", "example.com");
-        assert!(selector.contains(&format!("{}=my-ns", LABEL_SOURCE_NAMESPACE)));
-        assert!(selector.contains(&format!("{}=my-ingress", LABEL_SOURCE_NAME)));
-    }
 
     // ------------------------------------------------------------------
     // is_valid_zone_label_value
@@ -1139,17 +931,6 @@ mod tests {
         assert!(!is_valid_zone_label_value("example.com/evil"));
         assert!(!is_valid_zone_label_value("example.com,other=value"));
         assert!(!is_valid_zone_label_value("example.com "));
-    }
-
-    #[test]
-    fn test_stale_arecord_label_selector_does_not_match_current_cluster() {
-        // The whole point: current cluster is excluded, not selected.
-        let selector = stale_arecord_label_selector("current", "ns", "ing", "example.com");
-        // Must NOT contain an equality match on the current cluster
-        assert!(
-            !selector.contains(&format!("{}=current", LABEL_SOURCE_CLUSTER)),
-            "selector must NOT positively select current cluster"
-        );
     }
 
     // =========================================================================
@@ -1385,575 +1166,17 @@ mod tests {
     // service_arecord_cr_name
     // =========================================================================
 
-    #[test]
-    fn test_service_arecord_cr_name_format() {
-        // scout-{cluster}-{namespace}-{service} — no index suffix
-        let name = service_arecord_cr_name("prod", "default", "my-svc");
-        assert_eq!(name, "scout-prod-default-my-svc");
-    }
-
-    #[test]
-    fn test_service_arecord_cr_name_sanitizes_underscores() {
-        let name = service_arecord_cr_name("prod", "my_namespace", "my_service");
-        assert_eq!(name, "scout-prod-my-namespace-my-service");
-    }
-
-    #[test]
-    fn test_service_arecord_cr_name_lowercase() {
-        let name = service_arecord_cr_name("PROD", "Default", "My-Service");
-        assert_eq!(name, name.to_lowercase());
-    }
-
-    #[test]
-    fn test_service_arecord_cr_name_max_253_chars() {
-        let long_cluster = "a".repeat(100);
-        let long_ns = "b".repeat(100);
-        let long_svc = "c".repeat(100);
-        let name = service_arecord_cr_name(&long_cluster, &long_ns, &long_svc);
-        assert!(
-            name.len() <= 253,
-            "CR name exceeded 253 chars: {} chars",
-            name.len()
-        );
-    }
-
     // =========================================================================
     // service_arecord_label_selector
     // =========================================================================
-
-    #[test]
-    fn test_service_arecord_label_selector_format() {
-        let selector = service_arecord_label_selector("prod", "my-ns", "my-svc");
-        assert_eq!(
-            selector,
-            format!(
-                "{}={},{}=prod,{}=my-ns,{}=my-svc",
-                LABEL_MANAGED_BY,
-                LABEL_MANAGED_BY_SCOUT,
-                LABEL_SOURCE_CLUSTER,
-                LABEL_SOURCE_NAMESPACE,
-                LABEL_SOURCE_NAME,
-            )
-        );
-    }
-
-    #[test]
-    fn test_service_arecord_label_selector_contains_all_keys() {
-        let selector = service_arecord_label_selector("prod", "ns", "svc");
-        assert!(selector.contains(LABEL_MANAGED_BY));
-        assert!(selector.contains(LABEL_SOURCE_CLUSTER));
-        assert!(selector.contains(LABEL_SOURCE_NAMESPACE));
-        assert!(selector.contains(LABEL_SOURCE_NAME));
-    }
 
     // =========================================================================
     // build_service_arecord
     // =========================================================================
 
-    #[test]
-    fn test_build_service_arecord_sets_source_service_label() {
-        let arecord = build_service_arecord(ServiceARecordParams {
-            name: "scout-prod-default-my-svc",
-            target_namespace: "bindy-system",
-            record_name: "my-svc",
-            ips: &["1.2.3.4".to_string()],
-            ttl: None,
-            cluster_name: "prod",
-            service_namespace: "default",
-            service_name: "my-svc",
-            zone: "example.com",
-        });
-
-        let labels = arecord.metadata.labels.as_ref().unwrap();
-        assert_eq!(
-            labels.get(LABEL_SOURCE_NAME).map(String::as_str),
-            Some("my-svc")
-        );
-    }
-
-    #[test]
-    fn test_build_service_arecord_sets_all_expected_labels() {
-        let arecord = build_service_arecord(ServiceARecordParams {
-            name: "scout-prod-default-my-svc",
-            target_namespace: "bindy-system",
-            record_name: "my-svc",
-            ips: &["10.0.0.1".to_string()],
-            ttl: Some(300),
-            cluster_name: "prod",
-            service_namespace: "default",
-            service_name: "my-svc",
-            zone: "example.com",
-        });
-
-        let labels = arecord.metadata.labels.as_ref().unwrap();
-        assert_eq!(
-            labels.get(LABEL_MANAGED_BY).map(String::as_str),
-            Some(LABEL_MANAGED_BY_SCOUT)
-        );
-        assert_eq!(
-            labels.get(LABEL_SOURCE_CLUSTER).map(String::as_str),
-            Some("prod")
-        );
-        assert_eq!(
-            labels.get(LABEL_SOURCE_NAMESPACE).map(String::as_str),
-            Some("default")
-        );
-        assert_eq!(
-            labels.get(LABEL_SOURCE_NAME).map(String::as_str),
-            Some("my-svc")
-        );
-        assert_eq!(
-            labels.get(LABEL_ZONE).map(String::as_str),
-            Some("example.com")
-        );
-    }
-
-    #[test]
-    fn test_build_service_arecord_uses_record_name_in_spec() {
-        let arecord = build_service_arecord(ServiceARecordParams {
-            name: "scout-prod-default-my-svc",
-            target_namespace: "bindy-system",
-            record_name: "my-svc",
-            ips: &["1.2.3.4".to_string()],
-            ttl: None,
-            cluster_name: "prod",
-            service_namespace: "default",
-            service_name: "my-svc",
-            zone: "example.com",
-        });
-
-        assert_eq!(arecord.spec.name, "my-svc");
-        assert_eq!(arecord.spec.ipv4_addresses, vec!["1.2.3.4".to_string()]);
-        assert_eq!(arecord.spec.ttl, None);
-    }
-
     // =========================================================================
-    // HTTPRoute & TLSRoute (Gateway API) — Phase 2 feature
+    // HTTPRoute & TLSRoute (Gateway API), Phase 2 feature
     // =========================================================================
-
-    #[test]
-    fn test_httproute_arecord_cr_name_single_hostname() {
-        // Arrange & Act
-        let name = crate::scout::httproute_arecord_cr_name("prod", "default", "api-route", 0);
-
-        // Assert
-        assert!(name.starts_with("scout-"));
-        assert!(name.contains("prod"));
-        assert!(name.contains("default"));
-        assert!(name.contains("api-route"));
-        assert!(name.contains("0")); // index suffix
-        assert!(!name.ends_with('-'));
-        assert!(name.len() <= 253); // K8s name length limit
-    }
-
-    #[test]
-    fn test_httproute_arecord_cr_name_multiple_indices() {
-        // Arrange & Act
-        let name0 = crate::scout::httproute_arecord_cr_name("prod", "default", "api-route", 0);
-        let name1 = crate::scout::httproute_arecord_cr_name("prod", "default", "api-route", 1);
-        let name2 = crate::scout::httproute_arecord_cr_name("prod", "default", "api-route", 2);
-
-        // Assert — each index produces a different CR name
-        assert_ne!(name0, name1);
-        assert_ne!(name1, name2);
-        // Verify indices are in the names
-        assert!(name0.contains("0"));
-        assert!(name1.contains("1"));
-        assert!(name2.contains("2"));
-    }
-
-    #[test]
-    fn test_httproute_arecord_cr_name_sanitization() {
-        // Arrange & Act
-        let name =
-            crate::scout::httproute_arecord_cr_name("prod_cluster", "kube-system", "My-Route", 5);
-
-        // Assert — underscores and uppercase should be sanitized
-        assert!(!name.contains("_"));
-        assert!(!name.contains('K'));
-        assert!(!name.contains('M'));
-        assert!(!name.ends_with('-'));
-    }
-
-    #[test]
-    fn test_tlsroute_arecord_cr_name_single_hostname() {
-        // Arrange & Act
-        let name = crate::scout::tlsroute_arecord_cr_name("prod", "default", "secure-route", 0);
-
-        // Assert
-        assert!(name.starts_with("scout-"));
-        assert!(name.contains("prod"));
-        assert!(name.contains("default"));
-        assert!(name.contains("secure-route"));
-        assert!(name.contains("0"));
-        assert!(!name.ends_with('-'));
-        assert!(name.len() <= 253);
-    }
-
-    #[test]
-    fn test_tlsroute_arecord_cr_name_multiple_indices() {
-        // Arrange & Act
-        let name0 = crate::scout::tlsroute_arecord_cr_name("prod", "default", "secure-route", 0);
-        let name1 = crate::scout::tlsroute_arecord_cr_name("prod", "default", "secure-route", 1);
-
-        // Assert
-        assert_ne!(name0, name1);
-        assert!(name0.contains("0"));
-        assert!(name1.contains("1"));
-    }
-
-    #[test]
-    fn test_httproute_arecord_label_selector() {
-        // Arrange & Act
-        let selector =
-            crate::scout::httproute_arecord_label_selector("prod", "default", "api-route");
-
-        // Assert
-        assert!(selector.contains(LABEL_MANAGED_BY));
-        assert!(selector.contains(LABEL_MANAGED_BY_SCOUT));
-        assert!(selector.contains("prod"));
-        assert!(selector.contains("default"));
-        assert!(selector.contains("api-route"));
-        assert!(selector.contains("source-name"));
-    }
-
-    #[test]
-    fn test_tlsroute_arecord_label_selector() {
-        // Arrange & Act
-        let selector =
-            crate::scout::tlsroute_arecord_label_selector("prod", "default", "secure-route");
-
-        // Assert
-        assert!(selector.contains(LABEL_MANAGED_BY));
-        assert!(selector.contains(LABEL_MANAGED_BY_SCOUT));
-        assert!(selector.contains("prod"));
-        assert!(selector.contains("default"));
-        assert!(selector.contains("secure-route"));
-        assert!(selector.contains("source-name"));
-    }
-
-    #[test]
-    fn test_httproute_and_tlsroute_selectors_share_source_name_label() {
-        // Arrange & Act
-        let http_selector =
-            crate::scout::httproute_arecord_label_selector("prod", "default", "route");
-        let tls_selector =
-            crate::scout::tlsroute_arecord_label_selector("prod", "default", "route");
-
-        // Both use the unified source-name label — selectors are structurally identical
-        assert_eq!(http_selector, tls_selector);
-        assert!(http_selector.contains("source-name=route"));
-    }
-
-    #[test]
-    fn test_stale_httproute_arecord_label_selector_uses_not_equal() {
-        // Arrange & Act
-        let selector = crate::scout::stale_httproute_arecord_label_selector(
-            "new-cluster",
-            "default",
-            "api-route",
-            "example.com",
-        );
-
-        // Assert
-        assert!(selector.contains(&format!("{}!=new-cluster", LABEL_SOURCE_CLUSTER)));
-        assert!(selector.contains("source-name=api-route"));
-        assert!(selector.contains("default"));
-    }
-
-    #[test]
-    fn test_stale_httproute_arecord_label_selector_requires_matching_zone() {
-        let selector = crate::scout::stale_httproute_arecord_label_selector(
-            "new-cluster",
-            "default",
-            "api-route",
-            "example.com",
-        );
-        assert!(
-            selector.contains(&format!("{}=example.com", LABEL_ZONE)),
-            "selector must require an equality match on zone: got {selector}"
-        );
-    }
-
-    #[test]
-    fn test_stale_tlsroute_arecord_label_selector_uses_not_equal() {
-        // Arrange & Act
-        let selector = crate::scout::stale_tlsroute_arecord_label_selector(
-            "new-cluster",
-            "default",
-            "secure-route",
-            "example.com",
-        );
-
-        // Assert
-        assert!(selector.contains(&format!("{}!=new-cluster", LABEL_SOURCE_CLUSTER)));
-        assert!(selector.contains("source-name=secure-route"));
-        assert!(selector.contains("default"));
-    }
-
-    #[test]
-    fn test_stale_tlsroute_arecord_label_selector_requires_matching_zone() {
-        let selector = crate::scout::stale_tlsroute_arecord_label_selector(
-            "new-cluster",
-            "default",
-            "secure-route",
-            "example.com",
-        );
-        assert!(
-            selector.contains(&format!("{}=example.com", LABEL_ZONE)),
-            "selector must require an equality match on zone: got {selector}"
-        );
-    }
-
-    #[test]
-    fn test_build_httproute_arecord_sets_expected_labels() {
-        // Arrange
-        let params = crate::scout::HTTPRouteARecordParams {
-            name: "scout-prod-default-api-route-0",
-            target_namespace: "bindy-system",
-            record_name: "api",
-            ips: &["10.0.0.1".to_string()],
-            ttl: Some(300),
-            cluster_name: "prod",
-            route_namespace: "default",
-            route_name: "api-route",
-            zone: "example.com",
-        };
-
-        // Act
-        let arecord = crate::scout::build_httproute_arecord(params);
-
-        // Assert
-        let labels = arecord.metadata.labels.as_ref().unwrap();
-        assert_eq!(
-            labels.get(LABEL_MANAGED_BY).map(String::as_str),
-            Some(LABEL_MANAGED_BY_SCOUT)
-        );
-        assert_eq!(
-            labels.get(LABEL_SOURCE_CLUSTER).map(String::as_str),
-            Some("prod")
-        );
-        assert_eq!(
-            labels.get(LABEL_SOURCE_NAMESPACE).map(String::as_str),
-            Some("default")
-        );
-        assert_eq!(
-            labels.get(LABEL_SOURCE_NAME).map(String::as_str),
-            Some("api-route")
-        );
-        assert_eq!(
-            labels.get(LABEL_ZONE).map(String::as_str),
-            Some("example.com")
-        );
-    }
-
-    #[test]
-    fn test_build_httproute_arecord_uses_record_name_in_spec() {
-        // Arrange
-        let params = crate::scout::HTTPRouteARecordParams {
-            name: "scout-prod-default-api-route-0",
-            target_namespace: "bindy-system",
-            record_name: "api",
-            ips: &["1.2.3.4".to_string()],
-            ttl: None,
-            cluster_name: "prod",
-            route_namespace: "default",
-            route_name: "api-route",
-            zone: "example.com",
-        };
-
-        // Act
-        let arecord = crate::scout::build_httproute_arecord(params);
-
-        // Assert
-        assert_eq!(arecord.spec.name, "api");
-        assert_eq!(arecord.spec.ipv4_addresses, vec!["1.2.3.4".to_string()]);
-        assert_eq!(arecord.spec.ttl, None);
-    }
-
-    #[test]
-    fn test_build_tlsroute_arecord_sets_expected_labels() {
-        // Arrange
-        let params = crate::scout::TLSRouteARecordParams {
-            name: "scout-prod-default-secure-route-0",
-            target_namespace: "bindy-system",
-            record_name: "secure",
-            ips: &["10.0.0.2".to_string()],
-            ttl: Some(600),
-            cluster_name: "prod",
-            route_namespace: "default",
-            route_name: "secure-route",
-            zone: "example.com",
-        };
-
-        // Act
-        let arecord = crate::scout::build_tlsroute_arecord(params);
-
-        // Assert
-        let labels = arecord.metadata.labels.as_ref().unwrap();
-        assert_eq!(
-            labels.get(LABEL_MANAGED_BY).map(String::as_str),
-            Some(LABEL_MANAGED_BY_SCOUT)
-        );
-        assert_eq!(
-            labels.get(LABEL_SOURCE_CLUSTER).map(String::as_str),
-            Some("prod")
-        );
-        assert_eq!(
-            labels.get(LABEL_SOURCE_NAME).map(String::as_str),
-            Some("secure-route")
-        );
-        assert_eq!(
-            labels.get(LABEL_ZONE).map(String::as_str),
-            Some("example.com")
-        );
-    }
-
-    #[test]
-    fn test_build_tlsroute_arecord_uses_record_name_in_spec() {
-        // Arrange
-        let params = crate::scout::TLSRouteARecordParams {
-            name: "scout-prod-default-secure-route-0",
-            target_namespace: "bindy-system",
-            record_name: "secure",
-            ips: &["5.6.7.8".to_string()],
-            ttl: Some(900),
-            cluster_name: "prod",
-            route_namespace: "default",
-            route_name: "secure-route",
-            zone: "example.com",
-        };
-
-        // Act
-        let arecord = crate::scout::build_tlsroute_arecord(params);
-
-        // Assert
-        assert_eq!(arecord.spec.name, "secure");
-        assert_eq!(arecord.spec.ipv4_addresses, vec!["5.6.7.8".to_string()]);
-        assert_eq!(arecord.spec.ttl, Some(900));
-    }
-
-    #[test]
-    fn test_tcproute_arecord_cr_name_single_hostname() {
-        let name = tcproute_arecord_cr_name("prod", "default", "database-route", 0);
-
-        assert!(name.starts_with("scout-"));
-        assert!(name.contains("prod"));
-        assert!(name.contains("default"));
-        assert!(name.contains("database-route"));
-        assert!(name.contains("0"));
-        assert!(!name.ends_with('-'));
-        assert!(name.len() <= 253);
-    }
-
-    #[test]
-    fn test_tcproute_arecord_label_selector_uses_source_labels() {
-        let selector = tcproute_arecord_label_selector("prod", "default", "database-route");
-
-        assert!(selector.contains(LABEL_MANAGED_BY));
-        assert!(selector.contains(LABEL_MANAGED_BY_SCOUT));
-        assert!(selector.contains("prod"));
-        assert!(selector.contains("default"));
-        assert!(selector.contains("database-route"));
-        assert!(selector.contains("source-name"));
-    }
-
-    #[test]
-    fn test_stale_tcproute_arecord_label_selector_uses_not_equal() {
-        let selector = stale_tcproute_arecord_label_selector(
-            "new-cluster",
-            "default",
-            "database-route",
-            "example.com",
-        );
-
-        assert!(selector.contains(&format!("{}!=new-cluster", LABEL_SOURCE_CLUSTER)));
-        assert!(selector.contains("source-name=database-route"));
-        assert!(selector.contains("default"));
-    }
-
-    #[test]
-    fn test_stale_tcproute_arecord_label_selector_requires_matching_zone() {
-        let selector = stale_tcproute_arecord_label_selector(
-            "new-cluster",
-            "default",
-            "database-route",
-            "example.com",
-        );
-        assert!(
-            selector.contains(&format!("{}=example.com", LABEL_ZONE)),
-            "selector must require an equality match on zone: got {selector}"
-        );
-    }
-
-    #[test]
-    fn test_build_tcproute_arecord_sets_expected_labels() {
-        let params = crate::scout::TCPRouteARecordParams {
-            name: "scout-prod-default-database-route-0",
-            target_namespace: "bindy-system",
-            record_name: "db",
-            ips: &["10.0.0.99".to_string()],
-            ttl: Some(120),
-            cluster_name: "prod",
-            route_namespace: "default",
-            route_name: "database-route",
-            zone: "example.com",
-        };
-
-        let arecord = crate::scout::build_tcproute_arecord(params);
-
-        let labels = arecord.metadata.labels.as_ref().unwrap();
-        assert_eq!(
-            labels.get(LABEL_MANAGED_BY).map(String::as_str),
-            Some(LABEL_MANAGED_BY_SCOUT)
-        );
-        assert_eq!(
-            labels.get(LABEL_SOURCE_CLUSTER).map(String::as_str),
-            Some("prod")
-        );
-        assert_eq!(
-            labels.get(LABEL_SOURCE_NAMESPACE).map(String::as_str),
-            Some("default")
-        );
-        assert_eq!(
-            labels.get(LABEL_SOURCE_NAME).map(String::as_str),
-            Some("database-route")
-        );
-        assert_eq!(
-            labels.get(LABEL_ZONE).map(String::as_str),
-            Some("example.com")
-        );
-    }
-
-    #[test]
-    fn test_httproute_arecord_cr_name_respects_length_limit() {
-        // Arrange — a very long HTTPRoute name
-        let long_route_name = "my-long-route-name-that-is-very-very-very-very-very-very-very-very-very-very-very-very-very-very-long";
-
-        // Act
-        let name = crate::scout::httproute_arecord_cr_name("prod", "default", long_route_name, 99);
-
-        // Assert
-        assert!(
-            name.len() <= 253,
-            "HTTPRoute CR name must not exceed 253 chars"
-        );
-    }
-
-    #[test]
-    fn test_tlsroute_arecord_cr_name_respects_length_limit() {
-        // Arrange — a very long TLSRoute name
-        let long_route_name = "my-long-route-name-that-is-very-very-very-very-very-very-very-very-very-very-very-very-very-very-long";
-
-        // Act
-        let name = crate::scout::tlsroute_arecord_cr_name("prod", "default", long_route_name, 99);
-
-        // Assert
-        assert!(
-            name.len() <= 253,
-            "TLSRoute CR name must not exceed 253 chars"
-        );
-    }
 
     // =========================================================================
     // Builder ↔ override-annotation contract
@@ -1975,8 +1198,9 @@ mod tests {
             ips: &["10.0.0.1".to_string()],
             ttl: None,
             cluster_name: "prod",
-            ingress_namespace: "default",
-            ingress_name: "my-ingress",
+            source_kind: "Ingress",
+            source_namespace: "default",
+            source_name: "my-ingress",
             zone: "example.com",
         });
 
@@ -1994,8 +1218,9 @@ mod tests {
             ips: &["10.0.0.1".to_string()],
             ttl: None,
             cluster_name: "prod",
-            ingress_namespace: "default",
-            ingress_name: "apex",
+            source_kind: "Ingress",
+            source_namespace: "default",
+            source_name: "apex",
             zone: "example.com",
         });
 
@@ -2004,7 +1229,7 @@ mod tests {
 
     #[test]
     fn test_build_arecord_propagates_multi_ip_in_order() {
-        // Simulates resolve_ips_from_annotation returning a 3-IP list — order preserved
+        // Simulates resolve_ips_from_annotation returning a 3-IP list; order preserved
         let ips = vec![
             "10.0.0.1".to_string(),
             "10.0.0.2".to_string(),
@@ -2017,122 +1242,17 @@ mod tests {
             ips: &ips,
             ttl: None,
             cluster_name: "prod",
-            ingress_namespace: "default",
-            ingress_name: "multi",
+            source_kind: "Ingress",
+            source_namespace: "default",
+            source_name: "multi",
             zone: "example.com",
         });
 
         assert_eq!(arecord.spec.ipv4_addresses, ips);
-    }
-
-    #[test]
-    fn test_build_service_arecord_propagates_multi_ip_in_order() {
-        let ips = vec!["1.2.3.4".to_string(), "5.6.7.8".to_string()];
-        let arecord = build_service_arecord(ServiceARecordParams {
-            name: "scout-prod-default-my-svc",
-            target_namespace: "bindy-system",
-            record_name: "my-svc",
-            ips: &ips,
-            ttl: None,
-            cluster_name: "prod",
-            service_namespace: "default",
-            service_name: "my-svc",
-            zone: "example.com",
-        });
-
-        assert_eq!(arecord.spec.ipv4_addresses, ips);
-    }
-
-    #[test]
-    fn test_build_service_arecord_accepts_apex_record_name() {
-        let arecord = build_service_arecord(ServiceARecordParams {
-            name: "scout-prod-default-apex-svc",
-            target_namespace: "bindy-system",
-            record_name: "@",
-            ips: &["1.2.3.4".to_string()],
-            ttl: None,
-            cluster_name: "prod",
-            service_namespace: "default",
-            service_name: "apex-svc",
-            zone: "example.com",
-        });
-
-        assert_eq!(arecord.spec.name, "@");
-    }
-
-    #[test]
-    fn test_build_httproute_arecord_propagates_multi_ip_in_order() {
-        let ips = vec!["10.0.0.1".to_string(), "10.0.0.2".to_string()];
-        let arecord = crate::scout::build_httproute_arecord(crate::scout::HTTPRouteARecordParams {
-            name: "scout-prod-default-api-route-0",
-            target_namespace: "bindy-system",
-            record_name: "api",
-            ips: &ips,
-            ttl: None,
-            cluster_name: "prod",
-            route_namespace: "default",
-            route_name: "api-route",
-            zone: "example.com",
-        });
-
-        assert_eq!(arecord.spec.ipv4_addresses, ips);
-    }
-
-    #[test]
-    fn test_build_httproute_arecord_accepts_apex_record_name() {
-        let arecord = crate::scout::build_httproute_arecord(crate::scout::HTTPRouteARecordParams {
-            name: "scout-prod-default-apex-route-0",
-            target_namespace: "bindy-system",
-            record_name: "@",
-            ips: &["10.0.0.1".to_string()],
-            ttl: None,
-            cluster_name: "prod",
-            route_namespace: "default",
-            route_name: "apex-route",
-            zone: "example.com",
-        });
-
-        assert_eq!(arecord.spec.name, "@");
-    }
-
-    #[test]
-    fn test_build_tlsroute_arecord_propagates_multi_ip_in_order() {
-        let ips = vec!["5.6.7.8".to_string(), "9.10.11.12".to_string()];
-        let arecord = crate::scout::build_tlsroute_arecord(crate::scout::TLSRouteARecordParams {
-            name: "scout-prod-default-secure-route-0",
-            target_namespace: "bindy-system",
-            record_name: "secure",
-            ips: &ips,
-            ttl: Some(900),
-            cluster_name: "prod",
-            route_namespace: "default",
-            route_name: "secure-route",
-            zone: "example.com",
-        });
-
-        assert_eq!(arecord.spec.ipv4_addresses, ips);
-        assert_eq!(arecord.spec.ttl, Some(900));
-    }
-
-    #[test]
-    fn test_build_tlsroute_arecord_accepts_apex_record_name() {
-        let arecord = crate::scout::build_tlsroute_arecord(crate::scout::TLSRouteARecordParams {
-            name: "scout-prod-default-apex-tls-0",
-            target_namespace: "bindy-system",
-            record_name: "@",
-            ips: &["5.6.7.8".to_string()],
-            ttl: None,
-            cluster_name: "prod",
-            route_namespace: "default",
-            route_name: "apex-tls",
-            zone: "example.com",
-        });
-
-        assert_eq!(arecord.spec.name, "@");
     }
 
     // ========================================================================
-    // Gateway-chain IP resolution — pure helpers
+    // Gateway-chain IP resolution: pure helpers
     // ========================================================================
 
     fn gateway_fixture(class: &str, addresses: serde_json::Value) -> Gateway {
@@ -2171,7 +1291,8 @@ mod tests {
 
     #[test]
     fn test_parse_gateway_services_valid_map_by_name() {
-        let m = parse_gateway_services("traefik=traefik/traefik,cilium=kube-system/cilium-gw");
+        let m = parse_gateway_services("traefik=traefik/traefik,cilium=kube-system/cilium-gw")
+            .expect("valid map");
         assert_eq!(m.len(), 2);
         assert_eq!(
             m.get("traefik"),
@@ -2193,7 +1314,8 @@ mod tests {
     fn test_parse_gateway_services_by_label_selector() {
         // A target whose Service part contains `=` is a label selector, scoped to
         // the namespace before the first `/`. The selector's own `/` is preserved.
-        let m = parse_gateway_services("traefik=traefik/app.kubernetes.io/name=traefik");
+        let m = parse_gateway_services("traefik=traefik/app.kubernetes.io/name=traefik")
+            .expect("valid map");
         assert_eq!(
             m.get("traefik"),
             Some(&GatewayServiceTarget::Labeled {
@@ -2205,7 +1327,7 @@ mod tests {
 
     #[test]
     fn test_parse_gateway_service_entry_multi_label_selector() {
-        // Multi-label selectors contain commas — parsed per-entry (the CLI path)
+        // Multi-label selectors contain commas; parsed per-entry (the CLI path)
         // so the commas stay inside the selector.
         let (class, target) =
             parse_gateway_service_entry("traefik=traefik/app=traefik,tier=edge").expect("parses");
@@ -2220,21 +1342,25 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_gateway_services_skips_malformed_entries() {
-        // "bad" has no target; "=x/y" has empty class; "dup=onlyname" has no ns/name
-        // slash and no `=` selector; only the good entry survives.
-        let m = parse_gateway_services("traefik=traefik/traefik,bad,=x/y,dup=onlyname");
-        assert_eq!(m.len(), 1);
-        assert!(matches!(
-            m.get("traefik"),
-            Some(GatewayServiceTarget::Name(_))
-        ));
+    fn test_parse_gateway_services_rejects_malformed_entries() {
+        // ADR-0022 Decision 6: a malformed entry fails startup instead of being
+        // silently dropped. "bad" has no target; "=x/y" has an empty class;
+        // "dup=onlyname" has no ns/name slash and no `=` selector.
+        for bad in ["bad", "=x/y", "dup=onlyname"] {
+            let err = parse_gateway_services(&format!("traefik=traefik/traefik,{bad}"))
+                .expect_err("a malformed entry must be rejected");
+            assert!(err.to_string().contains(bad), "{err}");
+        }
     }
 
     #[test]
     fn test_parse_gateway_services_empty() {
-        assert!(parse_gateway_services("").is_empty());
-        assert!(parse_gateway_services("   ").is_empty());
+        assert!(parse_gateway_services("")
+            .expect("empty is valid")
+            .is_empty());
+        assert!(parse_gateway_services("   ")
+            .expect("blank is valid")
+            .is_empty());
     }
 
     #[test]
@@ -2379,7 +1505,7 @@ mod tests {
             gateway_addresses_as_ips(&gw).is_empty(),
             "fixture has no status.addresses"
         );
-        let services = parse_gateway_services("traefik=traefik/traefik-ssc-01");
+        let services = parse_gateway_services("traefik=traefik/traefik-ssc-01").expect("valid map");
         assert!(
             services.contains_key(&gw.spec.gateway_class_name),
             "class must be in gateway_services for LB-service fallback"
@@ -2392,90 +1518,41 @@ mod tests {
         let gw = gateway_fixture("traefik", serde_json::json!([]));
 
         assert!(gateway_addresses_as_ips(&gw).is_empty());
-        let services = parse_gateway_services("cilium=kube-system/cilium-gw");
+        let services = parse_gateway_services("cilium=kube-system/cilium-gw").expect("valid map");
         assert!(
             !services.contains_key(&gw.spec.gateway_class_name),
             "traefik class absent from services map — no fallback"
         );
     }
 
-    #[test]
-    fn test_reconcile_tcproute_smoke_builds_arecord_from_annotation() {
-        // Smoke test: verify reconcile_tcproute's code path — get_record_name_annotation drives
-        // the record name and build_tcproute_arecord produces the expected ARecord CR.
-        let mut annotations = BTreeMap::new();
-        annotations.insert(
-            "bindy.firestoned.io/record-name".to_string(),
-            "db".to_string(),
-        );
-
-        let zone = "example.com";
-        let record_name = get_record_name_annotation(&annotations).expect("annotation present");
-
-        let ips = vec!["10.0.0.5".to_string()];
-        // reconcile_tcproute always uses index 0 — TCPRoute produces exactly one ARecord.
-        let cr_name = tcproute_arecord_cr_name("test-cluster", "default", "my-tcproute", 0);
-
-        let arecord = build_tcproute_arecord(TCPRouteARecordParams {
-            name: &cr_name,
-            target_namespace: "bindy-system",
-            record_name: &record_name,
-            ips: &ips,
-            ttl: Some(300),
-            cluster_name: "test-cluster",
-            route_namespace: "default",
-            route_name: "my-tcproute",
-            zone,
-        });
-
-        assert_eq!(arecord.spec.name, record_name);
-        assert_eq!(arecord.spec.ipv4_addresses, ips);
-        assert_eq!(arecord.spec.ttl, Some(300));
-    }
-
     // ------------------------------------------------------------------
-    // delete_stale_cluster_*_arecords (issue #474)
+    // log_unscoped_stale_cluster_arecord_candidates
     //
-    // The selector-builder tests above prove the *string* carries a zone
-    // clause. These prove the zone value actually reaches the API request —
-    // exactly the class of bug where a fix wires the right value into the
-    // wrong call (or drops it), which a selector-string-only test can't
-    // catch because it never calls the delete function at all.
+    // Exercised on the delete/opt-out paths when no usable zone resolves.
+    // It must ask for candidates with an unscoped (no zone clause) selector
+    // (there is no zone to scope by), once for the source's kind and once
+    // for legacy records, and it must never issue a DELETE: it is a
+    // diagnostic, not a cleanup.
     // ------------------------------------------------------------------
 
-    /// An ARecord, as the API server would return it in a list, carrying the
-    /// labels Scout uses to identify ownership and scope stale-cleanup.
+    /// An ARecord, as the API server would return it in a list.
     fn arecord_item(name: &str, source_cluster: &str, zone: &str) -> serde_json::Value {
-        let mut labels = serde_json::Map::new();
-        labels.insert(
-            LABEL_MANAGED_BY.to_string(),
-            serde_json::json!(LABEL_MANAGED_BY_SCOUT),
-        );
-        labels.insert(
-            LABEL_SOURCE_CLUSTER.to_string(),
-            serde_json::json!(source_cluster),
-        );
-        labels.insert(
-            LABEL_SOURCE_NAMESPACE.to_string(),
-            serde_json::json!("team-checkout"),
-        );
-        labels.insert(
-            LABEL_SOURCE_NAME.to_string(),
-            serde_json::json!("web-frontend"),
-        );
-        labels.insert(LABEL_ZONE.to_string(), serde_json::json!(zone));
         serde_json::json!({
             "apiVersion": "bindy.firestoned.io/v1beta1",
             "kind": "ARecord",
             "metadata": {
                 "name": name,
                 "namespace": "bindy-system",
-                "labels": serde_json::Value::Object(labels),
+                "labels": {
+                    LABEL_MANAGED_BY: LABEL_MANAGED_BY_SCOUT,
+                    LABEL_SOURCE_CLUSTER: source_cluster,
+                    LABEL_SOURCE_KIND: "Ingress",
+                    LABEL_SOURCE_NAMESPACE: "team-checkout",
+                    LABEL_SOURCE_NAME: "web-frontend",
+                    LABEL_ZONE: zone,
+                },
             },
-            "spec": {
-                "name": "web-frontend",
-                "ipv4Addresses": ["10.0.0.1"],
-            }
+            "spec": { "name": "web-frontend", "ipv4Addresses": ["10.0.0.1"] }
         })
     }
 
@@ -2491,215 +1568,49 @@ mod tests {
     const ARECORD_LIST_PATH: &str =
         "/apis/bindy.firestoned.io/v1beta1/namespaces/bindy-system/arecords";
 
-    #[tokio::test]
-    async fn delete_stale_cluster_arecords_scopes_list_request_by_zone() {
-        // Reproduces the fix's premise directly: south's cleanup call for
-        // its own zone must ask the API server for records in that zone —
-        // not silently fall back to an unscoped (or wrong-zone) query, which
-        // is exactly how north's live ARecord got deleted before the fix.
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path(ARECORD_LIST_PATH))
-            .and(wiremock::matchers::query_param_contains(
-                "labelSelector",
-                format!("{LABEL_ZONE}=zone-beta.example.internal"),
-            ))
-            .respond_with(ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![])))
-            .mount(&server)
-            .await;
-
-        let result = crate::scout::delete_stale_cluster_arecords(
-            &client_for(&server),
-            "bindy-system",
-            "south",
-            "team-checkout",
-            "web-frontend",
-            "zone-beta.example.internal",
-        )
-        .await;
-
-        assert!(
-            result.is_ok(),
-            "expected the zone-scoped selector to match the mock, got {result:?}"
-        );
+    fn web_frontend() -> SourceRef {
+        SourceRef {
+            kind: "Ingress",
+            namespace: "team-checkout".to_string(),
+            name: "web-frontend".to_string(),
+        }
     }
-
-    #[tokio::test]
-    async fn delete_stale_cluster_arecords_deletes_only_returned_records() {
-        // The delete loop itself: whatever the (server-side-filtered) list
-        // returns is what gets deleted — no additional client-side filtering
-        // to get backwards. The `labelSelector` matcher below also guards
-        // against this test passing vacuously if zone scoping regressed.
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path(ARECORD_LIST_PATH))
-            .and(wiremock::matchers::query_param_contains(
-                "labelSelector",
-                format!("{LABEL_ZONE}=zone-beta.example.internal"),
-            ))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![arecord_item(
-                    "scout-north-team-checkout-web-frontend-0",
-                    "north",
-                    "zone-beta.example.internal",
-                )])),
-            )
-            .mount(&server)
-            .await;
-        Mock::given(method("DELETE"))
-            .and(path(format!(
-                "{ARECORD_LIST_PATH}/scout-north-team-checkout-web-frontend-0"
-            )))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "apiVersion": "bindy.firestoned.io/v1beta1",
-                "kind": "ARecord",
-                "metadata": {"name": "scout-north-team-checkout-web-frontend-0"},
-                "spec": {"name": "web-frontend", "ipv4Addresses": ["10.0.0.1"]},
-            })))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let result = crate::scout::delete_stale_cluster_arecords(
-            &client_for(&server),
-            "bindy-system",
-            "south",
-            "team-checkout",
-            "web-frontend",
-            "zone-beta.example.internal",
-        )
-        .await;
-
-        assert!(result.is_ok(), "got {result:?}");
-        // wiremock's `.expect(1)` above is verified when `server` drops.
-    }
-
-    #[tokio::test]
-    async fn delete_stale_cluster_httproute_arecords_scopes_list_request_by_zone() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path(ARECORD_LIST_PATH))
-            .and(wiremock::matchers::query_param_contains(
-                "labelSelector",
-                format!("{LABEL_ZONE}=zone-beta.example.internal"),
-            ))
-            .respond_with(ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![])))
-            .mount(&server)
-            .await;
-
-        let result = crate::scout::delete_stale_cluster_httproute_arecords(
-            &client_for(&server),
-            "bindy-system",
-            "south",
-            "team-checkout",
-            "web-frontend",
-            "zone-beta.example.internal",
-        )
-        .await;
-
-        assert!(result.is_ok(), "got {result:?}");
-    }
-
-    #[tokio::test]
-    async fn delete_stale_cluster_tlsroute_arecords_scopes_list_request_by_zone() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path(ARECORD_LIST_PATH))
-            .and(wiremock::matchers::query_param_contains(
-                "labelSelector",
-                format!("{LABEL_ZONE}=zone-beta.example.internal"),
-            ))
-            .respond_with(ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![])))
-            .mount(&server)
-            .await;
-
-        let result = crate::scout::delete_stale_cluster_tlsroute_arecords(
-            &client_for(&server),
-            "bindy-system",
-            "south",
-            "team-checkout",
-            "web-frontend",
-            "zone-beta.example.internal",
-        )
-        .await;
-
-        assert!(result.is_ok(), "got {result:?}");
-    }
-
-    #[tokio::test]
-    async fn delete_stale_cluster_tcproute_arecords_scopes_list_request_by_zone() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path(ARECORD_LIST_PATH))
-            .and(wiremock::matchers::query_param_contains(
-                "labelSelector",
-                format!("{LABEL_ZONE}=zone-beta.example.internal"),
-            ))
-            .respond_with(ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![])))
-            .mount(&server)
-            .await;
-
-        let result = crate::scout::delete_stale_cluster_tcproute_arecords(
-            &client_for(&server),
-            "bindy-system",
-            "south",
-            "team-checkout",
-            "web-frontend",
-            "zone-beta.example.internal",
-        )
-        .await;
-
-        assert!(result.is_ok(), "got {result:?}");
-    }
-
-    // ------------------------------------------------------------------
-    // log_unscoped_stale_cluster_arecord_candidates
-    //
-    // Exercised on the delete/opt-out paths when no usable zone resolves.
-    // It must ask for candidates with an unscoped (no zone clause) selector
-    // — that's the whole point, there's no zone to scope by — and it must
-    // never issue a DELETE: it is a diagnostic, not a cleanup.
-    // ------------------------------------------------------------------
 
     #[tokio::test]
     async fn log_unscoped_stale_cluster_arecord_candidates_omits_zone_clause() {
         let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path(ARECORD_LIST_PATH))
-            .and(wiremock::matchers::query_param(
-                "labelSelector",
-                format!(
-                    "{}={},{}!=south,{}=team-checkout,{}=web-frontend",
-                    LABEL_MANAGED_BY,
-                    LABEL_MANAGED_BY_SCOUT,
-                    LABEL_SOURCE_CLUSTER,
-                    LABEL_SOURCE_NAMESPACE,
-                    LABEL_SOURCE_NAME,
-                ),
-            ))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![arecord_item(
-                    "scout-north-team-checkout-web-frontend-0",
-                    "north",
-                    "zone-beta.example.internal",
-                )])),
-            )
-            .expect(1)
-            .mount(&server)
-            .await;
+        for kind_clause in [
+            format!("{LABEL_SOURCE_KIND}=Ingress"),
+            format!("!{LABEL_SOURCE_KIND}"),
+        ] {
+            Mock::given(method("GET"))
+                .and(path(ARECORD_LIST_PATH))
+                .and(wiremock::matchers::query_param(
+                    "labelSelector",
+                    format!(
+                        "{LABEL_MANAGED_BY}={LABEL_MANAGED_BY_SCOUT},{LABEL_SOURCE_CLUSTER}!=south,\
+                         {kind_clause},{LABEL_SOURCE_NAMESPACE}=team-checkout,\
+                         {LABEL_SOURCE_NAME}=web-frontend"
+                    ),
+                ))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![
+                        arecord_item("scout-north-x-0", "north", "zone-beta.example.internal"),
+                    ])),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
 
         log_unscoped_stale_cluster_arecord_candidates(
             &client_for(&server),
             "bindy-system",
             "south",
-            "Ingress",
-            "team-checkout",
-            "web-frontend",
+            &web_frontend(),
         )
         .await;
-
-        // wiremock's `.expect(1)` above is verified when `server` drops —
-        // proving the request had exactly this unscoped selector.
+        // `.expect(1)` on both mocks is verified when `server` drops.
     }
 
     #[tokio::test]
@@ -2709,21 +1620,14 @@ mod tests {
             .and(path(ARECORD_LIST_PATH))
             .respond_with(
                 ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![arecord_item(
-                    "scout-north-team-checkout-web-frontend-0",
+                    "scout-north-x-0",
                     "north",
                     "zone-beta.example.internal",
                 )])),
             )
             .mount(&server)
             .await;
-        // No DELETE mock is mounted at all — if the diagnostic ever issued
-        // one, wiremock would return its default 404 and this test's intent
-        // (verified indirectly: nothing panics, nothing errors) would still
-        // hold, so assert explicitly that DELETE is never called.
         Mock::given(method("DELETE"))
-            .and(path(format!(
-                "{ARECORD_LIST_PATH}/scout-north-team-checkout-web-frontend-0"
-            )))
             .respond_with(ResponseTemplate::new(200))
             .expect(0)
             .mount(&server)
@@ -2733,9 +1637,7 @@ mod tests {
             &client_for(&server),
             "bindy-system",
             "south",
-            "Ingress",
-            "team-checkout",
-            "web-frontend",
+            &web_frontend(),
         )
         .await;
     }
@@ -2755,12 +1657,413 @@ mod tests {
             &client_for(&server),
             "bindy-system",
             "south",
-            "Ingress",
-            "team-checkout",
-            "web-frontend",
+            &web_frontend(),
         )
         .await;
-        // No panic — that's the assertion.
+        // No panic: that's the assertion.
+    }
+
+    // =========================================================================
+    // ADR-0022: record names, selectors, TTL, IPv4, record-name planning
+    // =========================================================================
+
+    #[test]
+    fn arecord_cr_name_is_readable_prefix_hash_and_index() {
+        let hash = source_identity_hash("prod", "Ingress", "default", "my-ingress");
+        assert_eq!(hash.len(), 8);
+        assert!(hash
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert_eq!(
+            arecord_cr_name("prod", "Ingress", "default", "my-ingress", 2),
+            format!("scout-prod-default-my-ingress-{hash}-2")
+        );
+    }
+
+    #[test]
+    fn source_identity_hash_is_the_sha256_of_the_nul_joined_identity() {
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(b"prod\0Ingress\0default\0my-ingress");
+        let expected: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
+        assert_eq!(
+            source_identity_hash("prod", "Ingress", "default", "my-ingress"),
+            expected
+        );
+    }
+
+    #[test]
+    fn arecord_cr_name_differs_by_kind() {
+        let names: std::collections::BTreeSet<String> =
+            ["Ingress", "Service", "HTTPRoute", "TLSRoute", "TCPRoute"]
+                .iter()
+                .map(|k| arecord_cr_name("prod", k, "default", "web", 0))
+                .collect();
+        assert_eq!(names.len(), 5);
+    }
+
+    #[test]
+    fn arecord_cr_name_differs_when_joined_namespace_and_name_collide() {
+        let a = arecord_cr_name("prod", "Ingress", "team-a", "web", 0);
+        let b = arecord_cr_name("prod", "Ingress", "team", "a-web", 0);
+        assert_ne!(a, b);
+        // The readable parts are equal: only the hash tells them apart.
+        assert_eq!(a.rsplitn(3, '-').nth(2), b.rsplitn(3, '-').nth(2));
+    }
+
+    #[test]
+    fn arecord_cr_name_sanitizes_and_lowercases() {
+        let name = arecord_cr_name("PROD", "Ingress", "My_Namespace", "My.Ingress", 1);
+        assert!(name.starts_with("scout-prod-my-namespace-my-ingress-"));
+        assert_eq!(name, name.to_lowercase());
+    }
+
+    #[test]
+    fn arecord_cr_name_fits_253_chars_and_keeps_hash_and_index() {
+        let long = "c".repeat(300);
+        let name = arecord_cr_name("prod", "Ingress", "default", &long, 7);
+        assert_eq!(name.len(), 253);
+        let hash = source_identity_hash("prod", "Ingress", "default", &long);
+        assert!(name.ends_with(&format!("-{hash}-7")));
+    }
+
+    #[test]
+    fn arecord_cr_name_never_leaves_a_hyphen_at_the_truncation_point() {
+        // Try every cut position: a hyphen-separated readable part lands a
+        // hyphen on the boundary for one of them.
+        for pad in 0..20 {
+            let name_part = format!("{}-{}", "a".repeat(200 + pad), "b".repeat(60));
+            let name = arecord_cr_name("prod", "Ingress", "default", &name_part, 0);
+            assert!(name.len() <= 253, "{} chars", name.len());
+            assert!(!name.contains("--"), "double hyphen in {name}");
+            assert!(name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'));
+            assert!(!name.starts_with('-') && !name.ends_with('-'));
+        }
+    }
+
+    #[test]
+    fn own_selector_carries_the_source_kind() {
+        assert_eq!(
+            arecord_label_selector("prod", "HTTPRoute", "team-a", "web"),
+            format!(
+                "{LABEL_MANAGED_BY}={LABEL_MANAGED_BY_SCOUT},{LABEL_SOURCE_CLUSTER}=prod,\
+                 {LABEL_SOURCE_KIND}=HTTPRoute,{LABEL_SOURCE_NAMESPACE}=team-a,{LABEL_SOURCE_NAME}=web"
+            )
+        );
+    }
+
+    #[test]
+    fn legacy_selector_requires_the_source_kind_to_be_absent() {
+        let selector = legacy_arecord_label_selector("prod", "team-a", "web");
+        assert!(selector.contains(&format!(",!{LABEL_SOURCE_KIND},")));
+        assert!(selector.contains(&format!("{LABEL_SOURCE_CLUSTER}=prod")));
+        assert!(selector.contains(&format!("{LABEL_SOURCE_NAME}=web")));
+    }
+
+    #[test]
+    fn stale_selector_excludes_the_current_cluster_and_scopes_kind_and_zone() {
+        let s = stale_arecord_label_selector(
+            "south",
+            StaleKind::Kind("Service"),
+            "team-a",
+            "web",
+            "example.com",
+        );
+        assert_eq!(
+            s,
+            format!(
+                "{},{LABEL_ZONE}=example.com",
+                stale_selector_base("south", StaleKind::Kind("Service"), "team-a", "web")
+            )
+        );
+        assert!(s.contains(&format!("{LABEL_SOURCE_CLUSTER}!=south")));
+        assert!(s.contains(&format!("{LABEL_SOURCE_KIND}=Service")));
+        assert!(
+            !stale_selector_base("south", StaleKind::Legacy, "team-a", "web").contains(LABEL_ZONE)
+        );
+        assert!(
+            stale_selector_base("south", StaleKind::Legacy, "team-a", "web")
+                .contains(&format!("!{LABEL_SOURCE_KIND}"))
+        );
+    }
+
+    #[test]
+    fn build_arecord_stamps_every_ownership_label() {
+        let ar = crate::scout::build_arecord(crate::scout::ARecordParams {
+            name: "n",
+            target_namespace: "bindy-system",
+            record_name: "api",
+            ips: &["10.0.0.1".to_string()],
+            ttl: Some(300),
+            cluster_name: "prod",
+            source_kind: "TLSRoute",
+            source_namespace: "team-a",
+            source_name: "web",
+            zone: "example.com",
+        });
+        let labels = ar.metadata.labels.expect("labels");
+        assert_eq!(labels[LABEL_MANAGED_BY], LABEL_MANAGED_BY_SCOUT);
+        assert_eq!(labels[LABEL_SOURCE_CLUSTER], "prod");
+        assert_eq!(labels[LABEL_SOURCE_KIND], "TLSRoute");
+        assert_eq!(labels[LABEL_SOURCE_NAMESPACE], "team-a");
+        assert_eq!(labels[LABEL_SOURCE_NAME], "web");
+        assert_eq!(labels[LABEL_ZONE], "example.com");
+        assert_eq!(ar.spec.ttl, Some(300));
+    }
+
+    fn ttl(value: &str) -> std::collections::BTreeMap<String, String> {
+        [(ANNOTATION_TTL.to_string(), value.to_string())].into()
+    }
+
+    #[test]
+    fn parse_ttl_annotation_accepts_absent_and_positive_values() {
+        assert_eq!(
+            parse_ttl_annotation(&BTreeMap::new()).expect("absent"),
+            None
+        );
+        assert_eq!(parse_ttl_annotation(&ttl("300")).expect("300"), Some(300));
+        assert_eq!(
+            parse_ttl_annotation(&ttl(" 60 ")).expect("trimmed"),
+            Some(60)
+        );
+    }
+
+    #[test]
+    fn parse_ttl_annotation_rejects_anything_but_a_positive_integer() {
+        for bad in ["", "abc", "0", "-5", "1.5", "99999999999"] {
+            assert!(
+                parse_ttl_annotation(&ttl(bad)).is_err(),
+                "{bad:?} must be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn retain_ipv4_keeps_only_ipv4_in_order() {
+        let ips = ["10.0.0.2", "2001:db8::1", "not-an-ip", "10.0.0.1"].map(ToString::to_string);
+        assert_eq!(retain_ipv4(ips, "test"), vec!["10.0.0.2", "10.0.0.1"]);
+    }
+
+    #[test]
+    fn lb_status_ips_skip_non_ipv4_entries() {
+        let ingress: Ingress = serde_json::from_value(serde_json::json!({
+            "metadata": {"name": "web"},
+            "status": {"loadBalancer": {"ingress": [{"ip": "2001:db8::1"}, {"ip": "10.0.0.9"}]}}
+        }))
+        .expect("valid Ingress");
+        assert_eq!(
+            resolve_ip_from_lb_status(&ingress),
+            Some("10.0.0.9".to_string())
+        );
+        let svc: Service = serde_json::from_value(serde_json::json!({
+            "metadata": {"name": "db"},
+            "status": {"loadBalancer": {"ingress": [{"ip": "2001:db8::1"}]}}
+        }))
+        .expect("valid Service");
+        assert_eq!(resolve_ip_from_service_lb_status(&svc), None);
+    }
+
+    #[test]
+    fn gateway_addresses_skip_non_ipv4_entries() {
+        let gw = gateway_fixture(
+            "traefik",
+            serde_json::json!([
+                { "type": "IPAddress", "value": "2001:db8::1" },
+                { "value": "2001:db8::2" },
+                { "type": "IPAddress", "value": "203.0.113.5" }
+            ]),
+        );
+        assert_eq!(
+            gateway_addresses_as_ips(&gw),
+            vec!["203.0.113.5".to_string()]
+        );
+    }
+
+    fn hosts(v: &[(usize, &str)]) -> Vec<(usize, String)> {
+        v.iter().map(|(i, h)| (*i, (*h).to_string())).collect()
+    }
+
+    #[test]
+    fn planned_records_derive_names_and_skip_out_of_zone_hosts() {
+        let planned = planned_records(
+            "Ingress",
+            hosts(&[
+                (0, "api.example.com"),
+                (2, "www.other.org"),
+                (3, "example.com"),
+            ]),
+            &BTreeMap::new(),
+            "example.com",
+            false,
+        )
+        .expect("valid");
+        assert_eq!(planned, vec![(0, "api".to_string()), (3, "@".to_string())]);
+    }
+
+    #[test]
+    fn planned_records_fail_the_whole_source_on_an_invalid_override() {
+        let ann = record_name_annotations("bad name");
+        assert!(planned_records(
+            "Ingress",
+            hosts(&[(0, "api.example.com")]),
+            &ann,
+            "example.com",
+            false
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn planned_records_require_an_override_when_the_kind_does() {
+        assert!(planned_records(
+            "TCPRoute",
+            Vec::new(),
+            &BTreeMap::new(),
+            "example.com",
+            true
+        )
+        .is_err());
+        assert_eq!(
+            planned_records(
+                "TCPRoute",
+                Vec::new(),
+                &record_name_annotations("db"),
+                "example.com",
+                true
+            )
+            .expect("valid"),
+            vec![(0, "db".to_string())]
+        );
+    }
+
+    // =========================================================================
+    // ADR-0022 Decision 6: startup configuration fails fast
+    // =========================================================================
+
+    fn env(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let map: BTreeMap<String, String> = vars
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect();
+        move |var: &str| map.get(var).cloned()
+    }
+
+    fn base_env() -> Vec<(&'static str, &'static str)> {
+        vec![
+            ("BINDY_SCOUT_CLUSTER_NAME", "prod"),
+            ("POD_NAMESPACE", "scout"),
+        ]
+    }
+
+    fn config(vars: &[(&str, &str)], cli: ScoutCli) -> anyhow::Result<ScoutConfig> {
+        let mut all = base_env();
+        all.extend_from_slice(vars);
+        ScoutConfig::from_lookup(cli, &env(&all))
+    }
+
+    #[test]
+    fn env_or_prefers_the_flag_then_the_variable() {
+        let lookup = env(&[("X", "from-env")]);
+        assert_eq!(
+            env_or(Some("from-cli".into()), "X", &lookup).expect("ok"),
+            Some("from-cli".to_string())
+        );
+        assert_eq!(
+            env_or(None, "X", &lookup).expect("ok"),
+            Some("from-env".to_string())
+        );
+        assert_eq!(env_or(None, "UNSET", &lookup).expect("ok"), None);
+    }
+
+    #[test]
+    fn env_or_rejects_empty_values() {
+        let lookup = env(&[("X", "  ")]);
+        assert!(env_or(None, "X", &lookup).is_err());
+        assert!(env_or(Some(String::new()), "Y", &lookup).is_err());
+    }
+
+    #[test]
+    fn a_valid_configuration_loads() {
+        let c = config(
+            &[
+                ("BINDY_SCOUT_DEFAULT_IPS", "10.0.0.1, 10.0.0.2,"),
+                ("BINDY_SCOUT_GATEWAY_SERVICES", "traefik=traefik/traefik,"),
+                ("BINDY_SCOUT_EXCLUDE_NAMESPACES", "kube-system"),
+            ],
+            ScoutCli::default(),
+        )
+        .expect("valid configuration");
+        assert_eq!(c.cluster_name, "prod");
+        assert_eq!(c.default_ips, vec!["10.0.0.1", "10.0.0.2"]);
+        assert!(c.gateway_services.contains_key("traefik"));
+        assert_eq!(c.excluded_namespaces, vec!["kube-system", "scout"]);
+        assert_eq!(c.target_namespace, "bindy-system");
+    }
+
+    #[test]
+    fn an_empty_environment_value_fails_startup() {
+        for var in [
+            "BINDY_SCOUT_NAMESPACE",
+            "BINDY_SCOUT_DEFAULT_ZONE",
+            "BINDY_SCOUT_NAMESPACE_SELECTOR",
+            "BINDY_SCOUT_DEFAULT_IPS",
+            "BINDY_SCOUT_GATEWAY_SERVICES",
+            "BINDY_SCOUT_EXCLUDE_NAMESPACES",
+            "BINDY_SCOUT_REMOTE_SECRET",
+            "BINDY_SCOUT_REMOTE_ENDPOINT",
+        ] {
+            let err = config(&[(var, "")], ScoutCli::default())
+                .expect_err("an empty value must fail startup");
+            assert!(err.to_string().contains(var), "{var}: {err}");
+        }
+    }
+
+    #[test]
+    fn an_empty_cluster_name_fails_startup() {
+        let lookup = env(&[("BINDY_SCOUT_CLUSTER_NAME", "")]);
+        assert!(ScoutConfig::from_lookup(ScoutCli::default(), &lookup).is_err());
+    }
+
+    #[test]
+    fn a_malformed_gateway_service_fails_startup() {
+        assert!(config(
+            &[(
+                "BINDY_SCOUT_GATEWAY_SERVICES",
+                "traefik=traefik/traefik,bad"
+            )],
+            ScoutCli::default()
+        )
+        .is_err());
+        let cli = ScoutCli {
+            gateway_services: vec!["traefik=traefik/traefik".into(), "=x/y".into()],
+            ..ScoutCli::default()
+        };
+        assert!(config(&[], cli).is_err());
+    }
+
+    #[test]
+    fn a_non_ipv4_default_ip_fails_startup() {
+        assert!(config(
+            &[("BINDY_SCOUT_DEFAULT_IPS", "10.0.0.1,2001:db8::1")],
+            ScoutCli::default()
+        )
+        .is_err());
+        let cli = ScoutCli {
+            default_ips: vec!["nope".into()],
+            ..ScoutCli::default()
+        };
+        assert!(config(&[], cli).is_err());
+    }
+
+    #[test]
+    fn a_cli_flag_overrides_its_variable() {
+        let cli = ScoutCli {
+            default_zone: Some("cli.example.com".into()),
+            ..ScoutCli::default()
+        };
+        let c = config(&[("BINDY_SCOUT_DEFAULT_ZONE", "env.example.com")], cli).expect("valid");
+        assert_eq!(c.default_zone.as_deref(), Some("cli.example.com"));
     }
 
     // ------------------------------------------------------------------
@@ -3048,126 +2351,9 @@ mod tests {
     // Shared stale-selector construction
     // ========================================================================
 
-    #[test]
-    fn stale_selector_base_omits_the_zone_clause() {
-        assert_eq!(
-            stale_selector_base("south", "team-checkout", "web-frontend"),
-            format!(
-                "{LABEL_MANAGED_BY}={LABEL_MANAGED_BY_SCOUT},\
-                 {LABEL_SOURCE_CLUSTER}!=south,\
-                 {LABEL_SOURCE_NAMESPACE}=team-checkout,\
-                 {LABEL_SOURCE_NAME}=web-frontend"
-            )
-            .replace(' ', "")
-        );
-    }
-
-    #[test]
-    fn every_stale_selector_builder_appends_the_zone_clause_to_the_shared_base() {
-        // All four resource kinds must produce byte-identical selectors, so a
-        // future change to the shared base cannot drift between them.
-        let base = stale_selector_base("south", "team-checkout", "web-frontend");
-        let expected = format!("{base},{LABEL_ZONE}=example.com");
-
-        for actual in [
-            stale_arecord_label_selector("south", "team-checkout", "web-frontend", "example.com"),
-            crate::scout::stale_httproute_arecord_label_selector(
-                "south",
-                "team-checkout",
-                "web-frontend",
-                "example.com",
-            ),
-            crate::scout::stale_tlsroute_arecord_label_selector(
-                "south",
-                "team-checkout",
-                "web-frontend",
-                "example.com",
-            ),
-            stale_tcproute_arecord_label_selector(
-                "south",
-                "team-checkout",
-                "web-frontend",
-                "example.com",
-            ),
-        ] {
-            assert_eq!(actual, expected);
-        }
-    }
-
     // ========================================================================
     // delete_arecords_for_* reports the zones it removed
     // ========================================================================
-
-    #[tokio::test]
-    async fn delete_arecords_for_ingress_returns_the_zone_labels_it_deleted() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path(ARECORD_LIST_PATH))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![
-                    arecord_item(
-                        "scout-south-team-checkout-web-frontend-0",
-                        "south",
-                        "example.com",
-                    ),
-                    arecord_item(
-                        "scout-south-team-checkout-web-frontend-1",
-                        "south",
-                        "example.com",
-                    ),
-                    arecord_item(
-                        "scout-south-team-checkout-web-frontend-2",
-                        "south",
-                        "other.example.com",
-                    ),
-                ])),
-            )
-            .mount(&server)
-            .await;
-        Mock::given(method("DELETE"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(arecord_item(
-                "scout-south-team-checkout-web-frontend-0",
-                "south",
-                "example.com",
-            )))
-            .mount(&server)
-            .await;
-
-        let zones = crate::scout::delete_arecords_for_ingress(
-            &client_for(&server),
-            "bindy-system",
-            "south",
-            "team-checkout",
-            "web-frontend",
-        )
-        .await
-        .expect("cleanup succeeds");
-
-        // Distinct zones, so a later stale-cleanup pass runs once per zone.
-        assert_eq!(zones, zone_set(&["example.com", "other.example.com"]));
-    }
-
-    #[tokio::test]
-    async fn delete_arecords_for_ingress_returns_empty_when_nothing_matched() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path(ARECORD_LIST_PATH))
-            .respond_with(ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![])))
-            .mount(&server)
-            .await;
-
-        let zones = crate::scout::delete_arecords_for_ingress(
-            &client_for(&server),
-            "bindy-system",
-            "south",
-            "team-checkout",
-            "web-frontend",
-        )
-        .await
-        .expect("cleanup succeeds");
-
-        assert!(zones.is_empty());
-    }
 
     // ------------------------------------------------------------------
     // ADR-0008: remote transport resolution (roadmap 12 Phase 3)
@@ -3395,255 +2581,14 @@ mod tests {
     // B11.1: prune ARecords for hosts that were not applied this pass.
     // ------------------------------------------------------------------
 
-    #[test]
-    fn indexed_arecord_cr_name_prefix_is_a_prefix_of_every_indexed_name() {
-        let prefix =
-            crate::scout::indexed_arecord_cr_name_prefix("prod", "team-checkout", "web-frontend");
-        for idx in [0usize, 1, 7, 42] {
-            let name = arecord_cr_name("prod", "team-checkout", "web-frontend", idx);
-            assert_eq!(name, format!("{prefix}{idx}"));
-            assert_eq!(
-                crate::scout::httproute_arecord_cr_name(
-                    "prod",
-                    "team-checkout",
-                    "web-frontend",
-                    idx
-                ),
-                format!("{prefix}{idx}")
-            );
-            assert_eq!(
-                crate::scout::tlsroute_arecord_cr_name(
-                    "prod",
-                    "team-checkout",
-                    "web-frontend",
-                    idx
-                ),
-                format!("{prefix}{idx}")
-            );
-        }
-    }
-
-    #[test]
-    fn indexed_arecord_cr_name_prefix_matches_sanitised_names() {
-        // Non-alphanumeric characters at the end of the source name are
-        // collapsed the same way `arecord_cr_name` collapses them.
-        let prefix = crate::scout::indexed_arecord_cr_name_prefix("Prod_1", "ns", "web.");
-        assert_eq!(
-            arecord_cr_name("Prod_1", "ns", "web.", 3),
-            format!("{prefix}3")
-        );
-    }
-
-    fn names(v: &[&str]) -> Vec<String> {
-        v.iter().map(ToString::to_string).collect()
-    }
-
-    fn applied_set(v: &[&str]) -> std::collections::BTreeSet<String> {
-        v.iter().map(ToString::to_string).collect()
-    }
-
-    #[test]
-    fn arecords_to_prune_returns_indexed_records_not_applied() {
-        // Host 1 was dropped from the Ingress: its record must go.
-        let prefix = "scout-prod-ns-web-";
-        let existing = names(&["scout-prod-ns-web-0", "scout-prod-ns-web-1"]);
-        let applied = applied_set(&["scout-prod-ns-web-0"]);
-        assert_eq!(
-            crate::scout::arecords_to_prune(&existing, &applied, prefix),
-            names(&["scout-prod-ns-web-1"])
-        );
-    }
-
-    #[test]
-    fn arecords_to_prune_keeps_everything_applied() {
-        let prefix = "scout-prod-ns-web-";
-        let existing = names(&["scout-prod-ns-web-0", "scout-prod-ns-web-1"]);
-        let applied = applied_set(&["scout-prod-ns-web-0", "scout-prod-ns-web-1"]);
-        assert!(crate::scout::arecords_to_prune(&existing, &applied, prefix).is_empty());
-    }
-
-    #[test]
-    fn arecords_to_prune_removes_all_when_nothing_applied() {
-        // Every host stopped matching the zone: nothing is published any more.
-        let prefix = "scout-prod-ns-web-";
-        let existing = names(&["scout-prod-ns-web-0", "scout-prod-ns-web-2"]);
-        let applied = applied_set(&[]);
-        assert_eq!(
-            crate::scout::arecords_to_prune(&existing, &applied, prefix),
-            names(&["scout-prod-ns-web-0", "scout-prod-ns-web-2"])
-        );
-    }
-
-    #[test]
-    fn arecords_to_prune_never_touches_a_same_named_services_record() {
-        // A Service named `web` in the same namespace carries the same
-        // source labels but an un-indexed CR name. Pruning an Ingress `web`
-        // must not delete it.
-        let prefix = "scout-prod-ns-web-";
-        let existing = names(&["scout-prod-ns-web", "scout-prod-ns-web-0"]);
-        let applied = applied_set(&["scout-prod-ns-web-0"]);
-        assert!(crate::scout::arecords_to_prune(&existing, &applied, prefix).is_empty());
-    }
-
-    #[test]
-    fn arecords_to_prune_ignores_names_with_non_numeric_suffix() {
-        let prefix = "scout-prod-ns-web-";
-        let existing = names(&["scout-prod-ns-web-api-0", "scout-prod-ns-web-x", "other-0"]);
-        let applied = applied_set(&[]);
-        assert!(crate::scout::arecords_to_prune(&existing, &applied, prefix).is_empty());
-    }
-
-    #[tokio::test]
-    async fn prune_unapplied_arecords_deletes_only_the_dropped_host() {
-        let server = MockServer::start().await;
-        let selector = arecord_label_selector("south", "team-checkout", "web-frontend");
-        Mock::given(method("GET"))
-            .and(path(ARECORD_LIST_PATH))
-            .and(wiremock::matchers::query_param(
-                "labelSelector",
-                selector.clone(),
-            ))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![
-                    arecord_item(
-                        "scout-south-team-checkout-web-frontend-0",
-                        "south",
-                        "zone-beta.example.internal",
-                    ),
-                    arecord_item(
-                        "scout-south-team-checkout-web-frontend-1",
-                        "south",
-                        "zone-beta.example.internal",
-                    ),
-                ])),
-            )
-            .mount(&server)
-            .await;
-        Mock::given(method("DELETE"))
-            .and(path(format!(
-                "{ARECORD_LIST_PATH}/scout-south-team-checkout-web-frontend-1"
-            )))
-            .respond_with(ResponseTemplate::new(200).set_body_json(arecord_item(
-                "scout-south-team-checkout-web-frontend-1",
-                "south",
-                "zone-beta.example.internal",
-            )))
-            .expect(1)
-            .mount(&server)
-            .await;
-        Mock::given(method("DELETE"))
-            .and(path(format!(
-                "{ARECORD_LIST_PATH}/scout-south-team-checkout-web-frontend-0"
-            )))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(0)
-            .mount(&server)
-            .await;
-
-        let prefix =
-            crate::scout::indexed_arecord_cr_name_prefix("south", "team-checkout", "web-frontend");
-        let applied = applied_set(&["scout-south-team-checkout-web-frontend-0"]);
-        let result = crate::scout::prune_unapplied_arecords(
-            &client_for(&server),
-            "bindy-system",
-            &selector,
-            &prefix,
-            &applied,
-        )
-        .await;
-
-        assert!(result.is_ok(), "got {result:?}");
-        // wiremock's `.expect(..)` counts are verified when `server` drops.
-    }
-
     // ------------------------------------------------------------------
     // B11.2: a Service that stops being LoadBalancer must be released like
     // an opt-out, not left publishing its old IP.
     // ------------------------------------------------------------------
 
-    #[test]
-    fn service_publishes_dns_only_when_opted_in_eligible_and_loadbalancer() {
-        use crate::scout::service_publishes_dns;
-        assert!(service_publishes_dns(true, true, true));
-        assert!(!service_publishes_dns(true, true, false));
-        assert!(!service_publishes_dns(false, true, true));
-        assert!(!service_publishes_dns(true, false, true));
-        assert!(!service_publishes_dns(false, false, false));
-    }
-
     // ------------------------------------------------------------------
     // B11.3: Service stale-cluster cleanup after a --cluster-name change.
     // ------------------------------------------------------------------
-
-    #[test]
-    fn stale_service_arecord_label_selector_excludes_current_cluster_and_scopes_zone() {
-        let selector = crate::scout::stale_service_arecord_label_selector(
-            "south",
-            "team-checkout",
-            "web-frontend",
-            "zone-beta.example.internal",
-        );
-        assert_eq!(
-            selector,
-            stale_arecord_label_selector(
-                "south",
-                "team-checkout",
-                "web-frontend",
-                "zone-beta.example.internal"
-            )
-        );
-        assert!(selector.contains(&format!("{LABEL_SOURCE_CLUSTER}!=south")));
-        assert!(selector.contains(&format!("{LABEL_ZONE}=zone-beta.example.internal")));
-    }
-
-    #[tokio::test]
-    async fn delete_stale_cluster_service_arecords_deletes_old_cluster_record() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path(ARECORD_LIST_PATH))
-            .and(wiremock::matchers::query_param(
-                "labelSelector",
-                crate::scout::stale_service_arecord_label_selector(
-                    "south",
-                    "team-checkout",
-                    "web-frontend",
-                    "zone-beta.example.internal",
-                ),
-            ))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(arecord_list_body(vec![arecord_item(
-                    "scout-north-team-checkout-web-frontend",
-                    "north",
-                    "zone-beta.example.internal",
-                )])),
-            )
-            .mount(&server)
-            .await;
-        Mock::given(method("DELETE"))
-            .and(path(format!(
-                "{ARECORD_LIST_PATH}/scout-north-team-checkout-web-frontend"
-            )))
-            .respond_with(ResponseTemplate::new(200).set_body_json(arecord_item(
-                "scout-north-team-checkout-web-frontend",
-                "north",
-                "zone-beta.example.internal",
-            )))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let result = crate::scout::delete_stale_cluster_service_arecords(
-            &client_for(&server),
-            "bindy-system",
-            "south",
-            "team-checkout",
-            "web-frontend",
-            "zone-beta.example.internal",
-        )
-        .await;
-
-        assert!(result.is_ok(), "got {result:?}");
-    }
 
     // =========================================================================
     // Scout finalizer patches are guarded (no clobbering a racing writer)

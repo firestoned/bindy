@@ -20,8 +20,7 @@
 use bindy_api::crd::{ARecord, ARecordSpec};
 use bindy_controller_sdk::kube_errors;
 use bindy_scout::{
-    arecord_label_selector, stale_arecord_label_selector, stale_httproute_arecord_label_selector,
-    stale_tcproute_arecord_label_selector, stale_tlsroute_arecord_label_selector,
+    arecord_label_selector, legacy_arecord_label_selector, stale_arecord_label_selector, StaleKind,
 };
 use futures::FutureExt;
 use k8s_openapi::api::core::v1::Namespace;
@@ -61,6 +60,16 @@ const LABEL_SOURCE_CLUSTER: &str = "bindy.firestoned.io/source-cluster";
 const LABEL_SOURCE_NAMESPACE: &str = "bindy.firestoned.io/source-namespace";
 const LABEL_SOURCE_NAME: &str = "bindy.firestoned.io/source-name";
 const LABEL_ZONE: &str = "bindy.firestoned.io/zone";
+const LABEL_SOURCE_KIND: &str = "bindy.firestoned.io/source-kind";
+
+/// The source kind most tests plant records for.
+const INGRESS: &str = "Ingress";
+
+/// The stale selector for the Ingress `SOURCE_NAMESPACE/SOURCE_NAME` as seen
+/// by cluster "south".
+fn south_stale(kind: StaleKind<'_>, zone: &str) -> String {
+    stale_arecord_label_selector("south", kind, SOURCE_NAMESPACE, SOURCE_NAME, zone)
+}
 
 async fn client_or_skip() -> Option<Client> {
     let _ = rustls::crypto::ring::default_provider().install_default();
@@ -91,8 +100,20 @@ async fn ensure_namespace(client: &Client) {
     }
 }
 
-/// Creates an ARecord carrying exactly the labels Scout writes.
+/// Creates an Ingress-sourced ARecord carrying exactly the labels Scout writes.
 async fn plant_arecord(client: &Client, name: &str, source_cluster: &str, zone: &str) {
+    plant_arecord_of(client, name, source_cluster, zone, Some(INGRESS)).await;
+}
+
+/// Creates an ARecord with Scout's labels; `kind: None` plants a legacy
+/// record from before ADR-0022 (no source-kind label).
+async fn plant_arecord_of(
+    client: &Client,
+    name: &str,
+    source_cluster: &str,
+    zone: &str,
+    kind: Option<&str>,
+) {
     let api: Api<ARecord> = Api::namespaced(client.clone(), TEST_NAMESPACE);
     let mut labels = BTreeMap::new();
     labels.insert(LABEL_MANAGED_BY.to_string(), "scout".to_string());
@@ -103,6 +124,9 @@ async fn plant_arecord(client: &Client, name: &str, source_cluster: &str, zone: 
     );
     labels.insert(LABEL_SOURCE_NAME.to_string(), SOURCE_NAME.to_string());
     labels.insert(LABEL_ZONE.to_string(), zone.to_string());
+    if let Some(kind) = kind {
+        labels.insert(LABEL_SOURCE_KIND.to_string(), kind.to_string());
+    }
 
     let record = ARecord {
         metadata: ObjectMeta {
@@ -232,8 +256,7 @@ async fn stale_selector_matches_only_same_zone_records() {
         // was fixed this was deleted on every reconcile.
         plant_arecord(&client, "live-north-beta", "north", ZONE_BETA).await;
 
-        let selector =
-            stale_arecord_label_selector("south", SOURCE_NAMESPACE, SOURCE_NAME, ZONE_ALPHA);
+        let selector = south_stale(StaleKind::Kind(INGRESS), ZONE_ALPHA);
         let matched = names_matching(&client, &selector).await;
 
         assert_eq!(
@@ -266,8 +289,7 @@ async fn stale_selector_still_matches_a_different_cluster_in_the_same_zone() {
     with_clean_slate(&client, |client| async move {
         plant_arecord(&client, "live-north-alpha", "north", ZONE_ALPHA).await;
 
-        let selector =
-            stale_arecord_label_selector("south", SOURCE_NAMESPACE, SOURCE_NAME, ZONE_ALPHA);
+        let selector = south_stale(StaleKind::Kind(INGRESS), ZONE_ALPHA);
         let matched = names_matching(&client, &selector).await;
 
         assert_eq!(
@@ -296,14 +318,11 @@ async fn own_and_stale_selectors_are_disjoint() {
 
         let own = names_matching(
             &client,
-            &arecord_label_selector("south", SOURCE_NAMESPACE, SOURCE_NAME),
+            &arecord_label_selector("south", INGRESS, SOURCE_NAMESPACE, SOURCE_NAME),
         )
         .await;
-        let stale = names_matching(
-            &client,
-            &stale_arecord_label_selector("south", SOURCE_NAMESPACE, SOURCE_NAME, ZONE_ALPHA),
-        )
-        .await;
+        let stale =
+            names_matching(&client, &south_stale(StaleKind::Kind(INGRESS), ZONE_ALPHA)).await;
 
         assert_eq!(own, vec!["own-south-alpha".to_string()]);
         assert_eq!(stale, vec!["stale-oldsouth-alpha".to_string()]);
@@ -315,46 +334,99 @@ async fn own_and_stale_selectors_are_disjoint() {
     .await;
 }
 
-/// All four resource kinds share one selector builder, so a live API server
-/// must evaluate them identically for identical inputs.
+/// Every source kind's selectors claim only that kind's records (ADR-0022):
+/// same-named objects of different kinds never prune or clean up each other,
+/// evaluated by a live API server.
 #[tokio::test]
 #[ignore = "requires a Kubernetes cluster"]
-async fn every_resource_kind_selector_agrees_on_a_live_api_server() {
+async fn each_kind_selector_claims_only_its_own_kind_on_a_live_api_server() {
+    const KINDS: [&str; 5] = ["Ingress", "Service", "HTTPRoute", "TLSRoute", "TCPRoute"];
     let Some(client) = client_or_skip().await else {
         return;
     };
     with_clean_slate(&client, |client| async move {
-        plant_arecord(&client, "stale-oldsouth-alpha", "old-south", ZONE_ALPHA).await;
-        plant_arecord(&client, "live-north-beta", "north", ZONE_BETA).await;
+        for kind in KINDS {
+            let lower = kind.to_lowercase();
+            plant_arecord_of(
+                &client,
+                &format!("own-{lower}"),
+                "south",
+                ZONE_ALPHA,
+                Some(kind),
+            )
+            .await;
+            plant_arecord_of(
+                &client,
+                &format!("stale-{lower}"),
+                "old-south",
+                ZONE_ALPHA,
+                Some(kind),
+            )
+            .await;
+        }
 
-        let expected = vec!["stale-oldsouth-alpha".to_string()];
-        for selector in [
-            stale_arecord_label_selector("south", SOURCE_NAMESPACE, SOURCE_NAME, ZONE_ALPHA),
-            stale_httproute_arecord_label_selector(
-                "south",
-                SOURCE_NAMESPACE,
-                SOURCE_NAME,
-                ZONE_ALPHA,
-            ),
-            stale_tlsroute_arecord_label_selector(
-                "south",
-                SOURCE_NAMESPACE,
-                SOURCE_NAME,
-                ZONE_ALPHA,
-            ),
-            stale_tcproute_arecord_label_selector(
-                "south",
-                SOURCE_NAMESPACE,
-                SOURCE_NAME,
-                ZONE_ALPHA,
-            ),
-        ] {
+        for kind in KINDS {
+            let lower = kind.to_lowercase();
             assert_eq!(
-                names_matching(&client, &selector).await,
-                expected,
-                "selector {selector:?} disagreed with the others"
+                names_matching(
+                    &client,
+                    &arecord_label_selector("south", kind, SOURCE_NAMESPACE, SOURCE_NAME)
+                )
+                .await,
+                vec![format!("own-{lower}")],
+                "own selector for {kind}"
+            );
+            assert_eq!(
+                names_matching(&client, &south_stale(StaleKind::Kind(kind), ZONE_ALPHA)).await,
+                vec![format!("stale-{lower}")],
+                "stale selector for {kind}"
             );
         }
+    })
+    .await;
+}
+
+/// The legacy-record selectors (ADR-0022 migration) match only records with
+/// no source-kind label, as a live API server evaluates `!key`.
+#[tokio::test]
+#[ignore = "requires a Kubernetes cluster"]
+async fn legacy_selectors_match_only_records_without_a_kind() {
+    let Some(client) = client_or_skip().await else {
+        return;
+    };
+    with_clean_slate(&client, |client| async move {
+        plant_arecord(&client, "own-south-alpha", "south", ZONE_ALPHA).await;
+        plant_arecord_of(&client, "legacy-south-alpha", "south", ZONE_ALPHA, None).await;
+        plant_arecord_of(
+            &client,
+            "legacy-oldsouth-alpha",
+            "old-south",
+            ZONE_ALPHA,
+            None,
+        )
+        .await;
+
+        assert_eq!(
+            names_matching(
+                &client,
+                &legacy_arecord_label_selector("south", SOURCE_NAMESPACE, SOURCE_NAME)
+            )
+            .await,
+            vec!["legacy-south-alpha".to_string()]
+        );
+        assert_eq!(
+            names_matching(&client, &south_stale(StaleKind::Legacy, ZONE_ALPHA)).await,
+            vec!["legacy-oldsouth-alpha".to_string()]
+        );
+        assert_eq!(
+            names_matching(
+                &client,
+                &arecord_label_selector("south", INGRESS, SOURCE_NAMESPACE, SOURCE_NAME)
+            )
+            .await,
+            vec!["own-south-alpha".to_string()],
+            "a legacy record must never match a kind-scoped selector"
+        );
     })
     .await;
 }
@@ -375,7 +447,7 @@ async fn an_overlong_zone_is_rejected_by_the_api_server() {
     let overlong = "payments-gateway.team-checkout.production.eu-west-1.example.internal";
     assert!(overlong.len() > 63);
 
-    let selector = stale_arecord_label_selector("south", SOURCE_NAMESPACE, SOURCE_NAME, overlong);
+    let selector = south_stale(StaleKind::Kind(INGRESS), overlong);
     let api: Api<ARecord> = Api::namespaced(client.clone(), TEST_NAMESPACE);
     let result = api.list(&ListParams::default().labels(&selector)).await;
 

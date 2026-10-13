@@ -36,6 +36,7 @@ anyhow.workspace = true
 thiserror.workspace = true
 k8s-openapi.workspace = true
 rustls.workspace = true
+sha2.workspace = true
 
 
 [dev-dependencies]

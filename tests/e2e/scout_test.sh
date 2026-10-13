@@ -68,8 +68,40 @@ wait_for_arecord() {
     return 1
 }
 
-# Creates an ARecord carrying exactly the labels Scout writes, standing in for
-# a record left behind by another cluster (or by this one under an older name).
+# The name Scout gives the Ingress's first record (ADR-0022):
+# scout-{cluster}-{namespace}-{name}-{hash}-{index}, where {hash} is the first
+# 8 hex characters of the SHA-256 of "cluster NUL kind NUL namespace NUL name".
+# Computed here independently of Scout, so a naming regression fails the suite.
+#
+# $1: cluster name
+scout_record_name() {
+    local hash
+    hash=$(printf '%s\0%s\0%s\0%s' "$1" Ingress "${SOURCE_NS}" "${INGRESS_NAME}" \
+        | sha256sum | cut -c1-8)
+    echo "scout-$1-${SOURCE_NS}-${INGRESS_NAME}-${hash}-0"
+}
+
+# Stands in for the operator, which this suite does not run: binds a record to
+# its zone and marks it Ready, the state Scout waits for before it deletes the
+# records the new one replaces (ADR-0022, Decision 4).
+#
+# $1: record name, $2: zone
+mark_arecord_served() {
+    local record="$1" zone="$2" zone_cr now
+    zone_cr=$(echo "${zone}" | tr '.' '-')
+    now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    ${KUBECTL} patch arecord "${record}" -n "${NAMESPACE}" --subresource=status \
+        --type=merge -p "{\"status\": {
+  \"zoneRef\": {\"apiVersion\": \"bindy.firestoned.io/v1beta1\", \"kind\": \"DNSZone\",
+              \"name\": \"${zone_cr}\", \"namespace\": \"${NAMESPACE}\", \"zoneName\": \"${zone}\"},
+  \"conditions\": [{\"type\": \"Ready\", \"status\": \"True\", \"reason\": \"ReconcileSucceeded\",
+                  \"message\": \"marked served by the e2e suite\", \"lastTransitionTime\": \"${now}\"}]
+}}" >/dev/null
+}
+
+# Creates an ARecord carrying the labels a pre-ADR-0022 Scout wrote (no
+# source-kind label), standing in for a record left behind by another cluster
+# (or by this one under an older name).
 #
 # $1 — record name, $2 — source-cluster label, $3 — zone label
 plant_arecord() {
@@ -241,7 +273,7 @@ fi
 phase "1. Scout creates a zone-labelled ARecord"
 apply_ingress "${ZONE_ALPHA}"
 
-OWN_RECORD="scout-north-${SOURCE_NS}-${INGRESS_NAME}-0"
+OWN_RECORD=$(scout_record_name north)
 OWN_RECORD_CREATED=false
 if wait_for_arecord_with_nudge "${OWN_RECORD}"; then
     OWN_RECORD_CREATED=true
@@ -258,6 +290,14 @@ if [ "${ACTUAL_ZONE}" = "${ZONE_ALPHA}" ]; then
     pass "zone label is ${ZONE_ALPHA}"
 else
     fail "zone label was '${ACTUAL_ZONE}', expected '${ZONE_ALPHA}'"
+fi
+
+ACTUAL_KIND=$(${KUBECTL} get arecord "${OWN_RECORD}" -n "${NAMESPACE}" \
+    -o jsonpath='{.metadata.labels.bindy\.firestoned\.io/source-kind}' 2>/dev/null || true)
+if [ "${ACTUAL_KIND}" = "Ingress" ]; then
+    pass "source-kind label is Ingress"
+else
+    fail "source-kind label was '${ACTUAL_KIND}', expected 'Ingress'"
 fi
 
 summary_row "Scout creates an ARecord labelled with its zone" \
@@ -298,7 +338,7 @@ BEFORE_ERRORS=${ERRORS}
 # under a new --cluster-name and has to collect what it left behind.
 redeploy_scout_as "south"
 
-RENAMED_RECORD="scout-south-${SOURCE_NS}-${INGRESS_NAME}-0"
+RENAMED_RECORD=$(scout_record_name south)
 if wait_for_arecord "${RENAMED_RECORD}" present; then
     pass "${RENAMED_RECORD} created under the new cluster name"
 else
@@ -312,11 +352,23 @@ fi
 if [ "${OWN_RECORD_CREATED}" != true ]; then
     fail "${OWN_RECORD} was never created in step 1, so stale cleanup on rename \
 could not be tested (not asserting a vacuous absence)"
-elif wait_for_arecord "${OWN_RECORD}" absent; then
-    pass "${OWN_RECORD} deleted — the old cluster name's record was cleaned up"
 else
-    fail "Scout left ${OWN_RECORD} behind after a --cluster-name change"
-    scout_logs | tail -40
+    # The old record publishes the same name: it must stay until the new one
+    # is bound to the zone and Ready, or the name drops off the air.
+    sleep "${SETTLE_SECS}"
+    if ${KUBECTL} get arecord "${OWN_RECORD}" -n "${NAMESPACE}" >/dev/null 2>&1; then
+        pass "${OWN_RECORD} kept while ${RENAMED_RECORD} is not served yet"
+    else
+        fail "Scout deleted ${OWN_RECORD} before its replacement was served"
+    fi
+
+    mark_arecord_served "${RENAMED_RECORD}" "${ZONE_ALPHA}"
+    if wait_for_arecord "${OWN_RECORD}" absent; then
+        pass "${OWN_RECORD} deleted once its replacement was served"
+    else
+        fail "Scout left ${OWN_RECORD} behind after a --cluster-name change"
+        scout_logs | tail -40
+    fi
 fi
 
 # The whole point of #474: the rename cleanup must not reach across zones.

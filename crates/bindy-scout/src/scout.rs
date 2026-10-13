@@ -1,62 +1,61 @@
 // Copyright (c) 2025 Erick Bourgeois, firestoned
 // SPDX-License-Identifier: Apache-2.0
 
-//! Bindy Scout — Ingress-to-ARecord controller.
+//! Bindy Scout: publishes `ARecord`s for opted-in workload-cluster objects.
 //!
-//! Scout watches Kubernetes Ingresses across all namespaces (except its own and any
-//! configured exclusions). When an Ingress is annotated with
-//! `bindy.firestoned.io/recordKind: "ARecord"`, Scout creates an [`ARecord`] CR in the
-//! configured target namespace.
+//! Scout watches Ingresses, LoadBalancer Services and Gateway API routes
+//! (`HTTPRoute`, `TLSRoute`, `TCPRoute`) across all namespaces (except its own
+//! and any configured exclusions). Every kind goes through one reconcile
+//! pipeline (ADR-0022, see `crate::pipeline`); this module holds the types,
+//! the pure helpers the pipeline is built from, the startup configuration and
+//! [`run_scout`].
 //!
 //! See `.github/community/12-scout-ingress-controller.md` for the full design.
 //!
-//! ## Phase 1 / 1.5 — Same-cluster mode (current)
+//! ## Same-cluster mode
 //!
 //! Scout uses a single in-cluster client. ARecords are created in the same cluster.
 //!
-//! ## Phase 2 — Remote cluster mode
+//! ## Remote cluster mode
 //!
-//! When `BINDY_SCOUT_REMOTE_SECRET` is set, Scout reads a kubeconfig from a Kubernetes
-//! Secret and builds a second client (`remote_client`) targeting the dedicated Bindy cluster.
-//! The local client still handles Ingress watching and finalizer management.
-//! The remote client handles ARecord creation/deletion and DNSZone validation.
+//! When `BINDY_SCOUT_REMOTE_SECRET` (or the ADR-0008 endpoint mode) is set,
+//! Scout builds a second client (`remote_client`) targeting the dedicated Bindy
+//! cluster. The local client watches sources and manages their finalizers; the
+//! remote client creates and deletes ARecords and validates DNSZones.
 
 use crate::constants::{ALLOW_ZONE_NAMESPACES_WILDCARD, ANNOTATION_ALLOW_ZONE_NAMESPACES};
 use crate::crd::{ARecord, ARecordSpec, DNSZone};
+use crate::pipeline::source_controller;
 use anyhow::{anyhow, Context, Result};
-use bindy_controller_sdk::finalizers;
 use bindy_controller_sdk::kube_errors;
 use bindy_controller_sdk::namespace_scope::NamespaceScope;
 use bindy_controller_sdk::pagination::list_all_paginated;
 use bindy_controller_sdk::watch::WatchSet;
 use k8s_openapi::api::core::v1::{Namespace, Secret, Service};
+use k8s_openapi::api::networking::v1::Ingress;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use k8s_openapi::jiff::Timestamp;
-use kube::api::{DeleteParams, ListParams};
+use kube::api::ListParams;
 use kube::config::{KubeConfigOptions, Kubeconfig};
+use kube::{
+    runtime::{controller::Action, reflector},
+    Api, Client, Resource, ResourceExt,
+};
+use serde::de::DeserializeOwned;
+use sha2::{Digest, Sha256};
+use std::fmt::Debug;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+    time::Duration,
+};
+use tracing::{info, warn};
 
-/// Reconcile error type — wraps `anyhow::Error` so that it satisfies the
+/// Reconcile error type: wraps `anyhow::Error` so that it satisfies the
 /// `std::error::Error` bound required by `kube::runtime::Controller::run`.
 #[derive(Debug, thiserror::Error)]
 #[error(transparent)]
 pub(crate) struct ScoutError(#[from] anyhow::Error);
-use futures::StreamExt;
-use k8s_openapi::api::networking::v1::Ingress;
-use k8s_openapi::NamespaceResourceScope;
-use kube::{
-    runtime::{controller::Action, reflector, Controller},
-    Api, Client, Resource, ResourceExt,
-};
-use serde::de::DeserializeOwned;
-use std::fmt::Debug;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    future::Future,
-    pin::Pin,
-    sync::Arc,
-    time::Duration,
-};
-use tracing::{debug, error, info, warn};
 
 // ============================================================================
 // Gateway API Type Definitions
@@ -380,8 +379,17 @@ pub(crate) const LABEL_SOURCE_CLUSTER: &str = "bindy.firestoned.io/source-cluste
 pub(crate) const LABEL_SOURCE_NAMESPACE: &str = "bindy.firestoned.io/source-namespace";
 
 /// Label identifying the source resource name on created ARecords.
-/// Used for all resource kinds (Ingress, Service, HTTPRoute, TLSRoute).
+/// Used for all resource kinds.
 pub(crate) const LABEL_SOURCE_NAME: &str = "bindy.firestoned.io/source-name";
+
+/// Label identifying the source resource kind (`Ingress`, `Service`,
+/// `HTTPRoute`, `TLSRoute`, `TCPRoute`) on created ARecords (ADR-0022).
+///
+/// With the cluster, namespace and name labels it identifies exactly one
+/// source, so same-named objects of different kinds never overwrite or prune
+/// each other's records. Records without it predate ADR-0022 and are
+/// migrated by the pipeline.
+pub(crate) const LABEL_SOURCE_KIND: &str = "bindy.firestoned.io/source-kind";
 
 /// Label carrying the DNS zone name on created ARecords (for DNSZone selector matching)
 pub(crate) const LABEL_ZONE: &str = "bindy.firestoned.io/zone";
@@ -397,13 +405,23 @@ const MAX_K8S_NAME_LEN: usize = 253;
 /// annotations just to read one key. Must be `static`, not `const` — a
 /// `const` re-materializes a fresh temporary at each use site, which cannot
 /// outlive the statement that borrows it.
-static EMPTY_ANNOTATIONS: BTreeMap<String, String> = BTreeMap::new();
+pub(crate) static EMPTY_ANNOTATIONS: BTreeMap<String, String> = BTreeMap::new();
 
 /// Prefix applied to all ARecord CR names created by Scout
 const ARECORD_NAME_PREFIX: &str = "scout";
 
 /// Requeue delay for non-fatal errors (seconds)
-const SCOUT_ERROR_REQUEUE_SECS: u64 = 30;
+pub(crate) const SCOUT_ERROR_REQUEUE_SECS: u64 = 30;
+
+/// Field manager Scout's server-side applies are recorded under.
+pub(crate) const SCOUT_FIELD_MANAGER: &str = "bindy-scout";
+
+/// The action every Scout reconcile returns when it must try again later:
+/// a requeue after [`SCOUT_ERROR_REQUEUE_SECS`].
+#[must_use]
+pub(crate) fn requeue_after_error() -> Action {
+    Action::requeue(Duration::from_secs(SCOUT_ERROR_REQUEUE_SECS))
+}
 
 /// Grace period, in seconds, that Scout keeps retrying remote ARecord cleanup
 /// for an object that is being deleted before it releases its finalizer anyway.
@@ -517,7 +535,7 @@ async fn namespace_matches_selector(
 /// # Errors
 ///
 /// Propagates any error from [`namespace_matches_selector`].
-async fn source_namespace_eligible(
+pub(crate) async fn source_namespace_eligible(
     client: &Client,
     namespace: &str,
     selector: Option<&str>,
@@ -1141,31 +1159,34 @@ pub(crate) async fn check_zone_authorization_live(
     }
 }
 
-/// Resolves the IP address(es) to use for an ARecord, in priority order:
+/// Keeps the entries of `ips` that are IPv4 addresses, warning about each
+/// one that is not (ADR-0022, Decision 6).
 ///
-/// 1. `bindy.firestoned.io/ip` annotation — explicit override (single IP or comma-separated list)
-/// 2. `default_ips` — operator-configured default IPs (e.g. shared Traefik ingress VIP)
-/// 3. Ingress LoadBalancer status — first non-empty IP
+/// `ARecord` is IPv4-only, so an IPv6 literal or a malformed value read from
+/// a status field (Ingress or Service `status.loadBalancer`, Gateway
+/// `status.addresses`) must never reach `ipv4Addresses`. `origin` names the
+/// field in the warning.
 ///
-/// Returns `None` if no IP can be determined from any source.
-pub(crate) fn resolve_ips(
-    annotations: &BTreeMap<String, String>,
-    default_ips: &[String],
-    ingress: &Ingress,
-) -> Option<Vec<String>> {
-    if let Some(ips) = resolve_ips_from_annotation(annotations) {
-        return Some(ips);
-    }
-    if !default_ips.is_empty() {
-        return Some(default_ips.to_vec());
-    }
-    resolve_ip_from_lb_status(ingress).map(|ip| vec![ip])
+/// # Arguments
+/// * `ips` - Candidate addresses, in discovery order
+/// * `origin` - Where they were read from, for the warning
+pub(crate) fn retain_ipv4(ips: impl IntoIterator<Item = String>, origin: &str) -> Vec<String> {
+    ips.into_iter()
+        .filter(|ip| {
+            if ip.parse::<std::net::Ipv4Addr>().is_ok() {
+                return true;
+            }
+            warn!(origin = %origin, value = %ip, "Skipping a status address that is not IPv4 (ARecord is IPv4-only)");
+            false
+        })
+        .collect()
 }
 
 /// Resolves the IP to use for an ARecord from the Ingress load-balancer status.
 ///
-/// Returns the first non-empty `ip` field found in `status.loadBalancer.ingress`.
-/// Hostname-only entries (no IP) are ignored; a warning is logged for each.
+/// Returns the first IPv4 `ip` found in `status.loadBalancer.ingress`.
+/// Hostname-only entries are ignored with a warning, and non-IPv4 entries are
+/// skipped by [`retain_ipv4`].
 pub(crate) fn resolve_ip_from_lb_status(ingress: &Ingress) -> Option<String> {
     let lb_ingresses = ingress
         .status
@@ -1175,56 +1196,110 @@ pub(crate) fn resolve_ip_from_lb_status(ingress: &Ingress) -> Option<String> {
         .ingress
         .as_ref()?;
 
+    let mut ips = Vec::new();
     for lb in lb_ingresses {
-        if let Some(ip) = &lb.ip {
-            if !ip.is_empty() {
-                return Some(ip.clone());
-            }
-        }
-        if lb.hostname.is_some() {
-            warn!(
+        match lb.ip.as_deref() {
+            Some(ip) if !ip.is_empty() => ips.push(ip.to_string()),
+            _ if lb.hostname.is_some() => warn!(
                 ingress = %ingress.name_any(),
-                "Ingress LB status has hostname but no IP — A record requires an IP address; skipping"
-            );
+                "Ingress LB status has hostname but no IP; an A record requires an IP address, skipping"
+            ),
+            _ => {}
         }
     }
-    None
+    retain_ipv4(ips, "Ingress status.loadBalancer")
+        .into_iter()
+        .next()
 }
 
-/// Builds a sanitized Kubernetes resource name for an ARecord CR.
+/// Parses the `bindy.firestoned.io/ttl` annotation.
 ///
-/// Format: `scout-{cluster}-{namespace}-{ingress}-{index}`
+/// Returns `Ok(None)` when the annotation is absent (the record inherits the
+/// zone's TTL) and `Ok(Some(ttl))` for a positive integer.
 ///
-/// All characters are lowercased. Underscores and any non-alphanumeric characters
-/// (other than hyphens) are replaced with hyphens. The result is truncated to
-/// 253 characters to stay within the Kubernetes name limit.
+/// # Errors
+/// Returns an error when the annotation is present but is not a positive
+/// integer. The pipeline treats that like an invalid `record-name` override:
+/// it warns, publishes nothing for the source and requeues (ADR-0022,
+/// Decision 6), instead of silently dropping the override.
+pub(crate) fn parse_ttl_annotation(annotations: &BTreeMap<String, String>) -> Result<Option<i32>> {
+    let Some(raw) = annotations.get(ANNOTATION_TTL) else {
+        return Ok(None);
+    };
+    match raw.trim().parse::<i32>() {
+        Ok(ttl) if ttl > 0 => Ok(Some(ttl)),
+        _ => Err(anyhow!(
+            "{ANNOTATION_TTL} annotation {raw:?} is not a positive integer number of seconds"
+        )),
+    }
+}
+
+/// Number of hex characters of the source-identity hash in a record name.
+const SOURCE_HASH_HEX_LEN: usize = 8;
+
+/// Hex characters needed to print one byte.
+const HEX_CHARS_PER_BYTE: usize = 2;
+
+/// Number of digest bytes that make up [`SOURCE_HASH_HEX_LEN`] hex characters.
+const SOURCE_HASH_BYTES: usize = SOURCE_HASH_HEX_LEN / HEX_CHARS_PER_BYTE;
+
+/// The short hash that makes a record name unique to its source (ADR-0022,
+/// Decision 3): the first [`SOURCE_HASH_HEX_LEN`] hex characters of the
+/// SHA-256 of `cluster \0 kind \0 namespace \0 name`.
+///
+/// The NUL separators make the identity unambiguous: no Kubernetes name or
+/// kind contains NUL, so `team-a`/`web` and `team`/`a-web` hash differently
+/// even though their hyphen-joined forms are equal.
+#[must_use]
+pub(crate) fn source_identity_hash(
+    cluster: &str,
+    kind: &str,
+    namespace: &str,
+    name: &str,
+) -> String {
+    let digest = Sha256::digest(format!("{cluster}\0{kind}\0{namespace}\0{name}").as_bytes());
+    digest
+        .iter()
+        .take(SOURCE_HASH_BYTES)
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// Builds the Kubernetes name of the ARecord Scout writes for one host of
+/// one source object (ADR-0022, Decision 3):
+/// `scout-{cluster}-{namespace}-{name}-{hash}-{index}`.
+///
+/// The readable part is lowercased and sanitized (see `sanitize_k8s_name`)
+/// and truncated so the whole name fits [`MAX_K8S_NAME_LEN`]; a hyphen left
+/// at the cut is removed, so the result is always a valid Kubernetes name.
+/// The hash (see [`source_identity_hash`]) keeps names unique across kinds,
+/// across namespaces whose joined form collides, and after truncation.
+///
+/// # Arguments
+/// * `cluster` - Scout's cluster name
+/// * `kind` - The source kind (`Ingress`, `Service`, ...)
+/// * `namespace` - The source namespace
+/// * `name` - The source name
+/// * `index` - The host's index within the source
+#[must_use]
 pub(crate) fn arecord_cr_name(
     cluster: &str,
+    kind: &str,
     namespace: &str,
-    ingress_name: &str,
-    host_index: usize,
+    name: &str,
+    index: usize,
 ) -> String {
-    let raw = format!("{ARECORD_NAME_PREFIX}-{cluster}-{namespace}-{ingress_name}-{host_index}");
-    let sanitized = sanitize_k8s_name(&raw);
-    sanitized[..sanitized.len().min(MAX_K8S_NAME_LEN)].to_string()
-}
-
-/// Returns the CR-name prefix shared by every host-indexed ARecord Scout
-/// creates for one source object: `scout-{cluster}-{namespace}-{name}-`.
-///
-/// [`arecord_cr_name`], [`httproute_arecord_cr_name`] and
-/// [`tlsroute_arecord_cr_name`] all produce `{prefix}{index}` (before the
-/// [`MAX_K8S_NAME_LEN`] truncation), so a name that is this prefix followed by
-/// only digits is one of the source's per-host records. Used by
-/// [`arecords_to_prune`] to tell those apart from a same-named Service's
-/// un-indexed record, which carries the same source labels.
-pub(crate) fn indexed_arecord_cr_name_prefix(
-    cluster: &str,
-    namespace: &str,
-    source_name: &str,
-) -> String {
-    let raw = format!("{ARECORD_NAME_PREFIX}-{cluster}-{namespace}-{source_name}");
-    format!("{}-", sanitize_k8s_name(&raw))
+    let suffix = format!(
+        "-{}-{index}",
+        source_identity_hash(cluster, kind, namespace, name)
+    );
+    let readable = sanitize_k8s_name(&format!(
+        "{ARECORD_NAME_PREFIX}-{cluster}-{namespace}-{name}"
+    ));
+    let budget = MAX_K8S_NAME_LEN.saturating_sub(suffix.len());
+    // `sanitize_k8s_name` yields ASCII only, so a byte cut is a char cut.
+    let readable = readable[..readable.len().min(budget)].trim_end_matches('-');
+    format!("{readable}{suffix}")
 }
 
 /// Sanitizes a string for use as a Kubernetes resource name.
@@ -1242,19 +1317,16 @@ fn sanitize_k8s_name(s: &str) -> String {
         if ch.is_ascii_alphanumeric() {
             result.push(ch);
             last_was_hyphen = false;
-        } else {
-            // Replace any non-alphanumeric character with a hyphen (collapsing runs)
-            if !last_was_hyphen {
-                result.push('-');
-                last_was_hyphen = true;
-            }
+            continue;
+        }
+        // Replace any non-alphanumeric character with a hyphen (collapsing runs)
+        if !last_was_hyphen {
+            result.push('-');
+            last_was_hyphen = true;
         }
     }
 
-    // Strip trailing hyphens
-    let trimmed = result.trim_end_matches('-');
-    // Strip leading hyphens
-    trimmed.trim_start_matches('-').to_string()
+    result.trim_matches('-').to_string()
 }
 
 /// Returns `true` if `obj` has been marked for deletion (it carries a
@@ -1263,110 +1335,105 @@ pub(crate) fn is_being_deleted<K: Resource>(obj: &K) -> bool {
     obj.meta().deletion_timestamp.is_some()
 }
 
-/// Builds a Kubernetes label selector string matching all ARecords created
-/// by Scout for a specific Ingress.
+/// The label selector matching the ARecords Scout wrote for one source
+/// object under the current cluster name: `managed-by=scout`,
+/// `source-cluster`, `source-kind`, `source-namespace` and `source-name`.
 ///
-/// Selects on `managed-by=scout`, `source-cluster`, `source-namespace`, and
-/// `source-name` to precisely target only the records owned by this Ingress.
-pub fn arecord_label_selector(cluster: &str, namespace: &str, ingress_name: &str) -> String {
-    source_arecord_label_selector(cluster, namespace, ingress_name)
-}
-
-/// The label selector matching every ARecord Scout created for one source
-/// object, whatever its kind: `managed-by=scout,source-cluster=<cluster>,
-/// source-namespace=<namespace>,source-name=<name>`.
-fn source_arecord_label_selector(cluster: &str, namespace: &str, source_name: &str) -> String {
+/// Every own-record lookup (pruning, opt-out, release and deletion cleanup)
+/// uses this one selector, so a record is owned by exactly one
+/// (cluster, kind, namespace, name) source (ADR-0022, Decision 2).
+#[must_use]
+pub fn arecord_label_selector(cluster: &str, kind: &str, namespace: &str, name: &str) -> String {
     format!(
-        "{}={},{}={},{}={},{}={}",
-        LABEL_MANAGED_BY,
-        LABEL_MANAGED_BY_SCOUT,
-        LABEL_SOURCE_CLUSTER,
-        cluster,
-        LABEL_SOURCE_NAMESPACE,
-        namespace,
-        LABEL_SOURCE_NAME,
-        source_name,
+        "{LABEL_MANAGED_BY}={LABEL_MANAGED_BY_SCOUT},{LABEL_SOURCE_CLUSTER}={cluster},\
+         {LABEL_SOURCE_KIND}={kind},{LABEL_SOURCE_NAMESPACE}={namespace},{LABEL_SOURCE_NAME}={name}"
     )
 }
 
-/// Builds the zone-less core shared by every stale-cluster label selector:
-/// `managed-by=scout,source-cluster!=<current>,source-namespace=<ns>,source-name=<name>`.
+/// The label selector matching the legacy ARecords an earlier Scout wrote
+/// for one source object: the source's cluster, namespace and name labels,
+/// and **no** `source-kind` label (`!bindy.firestoned.io/source-kind`).
 ///
-/// Every stale-cluster selector — for all four resource kinds, plus the
-/// diagnostic listing in [`log_unscoped_stale_cluster_arecord_candidates`] —
-/// is built from this one function, so a change to the label keys cannot drift
-/// between them and leave the diagnostic reporting different records than the
-/// cleanup would actually delete.
+/// Records from before ADR-0022 carry no kind, so they cannot be told apart
+/// by kind; the pipeline deletes them after it has applied the source's
+/// new-named records (ADR-0022, Decision 4).
+#[must_use]
+pub fn legacy_arecord_label_selector(cluster: &str, namespace: &str, name: &str) -> String {
+    format!(
+        "{LABEL_MANAGED_BY}={LABEL_MANAGED_BY_SCOUT},{LABEL_SOURCE_CLUSTER}={cluster},\
+         !{LABEL_SOURCE_KIND},{LABEL_SOURCE_NAMESPACE}={namespace},{LABEL_SOURCE_NAME}={name}"
+    )
+}
+
+/// The kind clause of a stale-cluster selector: either one source kind, or
+/// (for records written before ADR-0022) no kind label at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StaleKind<'a> {
+    /// Records carrying `source-kind=<kind>`.
+    Kind(&'a str),
+    /// Legacy records with no `source-kind` label.
+    Legacy,
+}
+
+/// Builds the zone-less core of every stale-cluster selector:
+/// `managed-by=scout,source-cluster!=<current>,<kind clause>,
+/// source-namespace=<ns>,source-name=<name>`.
+///
+/// The stale-cluster cleanup and the diagnostic listing for a missing zone
+/// are both built from this one function, so the diagnostic cannot report
+/// different records than the cleanup would delete.
 ///
 /// # Arguments
 /// * `current_cluster` - Cluster name to exclude (the one running this Scout)
-/// * `namespace` - Source namespace of the Ingress/Route
-/// * `resource_name` - Source name of the Ingress/Route
+/// * `kind` - The source kind, or [`StaleKind::Legacy`] for unlabelled records
+/// * `namespace` - Source namespace
+/// * `name` - Source name
+#[must_use]
 pub(crate) fn stale_selector_base(
     current_cluster: &str,
+    kind: StaleKind<'_>,
     namespace: &str,
-    resource_name: &str,
+    name: &str,
 ) -> String {
+    let kind_clause = match kind {
+        StaleKind::Kind(kind) => format!("{LABEL_SOURCE_KIND}={kind}"),
+        StaleKind::Legacy => format!("!{LABEL_SOURCE_KIND}"),
+    };
     format!(
-        "{managed_key}={managed_val},{cluster_key}!={cluster_val},{ns_key}={ns_val},{name_key}={name_val}",
-        managed_key = LABEL_MANAGED_BY,
-        managed_val = LABEL_MANAGED_BY_SCOUT,
-        cluster_key = LABEL_SOURCE_CLUSTER,
-        cluster_val = current_cluster,
-        ns_key = LABEL_SOURCE_NAMESPACE,
-        ns_val = namespace,
-        name_key = LABEL_SOURCE_NAME,
-        name_val = resource_name,
+        "{LABEL_MANAGED_BY}={LABEL_MANAGED_BY_SCOUT},{LABEL_SOURCE_CLUSTER}!={current_cluster},\
+         {kind_clause},{LABEL_SOURCE_NAMESPACE}={namespace},{LABEL_SOURCE_NAME}={name}"
     )
 }
 
-/// Builds a stale-cluster selector scoped to a single DNS zone, by appending a
-/// `zone=<current_zone>` clause to [`stale_selector_base`].
+/// Builds a label selector matching a source's ARecords that belong to
+/// **any cluster other than `current_cluster`, in the same DNS zone**.
 ///
-/// `current_zone` must be a legal Kubernetes label value — see
-/// [`is_valid_zone_label_value`]; an illegal value makes the API server reject
-/// the resulting `list` with a 400.
-fn stale_selector_for_zone(
-    current_cluster: &str,
-    namespace: &str,
-    resource_name: &str,
-    current_zone: &str,
-) -> String {
-    format!(
-        "{base},{zone_key}={zone_val}",
-        base = stale_selector_base(current_cluster, namespace, resource_name),
-        zone_key = LABEL_ZONE,
-        zone_val = current_zone,
-    )
-}
-
-/// Builds a label selector string matching ARecords for the given Ingress that
-/// belong to **any cluster other than `current_cluster`, in the same DNS zone**.
+/// Used to clean up the records a Scout restarted with a different
+/// `--cluster-name` left behind. The `zone=current_zone` clause narrows the
+/// match to clusters publishing into the *same* DNS zone: without it, two
+/// unrelated clusters sharing a namespace and source name but publishing into
+/// **different** zones would delete each other's live records (#474).
 ///
-/// Used to detect and clean up stale ARecords left behind when the scout is
-/// restarted with a different `--cluster-name`. The `!=` operator is supported
-/// by the Kubernetes label selector language for equality-based requirements.
+/// **This does not fully identify "this same Scout under a prior cluster
+/// name."** Any cluster publishing into the same zone with a matching kind,
+/// namespace and name still matches. Closing that gap needs a stable
+/// instance marker, which this selector does not provide.
 ///
-/// The `zone=current_zone` clause narrows the match to clusters publishing
-/// into the *same* DNS zone as `current_cluster` — without it, two unrelated
-/// clusters that happen to share a namespace + ingress name but publish into
-/// **different** zones would each delete the other's live ARecord on every
-/// reconcile.
-///
-/// **This does not fully identify "this same physical Scout under a prior
-/// cluster name."** Any cluster publishing into the *same* zone with a
-/// matching namespace + ingress name still matches — a common multi-cluster
-/// topology where several clusters publish into one shared zone will still
-/// mutually delete each other's ARecords in a flapping loop. Fully closing
-/// that gap needs a marker that identifies the specific Scout instance (e.g.
-/// a stable instance UID label), which this selector does not provide.
+/// `current_zone` must be a legal Kubernetes label value (at most 63
+/// characters, alphanumeric at both ends); an illegal one makes the API
+/// server reject the `list` with a 400.
+#[must_use]
 pub fn stale_arecord_label_selector(
     current_cluster: &str,
+    kind: StaleKind<'_>,
     namespace: &str,
-    ingress_name: &str,
+    name: &str,
     current_zone: &str,
 ) -> String {
-    stale_selector_for_zone(current_cluster, namespace, ingress_name, current_zone)
+    format!(
+        "{},{LABEL_ZONE}={current_zone}",
+        stale_selector_base(current_cluster, kind, namespace, name)
+    )
 }
 
 // ============================================================================
@@ -1387,44 +1454,41 @@ pub(crate) struct ARecordParams<'a> {
     pub ttl: Option<i32>,
     /// Logical name of the source cluster (for labels)
     pub cluster_name: &'a str,
-    /// Source Ingress namespace (for labels)
-    pub ingress_namespace: &'a str,
-    /// Source Ingress name (for labels)
-    pub ingress_name: &'a str,
+    /// Kind of the source object (for labels)
+    pub source_kind: &'a str,
+    /// Namespace of the source object (for labels)
+    pub source_namespace: &'a str,
+    /// Name of the source object (for labels)
+    pub source_name: &'a str,
     /// DNS zone name (for labels)
     pub zone: &'a str,
 }
 
-/// Builds the ARecord CR that Scout will create on the target cluster.
+/// Builds the ARecord CR Scout writes for one host of one source object.
+///
+/// The record carries the labels Scout finds its own records by:
+/// `managed-by`, `source-cluster`, `source-kind`, `source-namespace`,
+/// `source-name`, and `zone`.
 pub(crate) fn build_arecord(params: ARecordParams<'_>) -> ARecord {
-    let mut labels = BTreeMap::new();
-    labels.insert(
-        LABEL_MANAGED_BY.to_string(),
-        LABEL_MANAGED_BY_SCOUT.to_string(),
-    );
-    labels.insert(
-        LABEL_SOURCE_CLUSTER.to_string(),
-        params.cluster_name.to_string(),
-    );
-    labels.insert(
-        LABEL_SOURCE_NAMESPACE.to_string(),
-        params.ingress_namespace.to_string(),
-    );
-    labels.insert(
-        LABEL_SOURCE_NAME.to_string(),
-        params.ingress_name.to_string(),
-    );
-    labels.insert(LABEL_ZONE.to_string(), params.zone.to_string());
-
-    let meta = kube::api::ObjectMeta {
-        name: Some(params.name.to_string()),
-        namespace: Some(params.target_namespace.to_string()),
-        labels: Some(labels),
-        ..Default::default()
-    };
+    let labels: BTreeMap<String, String> = [
+        (LABEL_MANAGED_BY, LABEL_MANAGED_BY_SCOUT),
+        (LABEL_SOURCE_CLUSTER, params.cluster_name),
+        (LABEL_SOURCE_KIND, params.source_kind),
+        (LABEL_SOURCE_NAMESPACE, params.source_namespace),
+        (LABEL_SOURCE_NAME, params.source_name),
+        (LABEL_ZONE, params.zone),
+    ]
+    .into_iter()
+    .map(|(k, v)| (k.to_string(), v.to_string()))
+    .collect();
 
     ARecord {
-        metadata: meta,
+        metadata: kube::api::ObjectMeta {
+            name: Some(params.name.to_string()),
+            namespace: Some(params.target_namespace.to_string()),
+            labels: Some(labels),
+            ..Default::default()
+        },
         spec: ARecordSpec {
             name: params.record_name.to_string(),
             ipv4_addresses: params.ips.to_vec(),
@@ -1450,20 +1514,25 @@ pub(crate) fn is_loadbalancer_service(svc: &Service) -> bool {
         .unwrap_or(false)
 }
 
-/// Extracts the first non-empty IP from the Service's LoadBalancer status.
+/// Extracts the first IPv4 address from the Service's LoadBalancer status.
 ///
-/// Returns `None` if the status has no entries, or the first entry has no IP
-/// (hostname-only entries are ignored). Scout re-queues and waits for the
-/// cloud provider to assign an external IP.
+/// Returns `None` if the status has no entries or no entry carries an IPv4
+/// address (hostname-only entries are ignored, non-IPv4 ones are skipped by
+/// [`retain_ipv4`]). Scout re-queues and waits for the cloud provider to
+/// assign an external IP.
 pub(crate) fn resolve_ip_from_service_lb_status(svc: &Service) -> Option<String> {
-    svc.status
+    let ips = svc
+        .status
         .as_ref()?
         .load_balancer
         .as_ref()?
         .ingress
         .as_ref()?
         .iter()
-        .find_map(|entry| entry.ip.clone().filter(|ip| !ip.is_empty()))
+        .filter_map(|entry| entry.ip.clone().filter(|ip| !ip.is_empty()));
+    retain_ipv4(ips, "Service status.loadBalancer")
+        .into_iter()
+        .next()
 }
 
 /// Parses a `namespace/name` string into a [`NamespacedName`].
@@ -1527,36 +1596,59 @@ pub(crate) fn parse_gateway_service_entry(entry: &str) -> Option<(String, Gatewa
     Some((class.to_string(), target))
 }
 
-/// Parses the operator's `gatewayClass → LoadBalancer Service` map from a single
-/// comma-separated string (the `BINDY_SCOUT_GATEWAY_SERVICES` env form).
+/// Parses the operator's `gatewayClass -> LoadBalancer Service` map from a
+/// single comma-separated string (the `BINDY_SCOUT_GATEWAY_SERVICES` env form).
 ///
 /// Each entry is `class=<target>`, where `<target>` is either `namespace/name`
 /// or `namespace/<label-selector>`, e.g.
 /// `traefik=traefik/traefik,cilium=kube-system/app.kubernetes.io/name=cilium`.
-/// Malformed entries are skipped. Because commas separate entries here,
-/// multi-label selectors (which use commas) must be supplied via the repeatable
-/// `--gateway-service` CLI flag instead. The map's keys double as the allow-list
-/// of gateway classes Scout will follow.
-#[must_use]
-pub(crate) fn parse_gateway_services(raw: &str) -> BTreeMap<String, GatewayServiceTarget> {
-    raw.split(',')
-        .filter(|e| !e.trim().is_empty())
-        .filter_map(parse_gateway_service_entry)
+/// Empty entries (a trailing comma) are skipped. Because commas separate
+/// entries here, multi-label selectors (which use commas) must be supplied via
+/// the repeatable `--gateway-service` CLI flag instead. The map's keys double
+/// as the allow-list of gateway classes Scout will follow.
+///
+/// # Errors
+/// Returns an error naming the first malformed entry: a misconfigured map
+/// fails Scout at startup instead of silently dropping a gateway class
+/// (ADR-0022, Decision 6).
+pub(crate) fn parse_gateway_services(raw: &str) -> Result<BTreeMap<String, GatewayServiceTarget>> {
+    parse_gateway_service_entries(raw.split(',').filter(|e| !e.trim().is_empty()))
+}
+
+/// Parses each `class=<target>` entry, failing on the first malformed one.
+///
+/// # Errors
+/// Returns an error naming the malformed entry.
+pub(crate) fn parse_gateway_service_entries<'a>(
+    entries: impl IntoIterator<Item = &'a str>,
+) -> Result<BTreeMap<String, GatewayServiceTarget>> {
+    entries
+        .into_iter()
+        .map(|entry| {
+            parse_gateway_service_entry(entry).ok_or_else(|| {
+                anyhow!(
+                    "malformed gateway-service entry {entry:?}: expected \
+                     class=namespace/name or class=namespace/<label-selector>"
+                )
+            })
+        })
         .collect()
 }
 
-/// Extracts the IP-typed addresses from a Gateway's `status.addresses`.
+/// Extracts the IPv4 addresses from a Gateway's `status.addresses`.
 ///
-/// An entry is treated as an IP when its `type` is `IPAddress`, or when the
-/// `type` is absent but the `value` parses as an [`IpAddr`](std::net::IpAddr).
-/// `Hostname`-typed entries are ignored. Returns an empty vec when the Gateway
-/// has no addresses (the common case that forces the LoadBalancer-Service hop).
+/// An entry is a candidate when its `type` is `IPAddress`, or when the `type`
+/// is absent but the `value` parses as an [`IpAddr`](std::net::IpAddr).
+/// `Hostname`-typed entries are ignored, and candidates that are not IPv4 are
+/// skipped with a warning by [`retain_ipv4`] (`ARecord` is IPv4-only).
+/// Returns an empty vec when the Gateway has no addresses (the common case
+/// that forces the LoadBalancer-Service hop).
 #[must_use]
 pub(crate) fn gateway_addresses_as_ips(gw: &Gateway) -> Vec<String> {
     let Some(addresses) = gw.status.as_ref().and_then(|s| s.addresses.as_ref()) else {
         return Vec::new();
     };
-    addresses
+    let candidates = addresses
         .iter()
         .filter(|addr| match addr.r#type.as_deref() {
             Some("IPAddress") => true,
@@ -1564,8 +1656,8 @@ pub(crate) fn gateway_addresses_as_ips(gw: &Gateway) -> Vec<String> {
             _ => addr.value.parse::<std::net::IpAddr>().is_ok(),
         })
         .map(|addr| addr.value.clone())
-        .filter(|v| !v.is_empty())
-        .collect()
+        .filter(|v| !v.is_empty());
+    retain_ipv4(candidates, "Gateway status.addresses")
 }
 
 /// Resolves a route's `parentRefs` to the Gateways they point at.
@@ -1597,2654 +1689,6 @@ pub(crate) fn gateway_parent_refs(
             name: r.name.clone(),
         })
         .collect()
-}
-
-/// Resolves the external IP of the LoadBalancer Service a gateway class maps to.
-///
-/// For a [`GatewayServiceTarget::Name`] the Service is fetched directly; for a
-/// [`GatewayServiceTarget::Labeled`] target the namespace is listed by label
-/// selector and the first LoadBalancer Service with an external IP is used.
-/// Returns `None` (with a debug log) when the Service is unreachable, absent, or
-/// has no external IP assigned yet.
-async fn resolve_ip_from_gateway_service(
-    client: &Client,
-    target: &GatewayServiceTarget,
-) -> Option<String> {
-    match target {
-        GatewayServiceTarget::Name(svc_ref) => {
-            let svc_api: Api<Service> = Api::namespaced(client.clone(), &svc_ref.namespace);
-            match svc_api.get(&svc_ref.name).await {
-                Ok(svc) => resolve_ip_from_service_lb_status(&svc).or_else(|| {
-                    debug!(service = %svc_ref.name, ns = %svc_ref.namespace,
-                        "Gateway LoadBalancer Service has no external IP yet");
-                    None
-                }),
-                Err(e) => {
-                    debug!(service = %svc_ref.name, ns = %svc_ref.namespace, error = %e,
-                        "Could not fetch Gateway's LoadBalancer Service");
-                    None
-                }
-            }
-        }
-        GatewayServiceTarget::Labeled {
-            namespace,
-            selector,
-        } => {
-            let svc_api: Api<Service> = Api::namespaced(client.clone(), namespace);
-            let lp = kube::api::ListParams::default().labels(selector);
-            match list_all_paginated(&svc_api, lp).await {
-                Ok(list) => list
-                    .iter()
-                    .filter(|svc| is_loadbalancer_service(svc))
-                    .find_map(resolve_ip_from_service_lb_status)
-                    .or_else(|| {
-                        debug!(ns = %namespace, selector = %selector,
-                            "No LoadBalancer Service with an external IP matched the selector");
-                        None
-                    }),
-                Err(e) => {
-                    debug!(ns = %namespace, selector = %selector, error = %e,
-                        "Could not list Gateway LoadBalancer Services by selector");
-                    None
-                }
-            }
-        }
-    }
-}
-
-/// Follows a route's `parentRefs` back to the serving Gateway(s) and resolves
-/// their external IP(s).
-///
-/// For each `parentRef` that resolves to a Gateway, Scout resolves the IP by:
-///   1. reading the Gateway's `status.addresses` (IP-typed) — no extra
-///      configuration required; works as long as the gateway controller
-///      populates its own status.
-///   2. if `status.addresses` is empty, looking up the gateway class in the
-///      operator-configured `gateway_services` map and reading the external IP
-///      of the mapped LoadBalancer Service.
-///
-/// Returns the de-duplicated IPs in discovery order, or `None` when nothing
-/// resolves. Individual lookup failures are logged and skipped so one
-/// unreachable Gateway does not blank out the others.
-///
-/// # Arguments
-/// * `client` - Local cluster client (Gateways and Services live on the workload cluster)
-/// * `route_namespace` - Namespace of the route, used as the default parentRef namespace
-/// * `parent_refs` - The route's `spec.parentRefs`
-/// * `gateway_services` - Optional fallback map: `gatewayClass → Service` used only when
-///   `status.addresses` is absent
-pub(crate) async fn resolve_ips_from_gateways(
-    client: &Client,
-    route_namespace: &str,
-    parent_refs: &[ParentReference],
-    gateway_services: &BTreeMap<String, GatewayServiceTarget>,
-) -> Option<Vec<String>> {
-    if parent_refs.is_empty() {
-        return None;
-    }
-
-    let mut ips: Vec<String> = Vec::new();
-    for gw_ref in gateway_parent_refs(parent_refs, route_namespace) {
-        let gw_api: Api<Gateway> = Api::namespaced(client.clone(), &gw_ref.namespace);
-        let gateway = match gw_api.get(&gw_ref.name).await {
-            Ok(gw) => gw,
-            Err(e) => {
-                debug!(gateway = %gw_ref.name, ns = %gw_ref.namespace, error = %e,
-                    "Skipping parentRef Gateway that could not be fetched");
-                continue;
-            }
-        };
-
-        // Prefer the Gateway's own advertised addresses when present — no
-        // gateway-services configuration needed for this path.
-        let gw_ips = gateway_addresses_as_ips(&gateway);
-        if !gw_ips.is_empty() {
-            ips.extend(gw_ips);
-            continue;
-        }
-
-        // status.addresses is empty — fall back to the mapped LoadBalancer
-        // Service if the gateway class is in the operator-configured map.
-        let class = &gateway.spec.gateway_class_name;
-        let Some(target) = gateway_services.get(class) else {
-            debug!(gateway = %gw_ref.name, class = %class,
-                "Gateway has no status.addresses and class not in configured gateway-services — skipping");
-            continue;
-        };
-        if let Some(ip) = resolve_ip_from_gateway_service(client, target).await {
-            ips.push(ip);
-        }
-    }
-
-    // De-duplicate preserving discovery order.
-    let mut seen = std::collections::HashSet::new();
-    ips.retain(|ip| seen.insert(ip.clone()));
-
-    if ips.is_empty() {
-        None
-    } else {
-        Some(ips)
-    }
-}
-
-/// Derives the ARecord CR name for a Service.
-///
-/// Format: `scout-{cluster}-{namespace}-{service_name}`
-///
-/// No index suffix — unlike Ingress, a Service produces exactly one ARecord.
-/// Applies the same sanitisation and 253-char truncation as Ingress CR names.
-pub(crate) fn service_arecord_cr_name(
-    cluster: &str,
-    namespace: &str,
-    service_name: &str,
-) -> String {
-    let raw = format!("{ARECORD_NAME_PREFIX}-{cluster}-{namespace}-{service_name}");
-    let sanitized = sanitize_k8s_name(&raw);
-    sanitized[..sanitized.len().min(MAX_K8S_NAME_LEN)].to_string()
-}
-
-/// Builds a Kubernetes label selector matching all ARecords created by Scout
-/// for a specific Service.
-pub(crate) fn service_arecord_label_selector(
-    cluster: &str,
-    namespace: &str,
-    service_name: &str,
-) -> String {
-    source_arecord_label_selector(cluster, namespace, service_name)
-}
-
-/// Builds a label selector string matching ARecords for the given Service that
-/// belong to **any cluster other than `current_cluster`, in the same DNS zone**.
-/// See [`stale_arecord_label_selector`].
-pub(crate) fn stale_service_arecord_label_selector(
-    current_cluster: &str,
-    namespace: &str,
-    service_name: &str,
-    current_zone: &str,
-) -> String {
-    stale_selector_for_zone(current_cluster, namespace, service_name, current_zone)
-}
-
-/// Returns `true` when a Service should have an ARecord published.
-///
-/// All three must hold: the Service opted in, its namespace is eligible, and
-/// it is `type: LoadBalancer` (only those have routable external IPs). When
-/// this is `false` and the Scout finalizer is present, the Service is released
-/// exactly like an opt-out, so a Service that changes from `LoadBalancer` to
-/// `ClusterIP` does not keep publishing its old IP.
-pub(crate) fn service_publishes_dns(
-    opted_in: bool,
-    namespace_eligible: bool,
-    is_loadbalancer: bool,
-) -> bool {
-    opted_in && namespace_eligible && is_loadbalancer
-}
-
-/// Parameters for building a Service-sourced ARecord CR.
-pub(crate) struct ServiceARecordParams<'a> {
-    /// Kubernetes resource name for the ARecord CR
-    pub name: &'a str,
-    /// Namespace where the ARecord CR will be created
-    pub target_namespace: &'a str,
-    /// DNS record name within the zone (e.g. `"my-svc"`)
-    pub record_name: &'a str,
-    /// IPv4 addresses for the record
-    pub ips: &'a [String],
-    /// Optional TTL override in seconds
-    pub ttl: Option<i32>,
-    /// Logical name of the source cluster (for labels)
-    pub cluster_name: &'a str,
-    /// Source Service namespace (for labels)
-    pub service_namespace: &'a str,
-    /// Source Service name (for labels)
-    pub service_name: &'a str,
-    /// DNS zone name (for labels)
-    pub zone: &'a str,
-}
-
-/// Builds the ARecord CR that Scout will create for a `LoadBalancer` Service.
-pub(crate) fn build_service_arecord(params: ServiceARecordParams<'_>) -> ARecord {
-    let mut labels = BTreeMap::new();
-    labels.insert(
-        LABEL_MANAGED_BY.to_string(),
-        LABEL_MANAGED_BY_SCOUT.to_string(),
-    );
-    labels.insert(
-        LABEL_SOURCE_CLUSTER.to_string(),
-        params.cluster_name.to_string(),
-    );
-    labels.insert(
-        LABEL_SOURCE_NAMESPACE.to_string(),
-        params.service_namespace.to_string(),
-    );
-    labels.insert(
-        LABEL_SOURCE_NAME.to_string(),
-        params.service_name.to_string(),
-    );
-    labels.insert(LABEL_ZONE.to_string(), params.zone.to_string());
-
-    let meta = kube::api::ObjectMeta {
-        name: Some(params.name.to_string()),
-        namespace: Some(params.target_namespace.to_string()),
-        labels: Some(labels),
-        ..Default::default()
-    };
-
-    ARecord {
-        metadata: meta,
-        spec: ARecordSpec {
-            name: params.record_name.to_string(),
-            ipv4_addresses: params.ips.to_vec(),
-            ttl: params.ttl,
-        },
-        status: None,
-    }
-}
-
-// ============================================================================
-// Gateway API (HTTPRoute / TLSRoute) helpers
-// ============================================================================
-
-/// Derives the ARecord CR name for an HTTPRoute.
-///
-/// Format: `scout-{cluster}-{namespace}-{route_name}-{hostname_index}`
-///
-/// One ARecord per hostname in `spec.hostnames[]`. Index tracks which hostname
-/// this ARecord is for. Applies the same sanitisation and 253-char truncation
-/// as Ingress CR names.
-pub(crate) fn httproute_arecord_cr_name(
-    cluster: &str,
-    namespace: &str,
-    route_name: &str,
-    hostname_index: usize,
-) -> String {
-    let raw = format!("{ARECORD_NAME_PREFIX}-{cluster}-{namespace}-{route_name}-{hostname_index}");
-    let sanitized = sanitize_k8s_name(&raw);
-    sanitized[..sanitized.len().min(MAX_K8S_NAME_LEN)].to_string()
-}
-
-/// Derives the ARecord CR name for a TLSRoute.
-///
-/// Format: `scout-{cluster}-{namespace}-{route_name}-{hostname_index}`
-///
-/// One ARecord per hostname in `spec.hostnames[]`. Index tracks which hostname
-/// this ARecord is for. Applies the same sanitisation and 253-char truncation.
-pub(crate) fn tlsroute_arecord_cr_name(
-    cluster: &str,
-    namespace: &str,
-    route_name: &str,
-    hostname_index: usize,
-) -> String {
-    let raw = format!("{ARECORD_NAME_PREFIX}-{cluster}-{namespace}-{route_name}-{hostname_index}");
-    let sanitized = sanitize_k8s_name(&raw);
-    sanitized[..sanitized.len().min(MAX_K8S_NAME_LEN)].to_string()
-}
-
-/// Builds a Kubernetes label selector matching all ARecords created by Scout
-/// for a specific HTTPRoute.
-pub(crate) fn httproute_arecord_label_selector(
-    cluster: &str,
-    namespace: &str,
-    route_name: &str,
-) -> String {
-    source_arecord_label_selector(cluster, namespace, route_name)
-}
-
-/// Builds a Kubernetes label selector matching all ARecords created by Scout
-/// for a specific TLSRoute.
-pub(crate) fn tlsroute_arecord_label_selector(
-    cluster: &str,
-    namespace: &str,
-    route_name: &str,
-) -> String {
-    source_arecord_label_selector(cluster, namespace, route_name)
-}
-
-/// Derives the ARecord CR name for a TCPRoute.
-pub(crate) fn tcproute_arecord_cr_name(
-    cluster: &str,
-    namespace: &str,
-    route_name: &str,
-    hostname_index: usize,
-) -> String {
-    let raw = format!("{ARECORD_NAME_PREFIX}-{cluster}-{namespace}-{route_name}-{hostname_index}");
-    let sanitized = sanitize_k8s_name(&raw);
-    sanitized[..sanitized.len().min(MAX_K8S_NAME_LEN)].to_string()
-}
-
-/// Builds a Kubernetes label selector matching all ARecords created by Scout
-/// for a specific TCPRoute.
-pub(crate) fn tcproute_arecord_label_selector(
-    cluster: &str,
-    namespace: &str,
-    route_name: &str,
-) -> String {
-    source_arecord_label_selector(cluster, namespace, route_name)
-}
-
-/// Builds a label selector string matching ARecords for the given HTTPRoute that
-/// belong to **any cluster other than `current_cluster`, in the same DNS zone**.
-///
-/// Used to detect and clean up stale ARecords left behind when scout is
-/// restarted with a different `--cluster-name`. See
-/// [`stale_arecord_label_selector`] for why the `zone=current_zone` clause is
-/// required alongside `cluster!=current_cluster`, and for the limitation
-/// this does not address (clusters sharing a zone).
-pub fn stale_httproute_arecord_label_selector(
-    current_cluster: &str,
-    namespace: &str,
-    route_name: &str,
-    current_zone: &str,
-) -> String {
-    stale_selector_for_zone(current_cluster, namespace, route_name, current_zone)
-}
-
-/// Builds a label selector string matching ARecords for the given TLSRoute that
-/// belong to **any cluster other than `current_cluster`, in the same DNS zone**.
-/// See [`stale_arecord_label_selector`].
-pub fn stale_tlsroute_arecord_label_selector(
-    current_cluster: &str,
-    namespace: &str,
-    route_name: &str,
-    current_zone: &str,
-) -> String {
-    stale_selector_for_zone(current_cluster, namespace, route_name, current_zone)
-}
-
-/// Builds a label selector string matching ARecords for the given TCPRoute that
-/// belong to **any cluster other than `current_cluster`, in the same DNS zone**.
-/// See [`stale_arecord_label_selector`].
-pub fn stale_tcproute_arecord_label_selector(
-    current_cluster: &str,
-    namespace: &str,
-    route_name: &str,
-    current_zone: &str,
-) -> String {
-    stale_selector_for_zone(current_cluster, namespace, route_name, current_zone)
-}
-
-/// Parameters for building an ARecord CR from an HTTPRoute.
-pub(crate) struct HTTPRouteARecordParams<'a> {
-    /// Kubernetes resource name for the ARecord CR
-    pub name: &'a str,
-    /// Namespace where the ARecord CR will be created
-    pub target_namespace: &'a str,
-    /// DNS record name within the zone (e.g. `"api"`)
-    pub record_name: &'a str,
-    /// IPv4 addresses for the record
-    pub ips: &'a [String],
-    /// Optional TTL override in seconds
-    pub ttl: Option<i32>,
-    /// Logical name of the source cluster (for labels)
-    pub cluster_name: &'a str,
-    /// Source HTTPRoute namespace (for labels)
-    pub route_namespace: &'a str,
-    /// Source HTTPRoute name (for labels)
-    pub route_name: &'a str,
-    /// DNS zone name (for labels)
-    pub zone: &'a str,
-}
-
-/// Builds the ARecord CR that Scout will create for an HTTPRoute.
-pub(crate) fn build_httproute_arecord(params: HTTPRouteARecordParams<'_>) -> ARecord {
-    let mut labels = BTreeMap::new();
-    labels.insert(
-        LABEL_MANAGED_BY.to_string(),
-        LABEL_MANAGED_BY_SCOUT.to_string(),
-    );
-    labels.insert(
-        LABEL_SOURCE_CLUSTER.to_string(),
-        params.cluster_name.to_string(),
-    );
-    labels.insert(
-        LABEL_SOURCE_NAMESPACE.to_string(),
-        params.route_namespace.to_string(),
-    );
-    labels.insert(LABEL_SOURCE_NAME.to_string(), params.route_name.to_string());
-    labels.insert(LABEL_ZONE.to_string(), params.zone.to_string());
-
-    let meta = kube::api::ObjectMeta {
-        name: Some(params.name.to_string()),
-        namespace: Some(params.target_namespace.to_string()),
-        labels: Some(labels),
-        ..Default::default()
-    };
-
-    ARecord {
-        metadata: meta,
-        spec: ARecordSpec {
-            name: params.record_name.to_string(),
-            ipv4_addresses: params.ips.to_vec(),
-            ttl: params.ttl,
-        },
-        status: None,
-    }
-}
-
-/// Parameters for building an ARecord CR from a TLSRoute.
-pub(crate) struct TLSRouteARecordParams<'a> {
-    /// Kubernetes resource name for the ARecord CR
-    pub name: &'a str,
-    /// Namespace where the ARecord CR will be created
-    pub target_namespace: &'a str,
-    /// DNS record name within the zone (e.g. `"secure"`)
-    pub record_name: &'a str,
-    /// IPv4 addresses for the record
-    pub ips: &'a [String],
-    /// Optional TTL override in seconds
-    pub ttl: Option<i32>,
-    /// Logical name of the source cluster (for labels)
-    pub cluster_name: &'a str,
-    /// Source TLSRoute namespace (for labels)
-    pub route_namespace: &'a str,
-    /// Source TLSRoute name (for labels)
-    pub route_name: &'a str,
-    /// DNS zone name (for labels)
-    pub zone: &'a str,
-}
-
-/// Builds the ARecord CR that Scout will create for a TLSRoute.
-pub(crate) fn build_tlsroute_arecord(params: TLSRouteARecordParams<'_>) -> ARecord {
-    let mut labels = BTreeMap::new();
-    labels.insert(
-        LABEL_MANAGED_BY.to_string(),
-        LABEL_MANAGED_BY_SCOUT.to_string(),
-    );
-    labels.insert(
-        LABEL_SOURCE_CLUSTER.to_string(),
-        params.cluster_name.to_string(),
-    );
-    labels.insert(
-        LABEL_SOURCE_NAMESPACE.to_string(),
-        params.route_namespace.to_string(),
-    );
-    labels.insert(LABEL_SOURCE_NAME.to_string(), params.route_name.to_string());
-    labels.insert(LABEL_ZONE.to_string(), params.zone.to_string());
-
-    let meta = kube::api::ObjectMeta {
-        name: Some(params.name.to_string()),
-        namespace: Some(params.target_namespace.to_string()),
-        labels: Some(labels),
-        ..Default::default()
-    };
-
-    ARecord {
-        metadata: meta,
-        spec: ARecordSpec {
-            name: params.record_name.to_string(),
-            ipv4_addresses: params.ips.to_vec(),
-            ttl: params.ttl,
-        },
-        status: None,
-    }
-}
-
-/// Parameters for building an ARecord CR from a TCPRoute.
-pub(crate) struct TCPRouteARecordParams<'a> {
-    /// Kubernetes resource name for the ARecord CR
-    pub name: &'a str,
-    /// Namespace where the ARecord CR will be created
-    pub target_namespace: &'a str,
-    /// DNS record name within the zone (e.g. `"db"`)
-    pub record_name: &'a str,
-    /// IPv4 addresses for the record
-    pub ips: &'a [String],
-    /// Optional TTL override in seconds
-    pub ttl: Option<i32>,
-    /// Logical name of the source cluster (for labels)
-    pub cluster_name: &'a str,
-    /// Source TCPRoute namespace (for labels)
-    pub route_namespace: &'a str,
-    /// Source TCPRoute name (for labels)
-    pub route_name: &'a str,
-    /// DNS zone name (for labels)
-    pub zone: &'a str,
-}
-
-/// Builds the ARecord CR that Scout will create for a TCPRoute.
-pub(crate) fn build_tcproute_arecord(params: TCPRouteARecordParams<'_>) -> ARecord {
-    let mut labels = BTreeMap::new();
-    labels.insert(
-        LABEL_MANAGED_BY.to_string(),
-        LABEL_MANAGED_BY_SCOUT.to_string(),
-    );
-    labels.insert(
-        LABEL_SOURCE_CLUSTER.to_string(),
-        params.cluster_name.to_string(),
-    );
-    labels.insert(
-        LABEL_SOURCE_NAMESPACE.to_string(),
-        params.route_namespace.to_string(),
-    );
-    labels.insert(LABEL_SOURCE_NAME.to_string(), params.route_name.to_string());
-    labels.insert(LABEL_ZONE.to_string(), params.zone.to_string());
-
-    let meta = kube::api::ObjectMeta {
-        name: Some(params.name.to_string()),
-        namespace: Some(params.target_namespace.to_string()),
-        labels: Some(labels),
-        ..Default::default()
-    };
-
-    ARecord {
-        metadata: meta,
-        spec: ARecordSpec {
-            name: params.record_name.to_string(),
-            ipv4_addresses: params.ips.to_vec(),
-            ttl: params.ttl,
-        },
-        status: None,
-    }
-}
-
-// ============================================================================
-// Finalizer helpers (async: require Kubernetes API access)
-// ============================================================================
-
-/// Adds the Scout finalizer to a namespaced source object (Ingress, Service,
-/// HTTPRoute, TLSRoute or TCPRoute) if it is not already there.
-///
-/// Delegates to the SDK's [`finalizers::ensure_finalizer`], which sends a
-/// JSON Patch guarded by a `test` operation: on the object's
-/// `resourceVersion` when other finalizers exist, or on the list being
-/// absent when there are none. A finalizer another controller added or
-/// removed since Scout read the object is therefore never overwritten.
-///
-/// # Arguments
-/// * `client` - Client for the local (source) cluster
-/// * `obj` - The source object, as Scout last read it
-///
-/// # Errors
-/// Returns an error if the patch fails, including when the API server
-/// rejects it because the object changed concurrently. The reconcilers
-/// propagate it, so the controller's error policy requeues and the next
-/// reconcile retries against fresh state.
-pub(crate) async fn add_scout_finalizer<K>(client: &Client, obj: &K) -> Result<()>
-where
-    K: Resource<DynamicType = (), Scope = NamespaceResourceScope>
-        + Clone
-        + Debug
-        + DeserializeOwned,
-{
-    let api: Api<K> = Api::namespaced(client.clone(), &obj.namespace().unwrap_or_default());
-    finalizers::ensure_finalizer(&api, obj, FINALIZER_SCOUT).await
-}
-
-/// Removes the Scout finalizer from a namespaced source object (Ingress,
-/// Service, HTTPRoute, TLSRoute or TCPRoute) if it is there.
-///
-/// Delegates to the SDK's [`finalizers::remove_finalizer`], which removes
-/// Scout's entry by index in a JSON Patch that first `test`s the index still
-/// holds it, so a concurrent change to the list never drops another
-/// controller's finalizer.
-///
-/// # Arguments
-/// * `client` - Client for the local (source) cluster
-/// * `obj` - The source object, as Scout last read it
-///
-/// # Errors
-/// Returns an error if the patch fails, including when the API server
-/// rejects it because the list changed concurrently. The reconcilers
-/// propagate it, so the controller's error policy requeues; the ARecord
-/// cleanup that precedes the removal is idempotent and simply runs again.
-pub(crate) async fn remove_scout_finalizer<K>(client: &Client, obj: &K) -> Result<()>
-where
-    K: Resource<DynamicType = (), Scope = NamespaceResourceScope>
-        + Clone
-        + Debug
-        + DeserializeOwned,
-{
-    let api: Api<K> = Api::namespaced(client.clone(), &obj.namespace().unwrap_or_default());
-    finalizers::remove_finalizer(&api, obj, FINALIZER_SCOUT).await
-}
-
-/// Deletes all ARecords in `target_namespace` that were created by Scout for
-/// the given Ingress (identified by cluster + namespace + ingress name labels).
-///
-/// Must be called with the **remote** client so it targets the cluster where
-/// ARecords live (which may differ from the local cluster in Phase 2+).
-pub(crate) async fn delete_arecords_for_ingress(
-    remote_client: &Client,
-    target_namespace: &str,
-    cluster: &str,
-    ingress_namespace: &str,
-    ingress_name: &str,
-) -> Result<BTreeSet<String>> {
-    let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
-    let selector = arecord_label_selector(cluster, ingress_namespace, ingress_name);
-    let lp = ListParams::default().labels(&selector);
-
-    let arecords = list_all_paginated(&api, lp).await?;
-    let mut deleted_zones = BTreeSet::new();
-    for ar in arecords {
-        let ar_name = ar.name_any();
-        if let Some(zone) = ar.metadata.labels.as_ref().and_then(|l| l.get(LABEL_ZONE)) {
-            deleted_zones.insert(zone.clone());
-        }
-        api.delete(&ar_name, &DeleteParams::default()).await?;
-        info!(
-            arecord = %ar_name,
-            ingress = %ingress_name,
-            ns = %ingress_namespace,
-            "Deleted ARecord during Ingress cleanup"
-        );
-    }
-    Ok(deleted_zones)
-}
-
-/// Deletes all ARecords in `target_namespace` that were created by Scout for
-/// the given Ingress by a **previous** cluster name in the same DNS zone —
-/// i.e., any ARecord whose `source-cluster` label differs from
-/// `current_cluster` but whose `zone` label matches `current_zone`.
-///
-/// This is called after every successful reconcile so that a scout restarted
-/// with a new `--cluster-name` automatically cleans up the orphaned records
-/// it left behind under the old name. The zone match prevents this from
-/// deleting a live ARecord belonging to a genuinely different cluster that
-/// happens to share the same namespace + ingress name but publishes into a
-/// different zone.
-pub(crate) async fn delete_stale_cluster_arecords(
-    remote_client: &Client,
-    target_namespace: &str,
-    current_cluster: &str,
-    ingress_namespace: &str,
-    ingress_name: &str,
-    current_zone: &str,
-) -> Result<()> {
-    let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
-    let selector = stale_arecord_label_selector(
-        current_cluster,
-        ingress_namespace,
-        ingress_name,
-        current_zone,
-    );
-    let lp = ListParams::default().labels(&selector);
-
-    let arecords = list_all_paginated(&api, lp).await?;
-    for ar in arecords {
-        let ar_name = ar.name_any();
-        let old_cluster = ar
-            .metadata
-            .labels
-            .as_ref()
-            .and_then(|l| l.get(LABEL_SOURCE_CLUSTER))
-            .map(String::as_str)
-            .unwrap_or("unknown");
-        api.delete(&ar_name, &DeleteParams::default()).await?;
-        info!(
-            arecord = %ar_name,
-            old_cluster = %old_cluster,
-            new_cluster = %current_cluster,
-            ingress = %ingress_name,
-            ns = %ingress_namespace,
-            "Deleted stale ARecord after cluster-name change"
-        );
-    }
-    Ok(())
-}
-
-/// Deletes all ARecords in `target_namespace` that Scout created for the given Service.
-///
-/// Called during Service deletion, opt-out annotation removal, and when the
-/// Service stops being `type: LoadBalancer`. Returns the `zone` labels of the
-/// deleted records, for the stale-cluster cleanup that follows (see
-/// [`stale_cleanup_zones`]).
-async fn delete_arecords_for_service(
-    remote_client: &Client,
-    target_namespace: &str,
-    cluster: &str,
-    svc_namespace: &str,
-    svc_name: &str,
-) -> Result<BTreeSet<String>> {
-    let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
-    let selector = service_arecord_label_selector(cluster, svc_namespace, svc_name);
-    let lp = ListParams::default().labels(&selector);
-
-    let arecords = list_all_paginated(&api, lp).await?;
-    let mut deleted_zones = BTreeSet::new();
-    for ar in arecords {
-        let ar_name = ar.name_any();
-        if let Some(zone) = ar.metadata.labels.as_ref().and_then(|l| l.get(LABEL_ZONE)) {
-            deleted_zones.insert(zone.clone());
-        }
-        api.delete(&ar_name, &DeleteParams::default()).await?;
-        info!(
-            arecord = %ar_name,
-            service = %svc_name,
-            ns = %svc_namespace,
-            "Deleted ARecord during Service cleanup"
-        );
-    }
-    Ok(deleted_zones)
-}
-
-/// Deletes a Service's own ARecords, then its stale-cluster ARecords for every
-/// zone in play, mirroring the Ingress/route delete and opt-out paths.
-///
-/// `resolved_zone` is the zone from the Service's annotations or the operator
-/// default, if any; it is unioned with the zones of the records just deleted
-/// (see [`stale_cleanup_zones`]). When no usable zone is known, the
-/// stale-cluster candidates are only logged, never deleted.
-///
-/// # Errors
-/// Returns an error if listing or deleting ARecords on the remote cluster fails.
-async fn delete_service_arecords_with_stale_cleanup(
-    ctx: &ScoutContext,
-    svc_namespace: &str,
-    svc_name: &str,
-    resolved_zone: Option<&str>,
-) -> Result<()> {
-    let deleted_zones = delete_arecords_for_service(
-        &ctx.remote_client,
-        &ctx.target_namespace,
-        &ctx.cluster_name,
-        svc_namespace,
-        svc_name,
-    )
-    .await?;
-    let cleanup_zones = stale_cleanup_zones(resolved_zone, &deleted_zones);
-    if cleanup_zones.is_empty() {
-        warn!(service = %svc_name, ns = %svc_namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE), skipping stale-cluster ARecord cleanup; this Service's own ARecords were still removed");
-        log_unscoped_stale_cluster_arecord_candidates(
-            &ctx.remote_client,
-            &ctx.target_namespace,
-            &ctx.cluster_name,
-            "Service",
-            svc_namespace,
-            svc_name,
-        )
-        .await;
-        return Ok(());
-    }
-    for zone in &cleanup_zones {
-        delete_stale_cluster_service_arecords(
-            &ctx.remote_client,
-            &ctx.target_namespace,
-            &ctx.cluster_name,
-            svc_namespace,
-            svc_name,
-            zone,
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-/// Deletes all ARecords created by Scout for a specific HTTPRoute.
-pub(crate) async fn delete_arecords_for_httproute(
-    remote_client: &Client,
-    target_namespace: &str,
-    cluster: &str,
-    route_namespace: &str,
-    route_name: &str,
-) -> Result<BTreeSet<String>> {
-    let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
-    let selector = httproute_arecord_label_selector(cluster, route_namespace, route_name);
-    let lp = ListParams::default().labels(&selector);
-
-    let arecords = list_all_paginated(&api, lp).await?;
-    let mut deleted_zones = BTreeSet::new();
-    for ar in arecords {
-        let ar_name = ar.name_any();
-        if let Some(zone) = ar.metadata.labels.as_ref().and_then(|l| l.get(LABEL_ZONE)) {
-            deleted_zones.insert(zone.clone());
-        }
-        api.delete(&ar_name, &DeleteParams::default()).await?;
-        info!(
-            arecord = %ar_name,
-            httproute = %route_name,
-            ns = %route_namespace,
-            "Deleted ARecord during HTTPRoute cleanup"
-        );
-    }
-    Ok(deleted_zones)
-}
-
-/// Deletes all ARecords created by Scout for a specific TLSRoute.
-pub(crate) async fn delete_arecords_for_tlsroute(
-    remote_client: &Client,
-    target_namespace: &str,
-    cluster: &str,
-    route_namespace: &str,
-    route_name: &str,
-) -> Result<BTreeSet<String>> {
-    let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
-    let selector = tlsroute_arecord_label_selector(cluster, route_namespace, route_name);
-    let lp = ListParams::default().labels(&selector);
-
-    let arecords = list_all_paginated(&api, lp).await?;
-    let mut deleted_zones = BTreeSet::new();
-    for ar in arecords {
-        let ar_name = ar.name_any();
-        if let Some(zone) = ar.metadata.labels.as_ref().and_then(|l| l.get(LABEL_ZONE)) {
-            deleted_zones.insert(zone.clone());
-        }
-        api.delete(&ar_name, &DeleteParams::default()).await?;
-        info!(
-            arecord = %ar_name,
-            tlsroute = %route_name,
-            ns = %route_namespace,
-            "Deleted ARecord during TLSRoute cleanup"
-        );
-    }
-    Ok(deleted_zones)
-}
-
-/// Deletes stale ARecords for an HTTPRoute from a previous cluster name, in
-/// the same DNS zone. See [`delete_stale_cluster_arecords`] for why the zone
-/// match is required.
-pub(crate) async fn delete_stale_cluster_httproute_arecords(
-    remote_client: &Client,
-    target_namespace: &str,
-    current_cluster: &str,
-    route_namespace: &str,
-    route_name: &str,
-    current_zone: &str,
-) -> Result<()> {
-    let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
-    let selector = stale_httproute_arecord_label_selector(
-        current_cluster,
-        route_namespace,
-        route_name,
-        current_zone,
-    );
-    let lp = ListParams::default().labels(&selector);
-
-    let arecords = list_all_paginated(&api, lp).await?;
-    for ar in arecords {
-        let ar_name = ar.name_any();
-        api.delete(&ar_name, &DeleteParams::default()).await?;
-        info!(
-            arecord = %ar_name,
-            httproute = %route_name,
-            "Deleted stale HTTPRoute ARecord from previous cluster name"
-        );
-    }
-    Ok(())
-}
-
-/// Deletes stale ARecords for a TLSRoute from a previous cluster name, in the
-/// same DNS zone. See [`delete_stale_cluster_arecords`].
-pub(crate) async fn delete_stale_cluster_tlsroute_arecords(
-    remote_client: &Client,
-    target_namespace: &str,
-    current_cluster: &str,
-    route_namespace: &str,
-    route_name: &str,
-    current_zone: &str,
-) -> Result<()> {
-    let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
-    let selector = stale_tlsroute_arecord_label_selector(
-        current_cluster,
-        route_namespace,
-        route_name,
-        current_zone,
-    );
-    let lp = ListParams::default().labels(&selector);
-
-    let arecords = list_all_paginated(&api, lp).await?;
-    for ar in arecords {
-        let ar_name = ar.name_any();
-        api.delete(&ar_name, &DeleteParams::default()).await?;
-        info!(
-            arecord = %ar_name,
-            tlsroute = %route_name,
-            "Deleted stale TLSRoute ARecord from previous cluster name"
-        );
-    }
-    Ok(())
-}
-
-/// Deletes all ARecords created by Scout for a specific TCPRoute.
-pub(crate) async fn delete_arecords_for_tcproute(
-    remote_client: &Client,
-    target_namespace: &str,
-    cluster: &str,
-    route_namespace: &str,
-    route_name: &str,
-) -> Result<BTreeSet<String>> {
-    let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
-    let selector = tcproute_arecord_label_selector(cluster, route_namespace, route_name);
-    let lp = ListParams::default().labels(&selector);
-
-    let arecords = list_all_paginated(&api, lp).await?;
-    let mut deleted_zones = BTreeSet::new();
-    for ar in arecords {
-        let ar_name = ar.name_any();
-        if let Some(zone) = ar.metadata.labels.as_ref().and_then(|l| l.get(LABEL_ZONE)) {
-            deleted_zones.insert(zone.clone());
-        }
-        api.delete(&ar_name, &DeleteParams::default()).await?;
-        info!(
-            arecord = %ar_name,
-            tcproute = %route_name,
-            ns = %route_namespace,
-            "Deleted ARecord during TCPRoute cleanup"
-        );
-    }
-    Ok(deleted_zones)
-}
-
-/// Deletes stale ARecords for a TCPRoute from a previous cluster name, in the
-/// same DNS zone. See [`delete_stale_cluster_arecords`].
-pub(crate) async fn delete_stale_cluster_tcproute_arecords(
-    remote_client: &Client,
-    target_namespace: &str,
-    current_cluster: &str,
-    route_namespace: &str,
-    route_name: &str,
-    current_zone: &str,
-) -> Result<()> {
-    let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
-    let selector = stale_tcproute_arecord_label_selector(
-        current_cluster,
-        route_namespace,
-        route_name,
-        current_zone,
-    );
-    let lp = ListParams::default().labels(&selector);
-
-    let arecords = list_all_paginated(&api, lp).await?;
-    for ar in arecords {
-        let ar_name = ar.name_any();
-        api.delete(&ar_name, &DeleteParams::default()).await?;
-        info!(
-            arecord = %ar_name,
-            tcproute = %route_name,
-            "Deleted stale TCPRoute ARecord from previous cluster name"
-        );
-    }
-    Ok(())
-}
-
-/// Deletes stale ARecords for a Service from a previous cluster name, in the
-/// same DNS zone. See [`delete_stale_cluster_arecords`].
-pub(crate) async fn delete_stale_cluster_service_arecords(
-    remote_client: &Client,
-    target_namespace: &str,
-    current_cluster: &str,
-    svc_namespace: &str,
-    svc_name: &str,
-    current_zone: &str,
-) -> Result<()> {
-    let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
-    let selector = stale_service_arecord_label_selector(
-        current_cluster,
-        svc_namespace,
-        svc_name,
-        current_zone,
-    );
-    let lp = ListParams::default().labels(&selector);
-
-    let arecords = list_all_paginated(&api, lp).await?;
-    for ar in arecords {
-        let ar_name = ar.name_any();
-        api.delete(&ar_name, &DeleteParams::default()).await?;
-        info!(
-            arecord = %ar_name,
-            service = %svc_name,
-            ns = %svc_namespace,
-            "Deleted stale Service ARecord from previous cluster name"
-        );
-    }
-    Ok(())
-}
-
-/// Decides which of a source object's existing ARecords are no longer
-/// published and must be deleted.
-///
-/// Scout names per-host records by index (`{cr_name_prefix}{index}`), so when
-/// an Ingress / HTTPRoute / TLSRoute drops a host, or a host stops matching the
-/// zone, the record for that index is not re-applied and would otherwise stay
-/// in DNS forever. A name is returned when it is `cr_name_prefix` followed by
-/// one or more ASCII digits and is not in `applied`.
-///
-/// The digit-suffix check matters: a same-named Service in the same namespace
-/// carries the same source labels, but its record name has no index, so it is
-/// never selected here.
-///
-/// # Arguments
-/// * `existing` - Names of the ARecords currently labelled for this source
-/// * `applied` - Names of the ARecords applied in this reconcile pass
-/// * `cr_name_prefix` - From [`indexed_arecord_cr_name_prefix`]
-pub(crate) fn arecords_to_prune(
-    existing: &[String],
-    applied: &BTreeSet<String>,
-    cr_name_prefix: &str,
-) -> Vec<String> {
-    existing
-        .iter()
-        .filter(|name| !applied.contains(*name))
-        .filter(|name| {
-            name.strip_prefix(cr_name_prefix)
-                .is_some_and(|idx| !idx.is_empty() && idx.chars().all(|c| c.is_ascii_digit()))
-        })
-        .cloned()
-        .collect()
-}
-
-/// Deletes the ARecords matching `selector` that were not applied in this
-/// reconcile pass (see [`arecords_to_prune`] for exactly which are chosen).
-///
-/// Shared by every kind that publishes one record per host. `selector` must be
-/// the current-cluster selector for the source object (for example
-/// [`arecord_label_selector`]); records from other cluster names are handled
-/// by the stale-cluster cleanup instead.
-///
-/// # Errors
-/// Returns an error if listing or deleting ARecords on the remote cluster fails.
-pub(crate) async fn prune_unapplied_arecords(
-    remote_client: &Client,
-    target_namespace: &str,
-    selector: &str,
-    cr_name_prefix: &str,
-    applied: &BTreeSet<String>,
-) -> Result<()> {
-    let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
-    let lp = ListParams::default().labels(selector);
-
-    let existing: Vec<String> = list_all_paginated(&api, lp)
-        .await?
-        .iter()
-        .map(ARecord::name_any)
-        .collect();
-    for ar_name in arecords_to_prune(&existing, applied, cr_name_prefix) {
-        api.delete(&ar_name, &DeleteParams::default()).await?;
-        info!(
-            arecord = %ar_name,
-            selector = %selector,
-            "Deleted ARecord for a host that is no longer published"
-        );
-    }
-    Ok(())
-}
-
-/// Logs, without deleting, the names of `ARecords` in `target_namespace` that
-/// belong to any cluster other than `current_cluster` and share the given
-/// source namespace/name labels — deliberately unscoped by zone.
-///
-/// Used only when a delete or opt-out path cannot resolve a usable DNS zone
-/// (missing or invalid `bindy.firestoned.io/zone` annotation / default
-/// zone) for the object being removed. Unlike the reconcile path, delete and
-/// opt-out remove the finalizer unconditionally afterwards — there is no
-/// future reconcile to retry a deferred cleanup — so silently skipping would
-/// orphan the record permanently with no trace of it. We cannot safely
-/// delete here (no zone means we can't tell this instance's own stale
-/// records from a genuinely different cluster's live one — see
-/// [`stale_arecord_label_selector`]), so this only surfaces candidates for an
-/// operator to review and delete manually.
-///
-/// Never fails the caller: list errors are logged and swallowed, since this
-/// is a best-effort diagnostic, not part of the cleanup itself.
-pub(crate) async fn log_unscoped_stale_cluster_arecord_candidates(
-    remote_client: &Client,
-    target_namespace: &str,
-    current_cluster: &str,
-    resource_kind: &str,
-    source_namespace: &str,
-    source_name: &str,
-) {
-    let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
-    let selector = stale_selector_base(current_cluster, source_namespace, source_name);
-    let lp = ListParams::default().labels(&selector);
-
-    match list_all_paginated(&api, lp).await {
-        Ok(arecords) => {
-            let candidates: Vec<String> = arecords.iter().map(ARecord::name_any).collect();
-            if !candidates.is_empty() {
-                warn!(
-                    resource_kind = %resource_kind,
-                    source_name = %source_name,
-                    ns = %source_namespace,
-                    candidates = ?candidates,
-                    "No usable DNS zone for stale-cluster ARecord cleanup — these ARecords from other cluster names were left behind and must be reviewed/deleted manually"
-                );
-            }
-        }
-        Err(e) => {
-            warn!(
-                resource_kind = %resource_kind,
-                source_name = %source_name,
-                ns = %source_namespace,
-                error = %e,
-                "Failed to list unscoped stale-cluster ARecord candidates for diagnostic logging"
-            );
-        }
-    }
-}
-
-// ============================================================================
-// Reconciler
-// ============================================================================
-
-/// Reconciles a single Ingress, creating or updating ARecord CRs as needed.
-///
-/// Handles the full lifecycle:
-/// - Adds a finalizer to opted-in Ingresses so deletion is intercepted.
-/// - On deletion, removes all ARecords Scout created then releases the finalizer.
-/// - If the opt-in annotation is removed, cleans up ARecords and the finalizer.
-///
-/// # Errors
-///
-/// Returns an error that will be retried by the controller runtime. That
-/// includes a finalizer patch the API server rejected because the Ingress
-/// changed concurrently (see [`add_scout_finalizer`]): it is handled like
-/// any other error, and the requeued reconcile works from fresh state. The
-/// Service and Gateway API route reconcilers treat it the same way.
-async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Action, ScoutError> {
-    let name = ingress.name_any();
-    let namespace = ingress.namespace().unwrap_or_default();
-
-    // Skip excluded namespaces
-    if ctx.excluded_namespaces.contains(&namespace) {
-        debug!(ingress = %name, ns = %namespace, "Skipping excluded namespace");
-        return Ok(Action::await_change());
-    }
-
-    // Handle Ingress deletion — remove ARecords and release the finalizer
-    if is_being_deleted(&*ingress) {
-        if finalizers::has_finalizer(&*ingress, FINALIZER_SCOUT) {
-            info!(ingress = %name, ns = %namespace, "Ingress deleting — cleaning up ARecords");
-            let deleting_annotations = ingress
-                .metadata
-                .annotations
-                .as_ref()
-                .unwrap_or(&EMPTY_ANNOTATIONS);
-            let deleting_zone = resolve_zone(deleting_annotations, ctx.default_zone.as_deref());
-            let cleanup: Result<()> = async {
-                let deleted_zones = delete_arecords_for_ingress(
-                    &ctx.remote_client,
-                    &ctx.target_namespace,
-                    &ctx.cluster_name,
-                    &namespace,
-                    &name,
-                )
-                .await?;
-                let cleanup_zones = stale_cleanup_zones(deleting_zone.as_deref(), &deleted_zones);
-                if cleanup_zones.is_empty() {
-                    warn!(ingress = %name, ns = %namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE) — skipping stale-cluster ARecord cleanup; this Ingress's own ARecords were still removed");
-                    log_unscoped_stale_cluster_arecord_candidates(
-                    &ctx.remote_client,
-                    &ctx.target_namespace,
-                    &ctx.cluster_name,
-                    "Ingress",
-                    &namespace,
-                    &name,
-                    )
-                    .await;
-                    return Ok(());
-                }
-                for zone in &cleanup_zones {
-                    delete_stale_cluster_arecords(
-                    &ctx.remote_client,
-                    &ctx.target_namespace,
-                    &ctx.cluster_name,
-                    &namespace,
-                    &name,
-                        zone,
-                    )
-                    .await?;
-                }
-                Ok(())
-            }
-            .await;
-            if let Err(e) = cleanup {
-                if !cleanup_grace_expired(
-                    ingress.metadata.deletion_timestamp.as_ref(),
-                    Timestamp::now(),
-                ) {
-                    warn!(ingress = %name, ns = %namespace, error = %e, "Remote ARecord cleanup failed during Ingress deletion — retrying within grace period");
-                    return Ok(Action::requeue(Duration::from_secs(
-                        SCOUT_ERROR_REQUEUE_SECS,
-                    )));
-                }
-                error!(ingress = %name, ns = %namespace, error = %e, grace_secs = REMOTE_CLEANUP_GRACE_SECS, "Remote ARecord cleanup still failing after grace period — releasing finalizer to unblock Ingress deletion; remote ARecords may be orphaned and must be reconciled separately");
-            }
-            remove_scout_finalizer(&ctx.client, &*ingress)
-                .await
-                .map_err(ScoutError::from)?;
-            info!(ingress = %name, ns = %namespace, "Finalizer removed — Ingress deletion unblocked");
-        }
-        return Ok(Action::await_change());
-    }
-
-    let annotations = ingress
-        .metadata
-        .annotations
-        .as_ref()
-        .unwrap_or(&EMPTY_ANNOTATIONS);
-
-    // Guard: opt-in annotation required (scout-enabled: "true" or recordKind: "ARecord")
-    let namespace_eligible =
-        source_namespace_eligible(&ctx.client, &namespace, ctx.namespace_selector.as_deref())
-            .await
-            .map_err(ScoutError::from)?;
-
-    if !is_scout_opted_in(annotations) || !namespace_eligible {
-        // Annotation may have been removed after a finalizer was added — clean up
-        if finalizers::has_finalizer(&*ingress, FINALIZER_SCOUT) {
-            info!(ingress = %name, ns = %namespace, "Scout opt-in annotation removed — cleaning up ARecords and finalizer");
-            let opt_out_zone = resolve_zone(annotations, ctx.default_zone.as_deref());
-            let deleted_zones = delete_arecords_for_ingress(
-                &ctx.remote_client,
-                &ctx.target_namespace,
-                &ctx.cluster_name,
-                &namespace,
-                &name,
-            )
-            .await
-            .map_err(ScoutError::from)?;
-            let cleanup_zones = stale_cleanup_zones(opt_out_zone.as_deref(), &deleted_zones);
-            if cleanup_zones.is_empty() {
-                warn!(ingress = %name, ns = %namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE) — skipping stale-cluster ARecord cleanup; this Ingress's own ARecords were still removed");
-                log_unscoped_stale_cluster_arecord_candidates(
-                    &ctx.remote_client,
-                    &ctx.target_namespace,
-                    &ctx.cluster_name,
-                    "Ingress",
-                    &namespace,
-                    &name,
-                )
-                .await;
-            }
-            for zone in &cleanup_zones {
-                delete_stale_cluster_arecords(
-                    &ctx.remote_client,
-                    &ctx.target_namespace,
-                    &ctx.cluster_name,
-                    &namespace,
-                    &name,
-                    zone,
-                )
-                .await
-                .map_err(ScoutError::from)?;
-            }
-            remove_scout_finalizer(&ctx.client, &*ingress)
-                .await
-                .map_err(ScoutError::from)?;
-        }
-        debug!(ingress = %name, ns = %namespace, "No arecord annotation — skipping");
-        return Ok(Action::await_change());
-    }
-
-    // Ensure our finalizer is present before creating any ARecords.
-    // Adding the finalizer triggers a re-reconcile; return early to avoid
-    // doing record creation twice.
-    if !finalizers::has_finalizer(&*ingress, FINALIZER_SCOUT) {
-        add_scout_finalizer(&ctx.client, &*ingress)
-            .await
-            .map_err(ScoutError::from)?;
-        debug!(ingress = %name, ns = %namespace, "Finalizer added — re-queuing for record creation");
-        return Ok(Action::await_change());
-    }
-
-    // Guard: zone required (annotation or operator default)
-    let zone = match resolve_usable_zone(annotations, ctx.default_zone.as_deref()) {
-        ZoneResolution::Usable(z) => z,
-        ZoneResolution::Invalid(z) => {
-            warn!(ingress = %name, ns = %namespace, zone = %z, "Resolved DNS zone is not a usable Kubernetes label value (max {MAX_K8S_LABEL_VALUE_LEN} characters, alphanumeric first and last character, and only '-', '_' or '.' between) — skipping; Scout stamps the zone onto every ARecord as a label and matches on it when cleaning up records from a previous cluster name, so neither can work with this value");
-            return Ok(Action::requeue(Duration::from_secs(
-                SCOUT_ERROR_REQUEUE_SECS,
-            )));
-        }
-        ZoneResolution::Missing => {
-            warn!(ingress = %name, ns = %namespace, "No DNS zone available (set bindy.firestoned.io/zone annotation or BINDY_SCOUT_DEFAULT_ZONE) — skipping");
-            return Ok(Action::requeue(Duration::from_secs(
-                SCOUT_ERROR_REQUEUE_SECS,
-            )));
-        }
-    };
-
-    // Guard: a matching DNSZone must exist AND authorize this Ingress's
-    // namespace (finding H1 — otherwise any tenant's Ingress could publish
-    // into any zone Scout serves).
-    match check_zone_authorization_live(
-        &ctx.remote_client,
-        &ctx.zone_store.state(),
-        &zone,
-        &namespace,
-    )
-    .await
-    {
-        ZoneAuthz::Authorized => {}
-        ZoneAuthz::Forbidden => {
-            warn!(
-                ingress = %name, ns = %namespace, zone = %zone,
-                "Ingress namespace not authorized for zone — the DNSZone must live in this \
-                 namespace or set annotation {ANNOTATION_ALLOW_ZONE_NAMESPACES} to include it \
-                 (or '*') — skipping"
-            );
-            return Ok(Action::requeue(Duration::from_secs(
-                SCOUT_ERROR_REQUEUE_SECS,
-            )));
-        }
-        ZoneAuthz::NotFound => {
-            warn!(
-                ingress = %name, ns = %namespace, zone = %zone,
-                "Zone not found in DNSZone store — skipping until zone appears"
-            );
-            return Ok(Action::requeue(Duration::from_secs(
-                SCOUT_ERROR_REQUEUE_SECS,
-            )));
-        }
-    }
-
-    // Resolve IPs: annotation override → default_ips → LB status
-    let ips = match resolve_ips(annotations, &ctx.default_ips, &ingress) {
-        Some(ips) => ips,
-        None => {
-            warn!(ingress = %name, ns = %namespace, "No IP available (no annotation override, no default IPs, no LB status IP) — requeuing");
-            return Ok(Action::requeue(Duration::from_secs(
-                SCOUT_ERROR_REQUEUE_SECS,
-            )));
-        }
-    };
-
-    // Optional TTL override
-    let ttl: Option<i32> = annotations.get(ANNOTATION_TTL).and_then(|v| v.parse().ok());
-
-    let spec_rules = ingress
-        .spec
-        .as_ref()
-        .and_then(|s| s.rules.as_ref())
-        .cloned()
-        .unwrap_or_default();
-
-    let arecord_api: Api<ARecord> =
-        Api::namespaced(ctx.remote_client.clone(), &ctx.target_namespace);
-
-    // CR names applied in this pass; anything else indexed for this Ingress is
-    // a dropped or no-longer-matching host and is pruned after the loop.
-    let mut applied: BTreeSet<String> = BTreeSet::new();
-
-    for (idx, rule) in spec_rules.iter().enumerate() {
-        let host = match rule.host.as_deref() {
-            Some(h) if !h.is_empty() => h,
-            _ => {
-                debug!(ingress = %name, rule_index = idx, "Ingress rule has no host — skipping");
-                continue;
-            }
-        };
-
-        let record_name = match resolve_record_name(annotations, host, &zone) {
-            Ok(n) => n,
-            Err(e) => {
-                warn!(ingress = %name, host = %host, zone = %zone, error = %e, "Host does not belong to zone — skipping rule");
-                continue;
-            }
-        };
-
-        let cr_name = arecord_cr_name(&ctx.cluster_name, &namespace, &name, idx);
-        let arecord = build_arecord(ARecordParams {
-            name: &cr_name,
-            target_namespace: &ctx.target_namespace,
-            record_name: &record_name,
-            ips: &ips,
-            ttl,
-            cluster_name: &ctx.cluster_name,
-            ingress_namespace: &namespace,
-            ingress_name: &name,
-            zone: &zone,
-        });
-
-        // Server-side apply
-        let ssapply = kube::api::PatchParams::apply("bindy-scout").force();
-        match arecord_api
-            .patch(&cr_name, &ssapply, &kube::api::Patch::Apply(&arecord))
-            .await
-        {
-            Ok(_) => {
-                info!(arecord = %cr_name, ingress = %name, host = %host, ips = ?ips, "ARecord created/updated");
-            }
-            Err(e) => {
-                error!(arecord = %cr_name, ingress = %name, error = %e, "Failed to apply ARecord");
-                return Err(ScoutError::from(anyhow!(
-                    "Failed to apply ARecord {cr_name}: {e}"
-                )));
-            }
-        }
-        applied.insert(cr_name);
-    }
-
-    prune_unapplied_arecords(
-        &ctx.remote_client,
-        &ctx.target_namespace,
-        &arecord_label_selector(&ctx.cluster_name, &namespace, &name),
-        &indexed_arecord_cr_name_prefix(&ctx.cluster_name, &namespace, &name),
-        &applied,
-    )
-    .await
-    .map_err(ScoutError::from)?;
-
-    // Clean up any ARecords that were created by a previous cluster name for
-    // this same Ingress — happens when scout is restarted with a new --cluster-name.
-    delete_stale_cluster_arecords(
-        &ctx.remote_client,
-        &ctx.target_namespace,
-        &ctx.cluster_name,
-        &namespace,
-        &name,
-        &zone,
-    )
-    .await
-    .map_err(ScoutError::from)?;
-
-    Ok(Action::await_change())
-}
-
-///// Reconciles a single `LoadBalancer` Service, creating or updating an ARecord CR as needed.
-///
-/// Mirrors the Ingress reconciler lifecycle:
-/// - Opts in via `bindy.firestoned.io/scout-enabled: "true"`.
-/// - Silently skips non-`LoadBalancer` Services (no warning, since ClusterIP/NodePort are
-///   intra-cluster); one that was published and then stopped being `LoadBalancer` is
-///   released like an opt-out (ARecord and finalizer removed).
-/// - After publishing, deletes ARecords a previous `--cluster-name` left for this Service.
-/// - Adds a finalizer; on deletion removes the ARecord and releases it.
-/// - If the opt-in annotation is removed, cleans up the ARecord and finalizer.
-/// - Re-queues if no external IP is available yet (cloud provider may not have assigned one).
-///
-/// # Errors
-///
-/// Returns an error that will be retried by the controller runtime.
-async fn reconcile_service(
-    svc: Arc<Service>,
-    ctx: Arc<ScoutContext>,
-) -> Result<Action, ScoutError> {
-    let name = svc.name_any();
-    let namespace = svc.namespace().unwrap_or_default();
-
-    if ctx.excluded_namespaces.contains(&namespace) {
-        debug!(service = %name, ns = %namespace, "Skipping excluded namespace");
-        return Ok(Action::await_change());
-    }
-
-    // Handle Service deletion — remove ARecord and release the finalizer
-    if is_being_deleted(&*svc) {
-        if finalizers::has_finalizer(&*svc, FINALIZER_SCOUT) {
-            info!(service = %name, ns = %namespace, "Service deleting — cleaning up ARecord");
-            let deleting_annotations = svc
-                .metadata
-                .annotations
-                .as_ref()
-                .unwrap_or(&EMPTY_ANNOTATIONS);
-            let deleting_zone = resolve_zone(deleting_annotations, ctx.default_zone.as_deref());
-            if let Err(e) = delete_service_arecords_with_stale_cleanup(
-                &ctx,
-                &namespace,
-                &name,
-                deleting_zone.as_deref(),
-            )
-            .await
-            {
-                if !cleanup_grace_expired(
-                    svc.metadata.deletion_timestamp.as_ref(),
-                    Timestamp::now(),
-                ) {
-                    warn!(service = %name, ns = %namespace, error = %e, "Remote ARecord cleanup failed during Service deletion — retrying within grace period");
-                    return Ok(Action::requeue(Duration::from_secs(
-                        SCOUT_ERROR_REQUEUE_SECS,
-                    )));
-                }
-                error!(service = %name, ns = %namespace, error = %e, grace_secs = REMOTE_CLEANUP_GRACE_SECS, "Remote ARecord cleanup still failing after grace period — releasing finalizer to unblock Service deletion; remote ARecords may be orphaned and must be reconciled separately");
-            }
-            remove_scout_finalizer(&ctx.client, &*svc)
-                .await
-                .map_err(ScoutError::from)?;
-            info!(service = %name, ns = %namespace, "Finalizer removed — Service deletion unblocked");
-        }
-        return Ok(Action::await_change());
-    }
-
-    let annotations = svc
-        .metadata
-        .annotations
-        .as_ref()
-        .unwrap_or(&EMPTY_ANNOTATIONS);
-
-    // Guard: opt-in annotation required
-    let namespace_eligible =
-        source_namespace_eligible(&ctx.client, &namespace, ctx.namespace_selector.as_deref())
-            .await
-            .map_err(ScoutError::from)?;
-
-    // Guard: opted in, eligible namespace, and LoadBalancer (only those have
-    // routable external IPs). A Service that fails any of these after it was
-    // published (opt-out, namespace no longer selected, or LoadBalancer changed
-    // to ClusterIP/NodePort) is released: its ARecords and finalizer go.
-    let opted_in = is_scout_opted_in(annotations);
-    let is_loadbalancer = is_loadbalancer_service(&svc);
-    if !service_publishes_dns(opted_in, namespace_eligible, is_loadbalancer) {
-        let has_fin = finalizers::has_finalizer(&*svc, FINALIZER_SCOUT);
-        if has_fin {
-            info!(service = %name, ns = %namespace, opted_in, namespace_eligible, is_loadbalancer, "Service no longer publishes DNS, cleaning up ARecord and finalizer");
-            let release_zone = resolve_zone(annotations, ctx.default_zone.as_deref());
-            delete_service_arecords_with_stale_cleanup(
-                &ctx,
-                &namespace,
-                &name,
-                release_zone.as_deref(),
-            )
-            .await
-            .map_err(ScoutError::from)?;
-            remove_scout_finalizer(&ctx.client, &*svc)
-                .await
-                .map_err(ScoutError::from)?;
-        }
-        debug!(service = %name, ns = %namespace, opted_in, namespace_eligible, is_loadbalancer, "Service not opted in, not eligible, or not LoadBalancer, skipping");
-        return Ok(Action::await_change());
-    }
-
-    // Ensure finalizer before creating any ARecord
-    let has_fin = finalizers::has_finalizer(&*svc, FINALIZER_SCOUT);
-    if !has_fin {
-        add_scout_finalizer(&ctx.client, &*svc)
-            .await
-            .map_err(ScoutError::from)?;
-        debug!(service = %name, ns = %namespace, "Finalizer added — re-queuing for record creation");
-        return Ok(Action::await_change());
-    }
-
-    // Guard: zone required
-    let zone = match resolve_usable_zone(annotations, ctx.default_zone.as_deref()) {
-        ZoneResolution::Usable(z) => z,
-        ZoneResolution::Invalid(z) => {
-            warn!(service = %name, ns = %namespace, zone = %z, "Resolved DNS zone is not a usable Kubernetes label value (max {MAX_K8S_LABEL_VALUE_LEN} characters, alphanumeric first and last character, and only '-', '_' or '.' between) — skipping; Scout stamps the zone onto every ARecord as a label and matches on it when cleaning up records from a previous cluster name, so neither can work with this value");
-            return Ok(Action::requeue(Duration::from_secs(
-                SCOUT_ERROR_REQUEUE_SECS,
-            )));
-        }
-        ZoneResolution::Missing => {
-            warn!(service = %name, ns = %namespace, "No DNS zone available — skipping");
-            return Ok(Action::requeue(Duration::from_secs(
-                SCOUT_ERROR_REQUEUE_SECS,
-            )));
-        }
-    };
-
-    // Guard: a matching DNSZone must exist AND authorize this Service's
-    // namespace (finding H1).
-    match check_zone_authorization_live(
-        &ctx.remote_client,
-        &ctx.zone_store.state(),
-        &zone,
-        &namespace,
-    )
-    .await
-    {
-        ZoneAuthz::Authorized => {}
-        ZoneAuthz::Forbidden => {
-            warn!(service = %name, ns = %namespace, zone = %zone, "Service namespace not authorized for zone — the DNSZone must live in this namespace or set annotation {ANNOTATION_ALLOW_ZONE_NAMESPACES} to include it (or '*') — skipping");
-            return Ok(Action::requeue(Duration::from_secs(
-                SCOUT_ERROR_REQUEUE_SECS,
-            )));
-        }
-        ZoneAuthz::NotFound => {
-            warn!(service = %name, ns = %namespace, zone = %zone, "Zone not found in DNSZone store — requeuing");
-            return Ok(Action::requeue(Duration::from_secs(
-                SCOUT_ERROR_REQUEUE_SECS,
-            )));
-        }
-    }
-
-    // Resolve IPs: annotation (single or comma-separated) → default_ips → LB status
-    let ips = {
-        let from_annotation = resolve_ips_from_annotation(annotations);
-        let from_defaults = if ctx.default_ips.is_empty() {
-            None
-        } else {
-            Some(ctx.default_ips.clone())
-        };
-        let from_lb = resolve_ip_from_service_lb_status(&svc).map(|ip| vec![ip]);
-
-        match from_annotation.or(from_defaults).or(from_lb) {
-            Some(ips) => ips,
-            None => {
-                warn!(service = %name, ns = %namespace, "No external IP yet — requeuing in {}s", SCOUT_ERROR_REQUEUE_SECS);
-                return Ok(Action::requeue(Duration::from_secs(
-                    SCOUT_ERROR_REQUEUE_SECS,
-                )));
-            }
-        }
-    };
-
-    let ttl: Option<i32> = annotations.get(ANNOTATION_TTL).and_then(|v| v.parse().ok());
-
-    // Derive the DNS record name: annotation override → "{service_name}.{zone}" stripped of zone
-    let fqdn = format!("{name}.{zone}");
-    let record_name = match resolve_record_name(annotations, &fqdn, &zone) {
-        Ok(n) => n,
-        Err(e) => {
-            warn!(service = %name, zone = %zone, error = %e, "Cannot derive record name — skipping");
-            return Ok(Action::requeue(Duration::from_secs(
-                SCOUT_ERROR_REQUEUE_SECS,
-            )));
-        }
-    };
-
-    let cr_name = service_arecord_cr_name(&ctx.cluster_name, &namespace, &name);
-    let arecord = build_service_arecord(ServiceARecordParams {
-        name: &cr_name,
-        target_namespace: &ctx.target_namespace,
-        record_name: &record_name,
-        ips: &ips,
-        ttl,
-        cluster_name: &ctx.cluster_name,
-        service_namespace: &namespace,
-        service_name: &name,
-        zone: &zone,
-    });
-
-    let arecord_api: Api<ARecord> =
-        Api::namespaced(ctx.remote_client.clone(), &ctx.target_namespace);
-    let ssapply = kube::api::PatchParams::apply("bindy-scout").force();
-    match arecord_api
-        .patch(&cr_name, &ssapply, &kube::api::Patch::Apply(&arecord))
-        .await
-    {
-        Ok(_) => {
-            info!(arecord = %cr_name, service = %name, ips = ?ips, "ARecord created/updated for Service");
-        }
-        Err(e) => {
-            error!(arecord = %cr_name, service = %name, error = %e, "Failed to apply ARecord for Service");
-            return Err(ScoutError::from(anyhow!(
-                "Failed to apply ARecord {cr_name}: {e}"
-            )));
-        }
-    }
-
-    // Clean up any ARecords a previous cluster name left for this Service,
-    // as the other kinds do after a --cluster-name change.
-    delete_stale_cluster_service_arecords(
-        &ctx.remote_client,
-        &ctx.target_namespace,
-        &ctx.cluster_name,
-        &namespace,
-        &name,
-        &zone,
-    )
-    .await
-    .map_err(ScoutError::from)?;
-
-    Ok(Action::await_change())
-}
-
-/// Error policy for the Service controller: requeue with a fixed backoff.
-fn service_error_policy(_obj: Arc<Service>, error: &ScoutError, _ctx: Arc<ScoutContext>) -> Action {
-    error!(error = %error, "Scout service reconcile error — requeuing");
-    Action::requeue(Duration::from_secs(SCOUT_ERROR_REQUEUE_SECS))
-}
-
-/// Error policy: requeue with a fixed backoff on any reconcile error.
-fn error_policy(_obj: Arc<Ingress>, error: &ScoutError, _ctx: Arc<ScoutContext>) -> Action {
-    error!(error = %error, "Scout reconcile error — requeuing");
-    Action::requeue(Duration::from_secs(SCOUT_ERROR_REQUEUE_SECS))
-}
-
-// ============================================================================
-// Gateway API (HTTPRoute / TLSRoute) Reconciliation
-//
-// Note: HTTPRoute and TLSRoute reconciliation follows the same pattern as
-// Ingress reconciliation, with these differences:
-//
-// 1. HTTPRoute sources: `spec.hostnames[]` (array) instead of `spec.rules[].host`
-// 2. TLSRoute sources: `spec.hostnames[]` (array) instead of routes with hosts
-// 3. One ARecord per hostname with index suffix (like Ingress has one per rule)
-// 4. Zone and IP resolution use the same annotation scheme as Ingress/Service
-// ============================================================================
-
-/// Reconciles a single `HTTPRoute` resource, creating or updating ARecord CRs as needed.
-///
-/// Mirrors the Ingress reconciler lifecycle:
-/// - Opts in via `bindy.firestoned.io/scout-enabled: "true"`.
-/// - Adds a finalizer; on deletion removes ARecords and releases it.
-/// - If the opt-in annotation is removed, cleans up ARecords and finalizer.
-/// - One ARecord created per hostname in `spec.hostnames[]` with an index suffix.
-/// - Re-queues if zone is not found or no IP is available yet.
-///
-/// # Errors
-///
-/// Returns `ScoutError` if API calls fail (apply, delete, patch).
-async fn reconcile_httproute(
-    route: Arc<HTTPRoute>,
-    ctx: Arc<ScoutContext>,
-) -> Result<Action, ScoutError> {
-    let name = route.name_any();
-    let namespace = route.namespace().unwrap_or_default();
-
-    // Guard: Skip excluded namespaces
-    if ctx.excluded_namespaces.contains(&namespace) {
-        debug!(httproute = %name, ns = %namespace, "Skipping excluded namespace");
-        return Ok(Action::await_change());
-    }
-
-    // Handle HTTPRoute deletion — remove ARecords and release the finalizer
-    if is_being_deleted(&*route) {
-        if finalizers::has_finalizer(&*route, FINALIZER_SCOUT) {
-            info!(httproute = %name, ns = %namespace, "HTTPRoute deleting — cleaning up ARecords");
-            let deleting_annotations = route
-                .metadata
-                .annotations
-                .as_ref()
-                .unwrap_or(&EMPTY_ANNOTATIONS);
-            let deleting_zone = resolve_zone(deleting_annotations, ctx.default_zone.as_deref());
-            let cleanup: Result<()> = async {
-                let deleted_zones = delete_arecords_for_httproute(
-                    &ctx.remote_client,
-                    &ctx.target_namespace,
-                    &ctx.cluster_name,
-                    &namespace,
-                    &name,
-                )
-                .await?;
-                let cleanup_zones = stale_cleanup_zones(deleting_zone.as_deref(), &deleted_zones);
-                if cleanup_zones.is_empty() {
-                    warn!(httproute = %name, ns = %namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE) — skipping stale-cluster ARecord cleanup; this HTTPRoute's own ARecords were still removed");
-                    log_unscoped_stale_cluster_arecord_candidates(
-                    &ctx.remote_client,
-                    &ctx.target_namespace,
-                    &ctx.cluster_name,
-                    "HTTPRoute",
-                    &namespace,
-                    &name,
-                    )
-                    .await;
-                    return Ok(());
-                }
-                for zone in &cleanup_zones {
-                    delete_stale_cluster_httproute_arecords(
-                    &ctx.remote_client,
-                    &ctx.target_namespace,
-                    &ctx.cluster_name,
-                    &namespace,
-                    &name,
-                        zone,
-                    )
-                    .await?;
-                }
-                Ok(())
-            }
-            .await;
-            if let Err(e) = cleanup {
-                if !cleanup_grace_expired(
-                    route.metadata.deletion_timestamp.as_ref(),
-                    Timestamp::now(),
-                ) {
-                    warn!(httproute = %name, ns = %namespace, error = %e, "Remote ARecord cleanup failed during HTTPRoute deletion — retrying within grace period");
-                    return Ok(Action::requeue(Duration::from_secs(
-                        SCOUT_ERROR_REQUEUE_SECS,
-                    )));
-                }
-                error!(httproute = %name, ns = %namespace, error = %e, grace_secs = REMOTE_CLEANUP_GRACE_SECS, "Remote ARecord cleanup still failing after grace period — releasing finalizer to unblock HTTPRoute deletion; remote ARecords may be orphaned and must be reconciled separately");
-            }
-            remove_scout_finalizer(&ctx.client, &*route)
-                .await
-                .map_err(ScoutError::from)?;
-            info!(httproute = %name, ns = %namespace, "Finalizer removed — HTTPRoute deletion unblocked");
-        }
-        return Ok(Action::await_change());
-    }
-
-    let annotations = route
-        .metadata
-        .annotations
-        .as_ref()
-        .unwrap_or(&EMPTY_ANNOTATIONS);
-
-    // Guard: opt-in annotation required
-    let namespace_eligible =
-        source_namespace_eligible(&ctx.client, &namespace, ctx.namespace_selector.as_deref())
-            .await
-            .map_err(ScoutError::from)?;
-
-    if !is_scout_opted_in(annotations) || !namespace_eligible {
-        let has_fin = finalizers::has_finalizer(&*route, FINALIZER_SCOUT);
-        if has_fin {
-            info!(httproute = %name, ns = %namespace, "Scout opt-in annotation removed — cleaning up ARecords and finalizer");
-            let opt_out_zone = resolve_zone(annotations, ctx.default_zone.as_deref());
-            let deleted_zones = delete_arecords_for_httproute(
-                &ctx.remote_client,
-                &ctx.target_namespace,
-                &ctx.cluster_name,
-                &namespace,
-                &name,
-            )
-            .await
-            .map_err(ScoutError::from)?;
-            let cleanup_zones = stale_cleanup_zones(opt_out_zone.as_deref(), &deleted_zones);
-            if cleanup_zones.is_empty() {
-                warn!(httproute = %name, ns = %namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE) — skipping stale-cluster ARecord cleanup; this HTTPRoute's own ARecords were still removed");
-                log_unscoped_stale_cluster_arecord_candidates(
-                    &ctx.remote_client,
-                    &ctx.target_namespace,
-                    &ctx.cluster_name,
-                    "HTTPRoute",
-                    &namespace,
-                    &name,
-                )
-                .await;
-            }
-            for zone in &cleanup_zones {
-                delete_stale_cluster_httproute_arecords(
-                    &ctx.remote_client,
-                    &ctx.target_namespace,
-                    &ctx.cluster_name,
-                    &namespace,
-                    &name,
-                    zone,
-                )
-                .await
-                .map_err(ScoutError::from)?;
-            }
-            remove_scout_finalizer(&ctx.client, &*route)
-                .await
-                .map_err(ScoutError::from)?;
-        }
-        debug!(httproute = %name, ns = %namespace, "No scout-enabled annotation — skipping");
-        return Ok(Action::await_change());
-    }
-
-    // Ensure finalizer before creating any ARecord
-    let has_fin = finalizers::has_finalizer(&*route, FINALIZER_SCOUT);
-    if !has_fin {
-        add_scout_finalizer(&ctx.client, &*route)
-            .await
-            .map_err(ScoutError::from)?;
-        debug!(httproute = %name, ns = %namespace, "Finalizer added — re-queuing for record creation");
-        return Ok(Action::await_change());
-    }
-
-    // Guard: zone required
-    let zone = match resolve_usable_zone(annotations, ctx.default_zone.as_deref()) {
-        ZoneResolution::Usable(z) => z,
-        ZoneResolution::Invalid(z) => {
-            warn!(httproute = %name, ns = %namespace, zone = %z, "Resolved DNS zone is not a usable Kubernetes label value (max {MAX_K8S_LABEL_VALUE_LEN} characters, alphanumeric first and last character, and only '-', '_' or '.' between) — skipping; Scout stamps the zone onto every ARecord as a label and matches on it when cleaning up records from a previous cluster name, so neither can work with this value");
-            return Ok(Action::requeue(Duration::from_secs(
-                SCOUT_ERROR_REQUEUE_SECS,
-            )));
-        }
-        ZoneResolution::Missing => {
-            warn!(httproute = %name, ns = %namespace, "No DNS zone available — skipping");
-            return Ok(Action::requeue(Duration::from_secs(
-                SCOUT_ERROR_REQUEUE_SECS,
-            )));
-        }
-    };
-
-    // Guard: a matching DNSZone must exist AND authorize this HTTPRoute's
-    // namespace (finding H1).
-    match check_zone_authorization_live(
-        &ctx.remote_client,
-        &ctx.zone_store.state(),
-        &zone,
-        &namespace,
-    )
-    .await
-    {
-        ZoneAuthz::Authorized => {}
-        ZoneAuthz::Forbidden => {
-            warn!(httproute = %name, ns = %namespace, zone = %zone, "HTTPRoute namespace not authorized for zone — the DNSZone must live in this namespace or set annotation {ANNOTATION_ALLOW_ZONE_NAMESPACES} to include it (or '*') — skipping");
-            return Ok(Action::requeue(Duration::from_secs(
-                SCOUT_ERROR_REQUEUE_SECS,
-            )));
-        }
-        ZoneAuthz::NotFound => {
-            warn!(httproute = %name, ns = %namespace, zone = %zone, "Zone not found in DNSZone store — requeuing");
-            return Ok(Action::requeue(Duration::from_secs(
-                SCOUT_ERROR_REQUEUE_SECS,
-            )));
-        }
-    }
-
-    // Resolve IPs: annotation → gateway chain (parentRefs → Gateway → LB Service)
-    // → default_ips → no routable IP = requeue
-    let ips = {
-        let from_annotation = resolve_ips_from_annotation(annotations);
-        let from_gateway = if from_annotation.is_some() {
-            None
-        } else {
-            let parent_refs = route
-                .spec
-                .as_ref()
-                .and_then(|s| s.parent_refs.as_ref())
-                .cloned()
-                .unwrap_or_default();
-            resolve_ips_from_gateways(&ctx.client, &namespace, &parent_refs, &ctx.gateway_services)
-                .await
-        };
-        let from_defaults = if ctx.default_ips.is_empty() {
-            None
-        } else {
-            Some(ctx.default_ips.clone())
-        };
-
-        match from_annotation.or(from_gateway).or(from_defaults) {
-            Some(ips) => ips,
-            None => {
-                warn!(httproute = %name, ns = %namespace, "No IP available (no annotation override, no gateway IP, no default IPs) — requeuing");
-                return Ok(Action::requeue(Duration::from_secs(
-                    SCOUT_ERROR_REQUEUE_SECS,
-                )));
-            }
-        }
-    };
-
-    let ttl: Option<i32> = annotations.get(ANNOTATION_TTL).and_then(|v| v.parse().ok());
-
-    // Extract hostnames from spec.hostnames[]
-    let hostnames = route
-        .spec
-        .as_ref()
-        .and_then(|s| s.hostnames.as_ref())
-        .cloned()
-        .unwrap_or_default();
-
-    let arecord_api: Api<ARecord> =
-        Api::namespaced(ctx.remote_client.clone(), &ctx.target_namespace);
-
-    // CR names applied in this pass; see the Ingress reconciler.
-    let mut applied: BTreeSet<String> = BTreeSet::new();
-
-    for (idx, hostname) in hostnames.iter().enumerate() {
-        if hostname.is_empty() {
-            debug!(httproute = %name, hostname_index = idx, "HTTPRoute hostname is empty — skipping");
-            continue;
-        }
-
-        let record_name = match resolve_record_name(annotations, hostname, &zone) {
-            Ok(n) => n,
-            Err(e) => {
-                warn!(httproute = %name, hostname = %hostname, zone = %zone, error = %e, "Hostname does not belong to zone — skipping");
-                continue;
-            }
-        };
-
-        let cr_name = httproute_arecord_cr_name(&ctx.cluster_name, &namespace, &name, idx);
-        let arecord = build_httproute_arecord(HTTPRouteARecordParams {
-            name: &cr_name,
-            target_namespace: &ctx.target_namespace,
-            record_name: &record_name,
-            ips: &ips,
-            ttl,
-            cluster_name: &ctx.cluster_name,
-            route_namespace: &namespace,
-            route_name: &name,
-            zone: &zone,
-        });
-
-        // Server-side apply
-        let ssapply = kube::api::PatchParams::apply("bindy-scout").force();
-        match arecord_api
-            .patch(&cr_name, &ssapply, &kube::api::Patch::Apply(&arecord))
-            .await
-        {
-            Ok(_) => {
-                info!(arecord = %cr_name, httproute = %name, hostname = %hostname, ips = ?ips, "ARecord created/updated for HTTPRoute");
-            }
-            Err(e) => {
-                error!(arecord = %cr_name, httproute = %name, error = %e, "Failed to apply ARecord for HTTPRoute");
-                return Err(ScoutError::from(anyhow!(
-                    "Failed to apply ARecord {cr_name}: {e}"
-                )));
-            }
-        }
-        applied.insert(cr_name);
-    }
-
-    prune_unapplied_arecords(
-        &ctx.remote_client,
-        &ctx.target_namespace,
-        &httproute_arecord_label_selector(&ctx.cluster_name, &namespace, &name),
-        &indexed_arecord_cr_name_prefix(&ctx.cluster_name, &namespace, &name),
-        &applied,
-    )
-    .await
-    .map_err(ScoutError::from)?;
-
-    // Clean up stale ARecords from old cluster names
-    delete_stale_cluster_httproute_arecords(
-        &ctx.remote_client,
-        &ctx.target_namespace,
-        &ctx.cluster_name,
-        &namespace,
-        &name,
-        &zone,
-    )
-    .await
-    .map_err(ScoutError::from)?;
-
-    Ok(Action::await_change())
-}
-
-/// Reconciles a single `TLSRoute` resource, creating or updating ARecord CRs as needed.
-///
-/// Identical to HTTPRoute reconciliation: both resources have `spec.hostnames[]`
-/// and use the same annotation/IP resolution scheme.
-///
-/// # Errors
-///
-/// Returns `ScoutError` if API calls fail.
-async fn reconcile_tlsroute(
-    route: Arc<TLSRoute>,
-    ctx: Arc<ScoutContext>,
-) -> Result<Action, ScoutError> {
-    let name = route.name_any();
-    let namespace = route.namespace().unwrap_or_default();
-
-    // Guard: Skip excluded namespaces
-    if ctx.excluded_namespaces.contains(&namespace) {
-        debug!(tlsroute = %name, ns = %namespace, "Skipping excluded namespace");
-        return Ok(Action::await_change());
-    }
-
-    // Handle TLSRoute deletion — remove ARecords and release the finalizer
-    if is_being_deleted(&*route) {
-        if finalizers::has_finalizer(&*route, FINALIZER_SCOUT) {
-            info!(tlsroute = %name, ns = %namespace, "TLSRoute deleting — cleaning up ARecords");
-            let deleting_annotations = route
-                .metadata
-                .annotations
-                .as_ref()
-                .unwrap_or(&EMPTY_ANNOTATIONS);
-            let deleting_zone = resolve_zone(deleting_annotations, ctx.default_zone.as_deref());
-            let cleanup: Result<()> = async {
-                let deleted_zones = delete_arecords_for_tlsroute(
-                    &ctx.remote_client,
-                    &ctx.target_namespace,
-                    &ctx.cluster_name,
-                    &namespace,
-                    &name,
-                )
-                .await?;
-                let cleanup_zones = stale_cleanup_zones(deleting_zone.as_deref(), &deleted_zones);
-                if cleanup_zones.is_empty() {
-                    warn!(tlsroute = %name, ns = %namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE) — skipping stale-cluster ARecord cleanup; this TLSRoute's own ARecords were still removed");
-                    log_unscoped_stale_cluster_arecord_candidates(
-                    &ctx.remote_client,
-                    &ctx.target_namespace,
-                    &ctx.cluster_name,
-                    "TLSRoute",
-                    &namespace,
-                    &name,
-                    )
-                    .await;
-                    return Ok(());
-                }
-                for zone in &cleanup_zones {
-                    delete_stale_cluster_tlsroute_arecords(
-                    &ctx.remote_client,
-                    &ctx.target_namespace,
-                    &ctx.cluster_name,
-                    &namespace,
-                    &name,
-                        zone,
-                    )
-                    .await?;
-                }
-                Ok(())
-            }
-            .await;
-            if let Err(e) = cleanup {
-                if !cleanup_grace_expired(
-                    route.metadata.deletion_timestamp.as_ref(),
-                    Timestamp::now(),
-                ) {
-                    warn!(tlsroute = %name, ns = %namespace, error = %e, "Remote ARecord cleanup failed during TLSRoute deletion — retrying within grace period");
-                    return Ok(Action::requeue(Duration::from_secs(
-                        SCOUT_ERROR_REQUEUE_SECS,
-                    )));
-                }
-                error!(tlsroute = %name, ns = %namespace, error = %e, grace_secs = REMOTE_CLEANUP_GRACE_SECS, "Remote ARecord cleanup still failing after grace period — releasing finalizer to unblock TLSRoute deletion; remote ARecords may be orphaned and must be reconciled separately");
-            }
-            remove_scout_finalizer(&ctx.client, &*route)
-                .await
-                .map_err(ScoutError::from)?;
-            info!(tlsroute = %name, ns = %namespace, "Finalizer removed — TLSRoute deletion unblocked");
-        }
-        return Ok(Action::await_change());
-    }
-
-    let annotations = route
-        .metadata
-        .annotations
-        .as_ref()
-        .unwrap_or(&EMPTY_ANNOTATIONS);
-
-    // Guard: opt-in annotation required
-    let namespace_eligible =
-        source_namespace_eligible(&ctx.client, &namespace, ctx.namespace_selector.as_deref())
-            .await
-            .map_err(ScoutError::from)?;
-
-    if !is_scout_opted_in(annotations) || !namespace_eligible {
-        let has_fin = finalizers::has_finalizer(&*route, FINALIZER_SCOUT);
-        if has_fin {
-            info!(tlsroute = %name, ns = %namespace, "Scout opt-in annotation removed — cleaning up ARecords and finalizer");
-            let opt_out_zone = resolve_zone(annotations, ctx.default_zone.as_deref());
-            let deleted_zones = delete_arecords_for_tlsroute(
-                &ctx.remote_client,
-                &ctx.target_namespace,
-                &ctx.cluster_name,
-                &namespace,
-                &name,
-            )
-            .await
-            .map_err(ScoutError::from)?;
-            let cleanup_zones = stale_cleanup_zones(opt_out_zone.as_deref(), &deleted_zones);
-            if cleanup_zones.is_empty() {
-                warn!(tlsroute = %name, ns = %namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE) — skipping stale-cluster ARecord cleanup; this TLSRoute's own ARecords were still removed");
-                log_unscoped_stale_cluster_arecord_candidates(
-                    &ctx.remote_client,
-                    &ctx.target_namespace,
-                    &ctx.cluster_name,
-                    "TLSRoute",
-                    &namespace,
-                    &name,
-                )
-                .await;
-            }
-            for zone in &cleanup_zones {
-                delete_stale_cluster_tlsroute_arecords(
-                    &ctx.remote_client,
-                    &ctx.target_namespace,
-                    &ctx.cluster_name,
-                    &namespace,
-                    &name,
-                    zone,
-                )
-                .await
-                .map_err(ScoutError::from)?;
-            }
-            remove_scout_finalizer(&ctx.client, &*route)
-                .await
-                .map_err(ScoutError::from)?;
-        }
-        debug!(tlsroute = %name, ns = %namespace, "No scout-enabled annotation — skipping");
-        return Ok(Action::await_change());
-    }
-
-    // Ensure finalizer before creating any ARecord
-    let has_fin = finalizers::has_finalizer(&*route, FINALIZER_SCOUT);
-    if !has_fin {
-        add_scout_finalizer(&ctx.client, &*route)
-            .await
-            .map_err(ScoutError::from)?;
-        debug!(tlsroute = %name, ns = %namespace, "Finalizer added — re-queuing for record creation");
-        return Ok(Action::await_change());
-    }
-
-    // Guard: zone required
-    let zone = match resolve_usable_zone(annotations, ctx.default_zone.as_deref()) {
-        ZoneResolution::Usable(z) => z,
-        ZoneResolution::Invalid(z) => {
-            warn!(tlsroute = %name, ns = %namespace, zone = %z, "Resolved DNS zone is not a usable Kubernetes label value (max {MAX_K8S_LABEL_VALUE_LEN} characters, alphanumeric first and last character, and only '-', '_' or '.' between) — skipping; Scout stamps the zone onto every ARecord as a label and matches on it when cleaning up records from a previous cluster name, so neither can work with this value");
-            return Ok(Action::requeue(Duration::from_secs(
-                SCOUT_ERROR_REQUEUE_SECS,
-            )));
-        }
-        ZoneResolution::Missing => {
-            warn!(tlsroute = %name, ns = %namespace, "No DNS zone available — skipping");
-            return Ok(Action::requeue(Duration::from_secs(
-                SCOUT_ERROR_REQUEUE_SECS,
-            )));
-        }
-    };
-
-    // Guard: a matching DNSZone must exist AND authorize this TLSRoute's
-    // namespace (finding H1).
-    match check_zone_authorization_live(
-        &ctx.remote_client,
-        &ctx.zone_store.state(),
-        &zone,
-        &namespace,
-    )
-    .await
-    {
-        ZoneAuthz::Authorized => {}
-        ZoneAuthz::Forbidden => {
-            warn!(tlsroute = %name, ns = %namespace, zone = %zone, "TLSRoute namespace not authorized for zone — the DNSZone must live in this namespace or set annotation {ANNOTATION_ALLOW_ZONE_NAMESPACES} to include it (or '*') — skipping");
-            return Ok(Action::requeue(Duration::from_secs(
-                SCOUT_ERROR_REQUEUE_SECS,
-            )));
-        }
-        ZoneAuthz::NotFound => {
-            warn!(tlsroute = %name, ns = %namespace, zone = %zone, "Zone not found in DNSZone store — requeuing");
-            return Ok(Action::requeue(Duration::from_secs(
-                SCOUT_ERROR_REQUEUE_SECS,
-            )));
-        }
-    }
-
-    // Resolve IPs: annotation → gateway chain (parentRefs → Gateway → LB Service)
-    // → default_ips → no routable IP = requeue
-    let ips = {
-        let from_annotation = resolve_ips_from_annotation(annotations);
-        let from_gateway = if from_annotation.is_some() {
-            None
-        } else {
-            let parent_refs = route
-                .spec
-                .as_ref()
-                .and_then(|s| s.parent_refs.as_ref())
-                .cloned()
-                .unwrap_or_default();
-            resolve_ips_from_gateways(&ctx.client, &namespace, &parent_refs, &ctx.gateway_services)
-                .await
-        };
-        let from_defaults = if ctx.default_ips.is_empty() {
-            None
-        } else {
-            Some(ctx.default_ips.clone())
-        };
-
-        match from_annotation.or(from_gateway).or(from_defaults) {
-            Some(ips) => ips,
-            None => {
-                warn!(tlsroute = %name, ns = %namespace, "No IP available (no annotation override, no gateway IP, no default IPs) — requeuing");
-                return Ok(Action::requeue(Duration::from_secs(
-                    SCOUT_ERROR_REQUEUE_SECS,
-                )));
-            }
-        }
-    };
-
-    let ttl: Option<i32> = annotations.get(ANNOTATION_TTL).and_then(|v| v.parse().ok());
-
-    // Extract hostnames from spec.hostnames[]
-    let hostnames = route
-        .spec
-        .as_ref()
-        .and_then(|s| s.hostnames.as_ref())
-        .cloned()
-        .unwrap_or_default();
-
-    let arecord_api: Api<ARecord> =
-        Api::namespaced(ctx.remote_client.clone(), &ctx.target_namespace);
-
-    // CR names applied in this pass; see the Ingress reconciler.
-    let mut applied: BTreeSet<String> = BTreeSet::new();
-
-    for (idx, hostname) in hostnames.iter().enumerate() {
-        if hostname.is_empty() {
-            debug!(tlsroute = %name, hostname_index = idx, "TLSRoute hostname is empty — skipping");
-            continue;
-        }
-
-        let record_name = match resolve_record_name(annotations, hostname, &zone) {
-            Ok(n) => n,
-            Err(e) => {
-                warn!(tlsroute = %name, hostname = %hostname, zone = %zone, error = %e, "Hostname does not belong to zone — skipping");
-                continue;
-            }
-        };
-
-        let cr_name = tlsroute_arecord_cr_name(&ctx.cluster_name, &namespace, &name, idx);
-        let arecord = build_tlsroute_arecord(TLSRouteARecordParams {
-            name: &cr_name,
-            target_namespace: &ctx.target_namespace,
-            record_name: &record_name,
-            ips: &ips,
-            ttl,
-            cluster_name: &ctx.cluster_name,
-            route_namespace: &namespace,
-            route_name: &name,
-            zone: &zone,
-        });
-
-        // Server-side apply
-        let ssapply = kube::api::PatchParams::apply("bindy-scout").force();
-        match arecord_api
-            .patch(&cr_name, &ssapply, &kube::api::Patch::Apply(&arecord))
-            .await
-        {
-            Ok(_) => {
-                info!(arecord = %cr_name, tlsroute = %name, hostname = %hostname, ips = ?ips, "ARecord created/updated for TLSRoute");
-            }
-            Err(e) => {
-                error!(arecord = %cr_name, tlsroute = %name, error = %e, "Failed to apply ARecord for TLSRoute");
-                return Err(ScoutError::from(anyhow!(
-                    "Failed to apply ARecord {cr_name}: {e}"
-                )));
-            }
-        }
-        applied.insert(cr_name);
-    }
-
-    prune_unapplied_arecords(
-        &ctx.remote_client,
-        &ctx.target_namespace,
-        &tlsroute_arecord_label_selector(&ctx.cluster_name, &namespace, &name),
-        &indexed_arecord_cr_name_prefix(&ctx.cluster_name, &namespace, &name),
-        &applied,
-    )
-    .await
-    .map_err(ScoutError::from)?;
-
-    // Clean up stale ARecords from old cluster names
-    delete_stale_cluster_tlsroute_arecords(
-        &ctx.remote_client,
-        &ctx.target_namespace,
-        &ctx.cluster_name,
-        &namespace,
-        &name,
-        &zone,
-    )
-    .await
-    .map_err(ScoutError::from)?;
-
-    Ok(Action::await_change())
-}
-
-/// Reconciles a single `TCPRoute` resource, creating or updating ARecord CRs as needed.
-async fn reconcile_tcproute(
-    route: Arc<TCPRoute>,
-    ctx: Arc<ScoutContext>,
-) -> Result<Action, ScoutError> {
-    let name = route.name_any();
-    let namespace = route.namespace().unwrap_or_default();
-
-    if ctx.excluded_namespaces.contains(&namespace) {
-        debug!(tcproute = %name, ns = %namespace, "Skipping excluded namespace");
-        return Ok(Action::await_change());
-    }
-
-    if is_being_deleted(&*route) {
-        if finalizers::has_finalizer(&*route, FINALIZER_SCOUT) {
-            info!(tcproute = %name, ns = %namespace, "TCPRoute deleting — cleaning up ARecords");
-            let deleting_annotations = route
-                .metadata
-                .annotations
-                .as_ref()
-                .unwrap_or(&EMPTY_ANNOTATIONS);
-            let deleting_zone = resolve_zone(deleting_annotations, ctx.default_zone.as_deref());
-            let cleanup: Result<()> = async {
-                let deleted_zones = delete_arecords_for_tcproute(
-                    &ctx.remote_client,
-                    &ctx.target_namespace,
-                    &ctx.cluster_name,
-                    &namespace,
-                    &name,
-                )
-                .await?;
-                let cleanup_zones = stale_cleanup_zones(deleting_zone.as_deref(), &deleted_zones);
-                if cleanup_zones.is_empty() {
-                    warn!(tcproute = %name, ns = %namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE) — skipping stale-cluster ARecord cleanup; this TCPRoute's own ARecords were still removed");
-                    log_unscoped_stale_cluster_arecord_candidates(
-                    &ctx.remote_client,
-                    &ctx.target_namespace,
-                    &ctx.cluster_name,
-                    "TCPRoute",
-                    &namespace,
-                    &name,
-                    )
-                    .await;
-                    return Ok(());
-                }
-                for zone in &cleanup_zones {
-                    delete_stale_cluster_tcproute_arecords(
-                    &ctx.remote_client,
-                    &ctx.target_namespace,
-                    &ctx.cluster_name,
-                    &namespace,
-                    &name,
-                        zone,
-                    )
-                    .await?;
-                }
-                Ok(())
-            }
-            .await;
-            if let Err(e) = cleanup {
-                if !cleanup_grace_expired(
-                    route.metadata.deletion_timestamp.as_ref(),
-                    Timestamp::now(),
-                ) {
-                    warn!(tcproute = %name, ns = %namespace, error = %e, "Remote ARecord cleanup failed during TCPRoute deletion — retrying within grace period");
-                    return Ok(Action::requeue(Duration::from_secs(
-                        SCOUT_ERROR_REQUEUE_SECS,
-                    )));
-                }
-                error!(tcproute = %name, ns = %namespace, error = %e, grace_secs = REMOTE_CLEANUP_GRACE_SECS, "Remote ARecord cleanup still failing after grace period — releasing finalizer to unblock TCPRoute deletion; remote ARecords may be orphaned and must be reconciled separately");
-            }
-            remove_scout_finalizer(&ctx.client, &*route)
-                .await
-                .map_err(ScoutError::from)?;
-            info!(tcproute = %name, ns = %namespace, "Finalizer removed — TCPRoute deletion unblocked");
-        }
-        return Ok(Action::await_change());
-    }
-
-    let annotations = route
-        .metadata
-        .annotations
-        .as_ref()
-        .unwrap_or(&EMPTY_ANNOTATIONS);
-
-    let namespace_eligible =
-        source_namespace_eligible(&ctx.client, &namespace, ctx.namespace_selector.as_deref())
-            .await
-            .map_err(ScoutError::from)?;
-
-    if !is_scout_opted_in(annotations) || !namespace_eligible {
-        let has_fin = finalizers::has_finalizer(&*route, FINALIZER_SCOUT);
-        if has_fin {
-            info!(tcproute = %name, ns = %namespace, "Scout opt-in annotation removed — cleaning up ARecords and finalizer");
-            let opt_out_zone = resolve_zone(annotations, ctx.default_zone.as_deref());
-            let deleted_zones = delete_arecords_for_tcproute(
-                &ctx.remote_client,
-                &ctx.target_namespace,
-                &ctx.cluster_name,
-                &namespace,
-                &name,
-            )
-            .await
-            .map_err(ScoutError::from)?;
-            let cleanup_zones = stale_cleanup_zones(opt_out_zone.as_deref(), &deleted_zones);
-            if cleanup_zones.is_empty() {
-                warn!(tcproute = %name, ns = %namespace, "No usable DNS zone (missing or invalid bindy.firestoned.io/zone annotation, and no BINDY_SCOUT_DEFAULT_ZONE) — skipping stale-cluster ARecord cleanup; this TCPRoute's own ARecords were still removed");
-                log_unscoped_stale_cluster_arecord_candidates(
-                    &ctx.remote_client,
-                    &ctx.target_namespace,
-                    &ctx.cluster_name,
-                    "TCPRoute",
-                    &namespace,
-                    &name,
-                )
-                .await;
-            }
-            for zone in &cleanup_zones {
-                delete_stale_cluster_tcproute_arecords(
-                    &ctx.remote_client,
-                    &ctx.target_namespace,
-                    &ctx.cluster_name,
-                    &namespace,
-                    &name,
-                    zone,
-                )
-                .await
-                .map_err(ScoutError::from)?;
-            }
-            remove_scout_finalizer(&ctx.client, &*route)
-                .await
-                .map_err(ScoutError::from)?;
-        }
-        debug!(tcproute = %name, ns = %namespace, "No scout-enabled annotation — skipping");
-        return Ok(Action::await_change());
-    }
-
-    let has_fin = finalizers::has_finalizer(&*route, FINALIZER_SCOUT);
-    if !has_fin {
-        add_scout_finalizer(&ctx.client, &*route)
-            .await
-            .map_err(ScoutError::from)?;
-        debug!(tcproute = %name, ns = %namespace, "Finalizer added — re-queuing for record creation");
-        return Ok(Action::await_change());
-    }
-
-    let zone = match resolve_usable_zone(annotations, ctx.default_zone.as_deref()) {
-        ZoneResolution::Usable(z) => z,
-        ZoneResolution::Invalid(z) => {
-            warn!(tcproute = %name, ns = %namespace, zone = %z, "Resolved DNS zone is not a usable Kubernetes label value (max {MAX_K8S_LABEL_VALUE_LEN} characters, alphanumeric first and last character, and only '-', '_' or '.' between) — skipping; Scout stamps the zone onto every ARecord as a label and matches on it when cleaning up records from a previous cluster name, so neither can work with this value");
-            return Ok(Action::requeue(Duration::from_secs(
-                SCOUT_ERROR_REQUEUE_SECS,
-            )));
-        }
-        ZoneResolution::Missing => {
-            warn!(tcproute = %name, ns = %namespace, "No DNS zone available — skipping");
-            return Ok(Action::requeue(Duration::from_secs(
-                SCOUT_ERROR_REQUEUE_SECS,
-            )));
-        }
-    };
-
-    match check_zone_authorization_live(
-        &ctx.remote_client,
-        &ctx.zone_store.state(),
-        &zone,
-        &namespace,
-    )
-    .await
-    {
-        ZoneAuthz::Authorized => {}
-        ZoneAuthz::Forbidden => {
-            warn!(tcproute = %name, ns = %namespace, zone = %zone, "TCPRoute namespace not authorized for zone — the DNSZone must live in this namespace or set annotation {ANNOTATION_ALLOW_ZONE_NAMESPACES} to include it (or '*') — skipping");
-            return Ok(Action::requeue(Duration::from_secs(
-                SCOUT_ERROR_REQUEUE_SECS,
-            )));
-        }
-        ZoneAuthz::NotFound => {
-            warn!(tcproute = %name, ns = %namespace, zone = %zone, "Zone not found in DNSZone store — requeuing");
-            return Ok(Action::requeue(Duration::from_secs(
-                SCOUT_ERROR_REQUEUE_SECS,
-            )));
-        }
-    }
-
-    let ips = {
-        let from_annotation = resolve_ips_from_annotation(annotations);
-        let from_gateway = if from_annotation.is_some() {
-            None
-        } else {
-            let parent_refs = route
-                .spec
-                .as_ref()
-                .and_then(|s| s.parent_refs.as_ref())
-                .cloned()
-                .unwrap_or_default();
-            resolve_ips_from_gateways(&ctx.client, &namespace, &parent_refs, &ctx.gateway_services)
-                .await
-        };
-        let from_defaults = if ctx.default_ips.is_empty() {
-            None
-        } else {
-            Some(ctx.default_ips.clone())
-        };
-
-        match from_annotation.or(from_gateway).or(from_defaults) {
-            Some(ips) => ips,
-            None => {
-                warn!(tcproute = %name, ns = %namespace, "No IP available (no annotation override, no gateway IP, no default IPs) — requeuing");
-                return Ok(Action::requeue(Duration::from_secs(
-                    SCOUT_ERROR_REQUEUE_SECS,
-                )));
-            }
-        }
-    };
-
-    let ttl: Option<i32> = annotations.get(ANNOTATION_TTL).and_then(|v| v.parse().ok());
-
-    // P2-7: the override is the only record-name source for a TCPRoute, so it
-    // must pass the same syntax check every other kind gets.
-    let record_name = match tcproute_record_name(annotations) {
-        Ok(Some(n)) => n,
-        Ok(None) => {
-            warn!(tcproute = %name, ns = %namespace, "TCPRoute has no record-name override, skipping (add bindy.firestoned.io/record-name annotation)");
-            return Ok(Action::requeue(Duration::from_secs(
-                SCOUT_ERROR_REQUEUE_SECS,
-            )));
-        }
-        Err(e) => {
-            warn!(tcproute = %name, ns = %namespace, zone = %zone, error = %e, "Invalid record-name override, skipping");
-            return Ok(Action::requeue(Duration::from_secs(
-                SCOUT_ERROR_REQUEUE_SECS,
-            )));
-        }
-    };
-
-    let arecord_api: Api<ARecord> =
-        Api::namespaced(ctx.remote_client.clone(), &ctx.target_namespace);
-
-    let cr_name = tcproute_arecord_cr_name(&ctx.cluster_name, &namespace, &name, 0);
-    let arecord = build_tcproute_arecord(TCPRouteARecordParams {
-        name: &cr_name,
-        target_namespace: &ctx.target_namespace,
-        record_name: &record_name,
-        ips: &ips,
-        ttl,
-        cluster_name: &ctx.cluster_name,
-        route_namespace: &namespace,
-        route_name: &name,
-        zone: &zone,
-    });
-
-    let ssapply = kube::api::PatchParams::apply("bindy-scout").force();
-    match arecord_api
-        .patch(&cr_name, &ssapply, &kube::api::Patch::Apply(&arecord))
-        .await
-    {
-        Ok(_) => {
-            info!(arecord = %cr_name, tcproute = %name, record_name = %record_name, ips = ?ips, "ARecord created/updated for TCPRoute");
-        }
-        Err(e) => {
-            error!(arecord = %cr_name, tcproute = %name, error = %e, "Failed to apply ARecord for TCPRoute");
-            return Err(ScoutError::from(anyhow!(
-                "Failed to apply ARecord {cr_name}: {e}"
-            )));
-        }
-    }
-
-    delete_stale_cluster_tcproute_arecords(
-        &ctx.remote_client,
-        &ctx.target_namespace,
-        &ctx.cluster_name,
-        &namespace,
-        &name,
-        &zone,
-    )
-    .await
-    .map_err(ScoutError::from)?;
-
-    Ok(Action::await_change())
-}
-
-/// Error policy for Gateway API routes: requeue with a fixed backoff.
-fn gateway_route_error_policy(
-    _obj: Arc<HTTPRoute>,
-    error: &ScoutError,
-    _ctx: Arc<ScoutContext>,
-) -> Action {
-    error!(error = %error, "Scout HTTPRoute reconcile error — requeuing");
-    Action::requeue(Duration::from_secs(SCOUT_ERROR_REQUEUE_SECS))
-}
-
-/// Error policy for TLSRoute: requeue with a fixed backoff.
-fn tlsroute_error_policy(
-    _obj: Arc<TLSRoute>,
-    error: &ScoutError,
-    _ctx: Arc<ScoutContext>,
-) -> Action {
-    error!(error = %error, "Scout TLSRoute reconcile error — requeuing");
-    Action::requeue(Duration::from_secs(SCOUT_ERROR_REQUEUE_SECS))
-}
-
-/// Error policy for TCPRoute: requeue with a fixed backoff.
-fn tcproute_error_policy(
-    _obj: Arc<TCPRoute>,
-    error: &ScoutError,
-    _ctx: Arc<ScoutContext>,
-) -> Action {
-    error!(error = %error, "Scout TCPRoute reconcile error — requeuing");
-    Action::requeue(Duration::from_secs(SCOUT_ERROR_REQUEUE_SECS))
 }
 
 // ============================================================================
@@ -4299,7 +1743,7 @@ pub(crate) fn resolve_remote_transport(
         if secret_name.is_some() {
             return Err(anyhow!(
                 "BINDY_SCOUT_REMOTE_ENDPOINT and BINDY_SCOUT_REMOTE_SECRET are both set; \
-                 the two remote modes are mutually exclusive — configure exactly one"
+                 the two remote modes are mutually exclusive: configure exactly one"
             ));
         }
         let Some(token_file) = token_file else {
@@ -4456,27 +1900,32 @@ async fn build_remote_client(
 // Entry point
 // ============================================================================
 
-/// Reads scout configuration from environment variables.
-struct ScoutConfig {
-    target_namespace: String,
-    cluster_name: String,
-    excluded_namespaces: Vec<String>,
-    /// Default IPs used when no per-Ingress annotation override or LB status IP is available.
-    /// Set via `BINDY_SCOUT_DEFAULT_IPS` (comma-separated) or `--default-ips` CLI flag.
-    default_ips: Vec<String>,
-    /// `gatewayClass → LoadBalancer Service` map for gateway-chain IP resolution.
+/// Scout's startup configuration, read from CLI flags and environment
+/// variables (a flag takes precedence over its variable).
+///
+/// Every value is checked once, here, so a misconfigured Scout fails at
+/// startup instead of running degraded (ADR-0022, Decision 6).
+#[derive(Debug)]
+pub(crate) struct ScoutConfig {
+    pub(crate) target_namespace: String,
+    pub(crate) cluster_name: String,
+    pub(crate) excluded_namespaces: Vec<String>,
+    /// Default IPs used when no per-resource annotation override or discovered IP
+    /// applies. Set via `BINDY_SCOUT_DEFAULT_IPS` (comma-separated) or `--default-ips`.
+    pub(crate) default_ips: Vec<String>,
+    /// `gatewayClass -> LoadBalancer Service` map for gateway-chain IP resolution.
     /// Set via `BINDY_SCOUT_GATEWAY_SERVICES` (`class=ns/name,...`) or `--gateway-service`.
-    gateway_services: BTreeMap<String, GatewayServiceTarget>,
-    /// Default DNS zone applied to all Ingresses when no `bindy.firestoned.io/zone` annotation
-    /// is present. Set via `BINDY_SCOUT_DEFAULT_ZONE` or `--default-zone` CLI flag.
-    default_zone: Option<String>,
+    pub(crate) gateway_services: BTreeMap<String, GatewayServiceTarget>,
+    /// Default DNS zone applied when no `bindy.firestoned.io/zone` annotation
+    /// is present. Set via `BINDY_SCOUT_DEFAULT_ZONE` or `--default-zone`.
+    pub(crate) default_zone: Option<String>,
     /// Kubernetes label selector restricting which namespaces Scout will act in. `None` means
     /// every namespace is eligible (backward-compatible default). Set via
-    /// `BINDY_SCOUT_NAMESPACE_SELECTOR` or `--namespace-selector` CLI flag.
-    namespace_selector: Option<String>,
+    /// `BINDY_SCOUT_NAMESPACE_SELECTOR` or `--namespace-selector`.
+    pub(crate) namespace_selector: Option<String>,
     /// How to reach the bindy cluster: same-cluster, kubeconfig Secret
     /// (Phase 2) or endpoint + token file (Phase 3, ADR-0008).
-    remote_transport: RemoteTransport,
+    pub(crate) remote_transport: RemoteTransport,
 }
 
 /// CLI overrides for the remote transport (ADR-0008); each takes precedence
@@ -4491,107 +1940,158 @@ pub struct ScoutRemoteOverrides {
     pub ca_file: Option<String>,
 }
 
+/// The CLI flags `bindy scout` passes to [`ScoutConfig::from_lookup`].
+#[derive(Debug, Default, Clone)]
+pub(crate) struct ScoutCli {
+    pub(crate) cluster_name: Option<String>,
+    pub(crate) namespace: Option<String>,
+    pub(crate) default_ips: Vec<String>,
+    pub(crate) gateway_services: Vec<String>,
+    pub(crate) default_zone: Option<String>,
+    pub(crate) namespace_selector: Option<String>,
+    pub(crate) remote: ScoutRemoteOverrides,
+}
+
+/// Namespace assumed for Scout itself when `POD_NAMESPACE` is unset.
+const FALLBACK_POD_NAMESPACE: &str = "default";
+
+/// Returns the value a setting takes: the CLI flag when given, otherwise the
+/// environment variable `var` read through `lookup`, otherwise `None`.
+///
+/// This is the one place Scout reads a setting, so every flag and variable
+/// gets the same rule.
+///
+/// # Errors
+/// Returns an error when the flag or the variable is set to an empty or
+/// all-whitespace value: an empty value is a mistake (a templated value that
+/// rendered to nothing, say), and silently treating it as unset would run
+/// Scout with a configuration nobody asked for (ADR-0022, Decision 6).
+pub(crate) fn env_or(
+    cli: Option<String>,
+    var: &str,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> Result<Option<String>> {
+    let Some(value) = cli.or_else(|| lookup(var)) else {
+        return Ok(None);
+    };
+    if value.trim().is_empty() {
+        return Err(anyhow!(
+            "{var} (or its CLI flag) is set but empty; unset it or give it a value"
+        ));
+    }
+    Ok(Some(value))
+}
+
+/// Splits a comma-separated setting into its trimmed, non-empty entries.
+fn split_list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+/// Checks that every default IP is an IPv4 address (`ARecord` is IPv4-only).
+///
+/// # Errors
+/// Returns an error naming the first entry that is not IPv4.
+fn validate_default_ips(ips: Vec<String>) -> Result<Vec<String>> {
+    if let Some(bad) = ips
+        .iter()
+        .find(|ip| ip.trim().parse::<std::net::Ipv4Addr>().is_err())
+    {
+        return Err(anyhow!(
+            "default IP {bad:?} (BINDY_SCOUT_DEFAULT_IPS / --default-ips) is not an IPv4 address"
+        ));
+    }
+    Ok(ips.into_iter().map(|ip| ip.trim().to_string()).collect())
+}
+
 impl ScoutConfig {
-    /// Build configuration from environment variables, with optional CLI overrides.
+    /// Builds the configuration from CLI flags and the process environment.
     ///
-    /// CLI arguments take precedence over environment variables when provided.
-    fn from_env(
-        cli_cluster_name: Option<String>,
-        cli_namespace: Option<String>,
-        cli_default_ips: Vec<String>,
-        cli_gateway_services: Vec<String>,
-        cli_default_zone: Option<String>,
-        cli_namespace_selector: Option<String>,
-        cli_remote: ScoutRemoteOverrides,
+    /// # Errors
+    /// See [`ScoutConfig::from_lookup`].
+    fn from_env(cli: ScoutCli) -> Result<Self> {
+        Self::from_lookup(cli, &|var| std::env::var(var).ok())
+    }
+
+    /// Builds the configuration from CLI flags and environment variables read
+    /// through `lookup` (a seam for tests). A flag takes precedence over its
+    /// variable.
+    ///
+    /// # Errors
+    /// Returns an error when `BINDY_SCOUT_CLUSTER_NAME` is missing, when any
+    /// setting is present but empty (see [`env_or`]), when a default IP is not
+    /// IPv4, when a gateway-service entry is malformed, or when the remote
+    /// transport is ambiguous or incomplete (see `resolve_remote_transport`).
+    pub(crate) fn from_lookup(
+        cli: ScoutCli,
+        lookup: &dyn Fn(&str) -> Option<String>,
     ) -> Result<Self> {
-        let target_namespace = cli_namespace
-            .filter(|s| !s.is_empty())
-            .or_else(|| std::env::var("BINDY_SCOUT_NAMESPACE").ok())
+        let target_namespace = env_or(cli.namespace, "BINDY_SCOUT_NAMESPACE", lookup)?
             .unwrap_or_else(|| DEFAULT_SCOUT_NAMESPACE.to_string());
 
-        let cluster_name = cli_cluster_name
-            .filter(|s| !s.is_empty())
-            .or_else(|| std::env::var("BINDY_SCOUT_CLUSTER_NAME").ok())
+        let cluster_name = env_or(cli.cluster_name, "BINDY_SCOUT_CLUSTER_NAME", lookup)?
             .ok_or_else(|| {
                 anyhow!("BINDY_SCOUT_CLUSTER_NAME is required (set via --cluster-name or env var)")
             })?;
 
-        let own_namespace =
-            std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "default".to_string());
+        let own_namespace = env_or(None, "POD_NAMESPACE", lookup)?
+            .unwrap_or_else(|| FALLBACK_POD_NAMESPACE.to_string());
 
-        let mut excluded_namespaces: Vec<String> = std::env::var("BINDY_SCOUT_EXCLUDE_NAMESPACES")
-            .unwrap_or_default()
-            .split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(ToString::to_string)
-            .collect();
-
+        let mut excluded_namespaces = env_or(None, "BINDY_SCOUT_EXCLUDE_NAMESPACES", lookup)?
+            .map(|raw| split_list(&raw))
+            .unwrap_or_default();
         // Always exclude Scout's own namespace
         if !excluded_namespaces.contains(&own_namespace) {
             excluded_namespaces.push(own_namespace.clone());
         }
 
-        // CLI --default-ips takes precedence over BINDY_SCOUT_DEFAULT_IPS env var
-        let default_ips = if !cli_default_ips.is_empty() {
-            cli_default_ips
-        } else {
-            std::env::var("BINDY_SCOUT_DEFAULT_IPS")
+        // CLI --default-ips takes precedence over BINDY_SCOUT_DEFAULT_IPS.
+        let default_ips = if cli.default_ips.is_empty() {
+            env_or(None, "BINDY_SCOUT_DEFAULT_IPS", lookup)?
+                .map(|raw| split_list(&raw))
                 .unwrap_or_default()
-                .split(',')
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(ToString::to_string)
-                .collect()
-        };
-
-        // CLI --gateway-service takes precedence over BINDY_SCOUT_GATEWAY_SERVICES env var.
-        // CLI entries are parsed one-by-one (each flag is a single `class=target`) so a
-        // multi-label selector's commas are not mistaken for entry separators; the env
-        // form is a single comma-separated string.
-        let gateway_services = if cli_gateway_services.is_empty() {
-            parse_gateway_services(
-                &std::env::var("BINDY_SCOUT_GATEWAY_SERVICES").unwrap_or_default(),
-            )
         } else {
-            cli_gateway_services
-                .iter()
-                .filter_map(|e| parse_gateway_service_entry(e))
-                .collect()
+            cli.default_ips
+        };
+        let default_ips = validate_default_ips(default_ips)?;
+
+        // CLI --gateway-service takes precedence over BINDY_SCOUT_GATEWAY_SERVICES.
+        // CLI entries are parsed one by one (each flag is a single `class=target`)
+        // so a multi-label selector's commas are not mistaken for entry
+        // separators; the env form is a single comma-separated string.
+        let gateway_services = if cli.gateway_services.is_empty() {
+            env_or(None, "BINDY_SCOUT_GATEWAY_SERVICES", lookup)?
+                .map(|raw| parse_gateway_services(&raw))
+                .transpose()?
+                .unwrap_or_default()
+        } else {
+            parse_gateway_service_entries(cli.gateway_services.iter().map(String::as_str))?
         };
 
-        // CLI --default-zone takes precedence over BINDY_SCOUT_DEFAULT_ZONE env var
-        let default_zone = cli_default_zone.filter(|s| !s.is_empty()).or_else(|| {
-            std::env::var("BINDY_SCOUT_DEFAULT_ZONE")
-                .ok()
-                .filter(|s| !s.is_empty())
-        });
+        let default_zone = env_or(cli.default_zone, "BINDY_SCOUT_DEFAULT_ZONE", lookup)?;
 
-        // CLI --namespace-selector takes precedence over BINDY_SCOUT_NAMESPACE_SELECTOR env var.
-        // Unset (None) means every namespace is eligible — the backward-compatible default.
-        let namespace_selector = cli_namespace_selector
-            .filter(|s| !s.is_empty())
-            .or_else(|| {
-                std::env::var("BINDY_SCOUT_NAMESPACE_SELECTOR")
-                    .ok()
-                    .filter(|s| !s.is_empty())
-            });
+        // Unset (None) means every namespace is eligible: the backward-compatible default.
+        let namespace_selector = env_or(
+            cli.namespace_selector,
+            "BINDY_SCOUT_NAMESPACE_SELECTOR",
+            lookup,
+        )?;
 
-        let remote_secret_name = std::env::var("BINDY_SCOUT_REMOTE_SECRET")
-            .ok()
-            .filter(|s| !s.is_empty());
+        let remote_secret_name = env_or(None, "BINDY_SCOUT_REMOTE_SECRET", lookup)?;
+        let remote_secret_namespace = env_or(None, "BINDY_SCOUT_REMOTE_SECRET_NAMESPACE", lookup)?
+            .unwrap_or_else(|| own_namespace.clone());
 
-        let remote_secret_namespace =
-            std::env::var("BINDY_SCOUT_REMOTE_SECRET_NAMESPACE").unwrap_or(own_namespace);
-
-        let env_or = |cli: Option<String>, var: &str| {
-            cli.filter(|s| !s.is_empty())
-                .or_else(|| std::env::var(var).ok().filter(|s| !s.is_empty()))
-        };
         let remote_transport = resolve_remote_transport(
-            env_or(cli_remote.endpoint, "BINDY_SCOUT_REMOTE_ENDPOINT"),
-            env_or(cli_remote.token_file, "BINDY_SCOUT_REMOTE_TOKEN_FILE"),
-            env_or(cli_remote.ca_file, "BINDY_SCOUT_REMOTE_CA_FILE"),
+            env_or(cli.remote.endpoint, "BINDY_SCOUT_REMOTE_ENDPOINT", lookup)?,
+            env_or(
+                cli.remote.token_file,
+                "BINDY_SCOUT_REMOTE_TOKEN_FILE",
+                lookup,
+            )?,
+            env_or(cli.remote.ca_file, "BINDY_SCOUT_REMOTE_CA_FILE", lookup)?,
             remote_secret_name,
             &remote_secret_namespace,
         )?;
@@ -4610,18 +2110,21 @@ impl ScoutConfig {
 }
 
 // ============================================================================
-// Internal helpers
+// Entry point
 // ============================================================================
 
 /// Entry point for the `bindy scout` subcommand.
 ///
-/// Initialises the Kubernetes client, builds reflector stores for `DNSZone`
-/// resources (for zone validation), then runs the Ingress controller loop.
+/// Validates the configuration, initialises the Kubernetes clients, builds the
+/// `DNSZone` store (for zone validation), then runs one controller per served
+/// source kind, each driving the shared pipeline (ADR-0022).
 ///
 /// # Errors
 ///
-/// Returns an error if the Kubernetes client cannot be initialised or if the
-/// cluster name is not provided via CLI or the `BINDY_SCOUT_CLUSTER_NAME` env var.
+/// Returns an error if the configuration is invalid (see
+/// `ScoutConfig::from_lookup`: a missing cluster name, an empty setting, a
+/// malformed `--gateway-service` entry, a non-IPv4 default IP, an ambiguous
+/// remote transport) or if a Kubernetes client cannot be initialised.
 pub async fn run_scout(
     cli_cluster_name: Option<String>,
     cli_namespace: Option<String>,
@@ -4631,15 +2134,15 @@ pub async fn run_scout(
     cli_namespace_selector: Option<String>,
     cli_remote: ScoutRemoteOverrides,
 ) -> Result<()> {
-    let config = ScoutConfig::from_env(
-        cli_cluster_name,
-        cli_namespace,
-        cli_default_ips,
-        cli_gateway_services,
-        cli_default_zone,
-        cli_namespace_selector,
-        cli_remote,
-    )?;
+    let config = ScoutConfig::from_env(ScoutCli {
+        cluster_name: cli_cluster_name,
+        namespace: cli_namespace,
+        default_ips: cli_default_ips,
+        gateway_services: cli_gateway_services,
+        default_zone: cli_default_zone,
+        namespace_selector: cli_namespace_selector,
+        remote: cli_remote,
+    })?;
 
     let local_client = Client::try_default().await?;
 
@@ -4799,79 +2302,20 @@ pub async fn run_scout(
     }
     let local_watch = Arc::new(local_watch);
 
-    let ingress_controller = Controller::for_stream(
-        local_watch.subscribe::<Ingress>(None),
-        local_watch.store::<Ingress>(None),
-    )
-    .run(reconcile, error_policy, ctx.clone())
-    .for_each(|res| async move {
-        match res {
-            Ok(obj) => debug!(obj = ?obj, "Reconciled Ingress"),
-            Err(e) => error!(error = %e, "Ingress reconcile failed"),
-        }
-    });
-
-    let service_controller = Controller::for_stream(
-        local_watch.subscribe::<Service>(None),
-        local_watch.store::<Service>(None),
-    )
-    .run(reconcile_service, service_error_policy, ctx.clone())
-    .for_each(|res| async move {
-        match res {
-            Ok(obj) => debug!(obj = ?obj, "Reconciled Service"),
-            Err(e) => error!(error = %e, "Service reconcile failed"),
-        }
-    });
-
-    // Boxed so a Gateway API controller is built only when its kind is
-    // served (and so registered above): subscribing to an unregistered kind
-    // would panic.
-    let mut controllers: Vec<Pin<Box<dyn Future<Output = ()> + Send>>> =
-        vec![Box::pin(ingress_controller), Box::pin(service_controller)];
+    // A Gateway API controller is built only when its kind is served (and so
+    // registered above): subscribing to an unregistered kind would panic.
+    let mut controllers = vec![
+        source_controller::<Ingress>(&local_watch, ctx.clone()),
+        source_controller::<Service>(&local_watch, ctx.clone()),
+    ];
     if httproute_enabled {
-        controllers.push(Box::pin(
-            Controller::for_stream(
-                local_watch.subscribe::<HTTPRoute>(None),
-                local_watch.store::<HTTPRoute>(None),
-            )
-            .run(reconcile_httproute, gateway_route_error_policy, ctx.clone())
-            .for_each(|res| async move {
-                match res {
-                    Ok(obj) => debug!(obj = ?obj, "Reconciled HTTPRoute"),
-                    Err(e) => error!(error = %e, "HTTPRoute reconcile failed"),
-                }
-            }),
-        ));
+        controllers.push(source_controller::<HTTPRoute>(&local_watch, ctx.clone()));
     }
     if tlsroute_enabled {
-        controllers.push(Box::pin(
-            Controller::for_stream(
-                local_watch.subscribe::<TLSRoute>(None),
-                local_watch.store::<TLSRoute>(None),
-            )
-            .run(reconcile_tlsroute, tlsroute_error_policy, ctx.clone())
-            .for_each(|res| async move {
-                match res {
-                    Ok(obj) => debug!(obj = ?obj, "Reconciled TLSRoute"),
-                    Err(e) => error!(error = %e, "TLSRoute reconcile failed"),
-                }
-            }),
-        ));
+        controllers.push(source_controller::<TLSRoute>(&local_watch, ctx.clone()));
     }
     if tcproute_enabled {
-        controllers.push(Box::pin(
-            Controller::for_stream(
-                local_watch.subscribe::<TCPRoute>(None),
-                local_watch.store::<TCPRoute>(None),
-            )
-            .run(reconcile_tcproute, tcproute_error_policy, ctx.clone())
-            .for_each(|res| async move {
-                match res {
-                    Ok(obj) => debug!(obj = ?obj, "Reconciled TCPRoute"),
-                    Err(e) => error!(error = %e, "TCPRoute reconcile failed"),
-                }
-            }),
-        ));
+        controllers.push(source_controller::<TCPRoute>(&local_watch, ctx.clone()));
     }
 
     futures::future::join_all(controllers).await;

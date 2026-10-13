@@ -133,6 +133,9 @@ Scout requires one mandatory setting: the **logical cluster name** that is stamp
 | `RUST_LOG` | — | `info` | Log level: `trace`, `debug`, `info`, `warn`, `error`. |
 | `RUST_LOG_FORMAT` | — | `text` | Log format: `text` or `json`. |
 
+!!! warning "Scout validates its configuration at startup"
+    Scout exits at startup, naming the setting, when a variable or flag above is set to an empty value, when a `--gateway-service` / `BINDY_SCOUT_GATEWAY_SERVICES` entry is malformed, or when a default IP is not IPv4. Unset a variable you do not need rather than setting it to `""`. See the [Scout guide](../guide/scout.md#configuration-reference).
+
 ---
 
 ## Multi-Cluster Setup
@@ -319,14 +322,15 @@ You should see Scout announce which namespaces it is watching and confirm it is 
               port: 9090
     ```
 
-Within seconds, Scout creates an `ARecord` in `bindy-system`:
+Within seconds, Scout creates an `ARecord` in `bindy-system`, named `scout-<cluster>-<namespace>-<name>-<hash>-<index>` (see [Record names](../guide/scout.md#record-names)). Find records by label, not by name:
 
 ```bash
 # All Scout-managed records
 kubectl get arecords -n bindy-system -l bindy.firestoned.io/managed-by=scout
 
-# Records from a specific source resource (works for any kind: Ingress, Service, HTTPRoute, TLSRoute)
-kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-name=<resource-name>
+# Records from one source resource: kind is Ingress, Service, HTTPRoute, TLSRoute or TCPRoute
+kubectl get arecords -n bindy-system \
+  -l bindy.firestoned.io/source-kind=<kind>,bindy.firestoned.io/source-name=<resource-name>
 ```
 
 ---

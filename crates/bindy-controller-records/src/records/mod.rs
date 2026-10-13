@@ -334,7 +334,9 @@ async fn prepare_record_reconciliation<T: RecordKind>(
 /// 1. Checks if the record is selected by a `DNSZone` (via status.zoneRef)
 /// 2. Looks up the `DNSZone` (from the store) and gets primary instances
 /// 3. Deletes the previously published name from BIND9 if `spec.name` changed
-///    (rename detection via `status.publishedName`)
+///    (rename detection via `status.publishedName`); when another live
+///    record of the zone still declares the old name, that record is
+///    re-pushed instead (ADR-0022 Decision 5)
 /// 4. Adds the record to BIND9 primaries using dynamic DNS updates
 /// 5. Updates the record status based on success/failure; `status.addresses`
 ///    and `status.publishedName` are only set after a successful reconcile
@@ -395,20 +397,52 @@ where
             record_type, namespace, name, old_name, record_name, rec_ctx.zone_ref.zone_name
         );
 
-        if let Err(e) = delete_record_from_primaries(
-            &client,
-            &ctx.stores,
-            &resolver,
-            &rec_ctx.primary_refs,
-            &rec_ctx.zone_ref.zone_name,
-            &old_name,
-            record_type,
-            true, // fail_on_error: do not publish the new name until the old one is gone
-        )
-        .await
-        {
+        // The old name stays when another live record still declares it
+        // (ADR-0022 Decision 5): the RRset already holds that record's values.
+        let live = ctx.stores.records.get::<T>().state();
+        let claimant = rrset_claimant(&record, &rec_ctx.zone_ref, &old_name, &live);
+        // This record may have written the RRset last, so the claimant is
+        // re-pushed, exactly as the finalizer does.
+        let handover = match claimant {
+            Some(claimant) => {
+                info!(
+                    "Keeping {} RRset '{}' in zone {} after renaming {}/{}: still declared by {}/{}, re-pushing it",
+                    record_type,
+                    old_name,
+                    rec_ctx.zone_ref.zone_name,
+                    namespace,
+                    name,
+                    claimant.namespace().unwrap_or_default(),
+                    claimant.name_any()
+                );
+                repush_claimant(
+                    &client,
+                    &ctx.stores,
+                    &resolver,
+                    &rec_ctx.primary_refs,
+                    &rec_ctx.zone_ref.zone_name,
+                    claimant.as_ref(),
+                    &old_name,
+                )
+                .await
+            }
+            None => {
+                delete_record_from_primaries(
+                    &client,
+                    &ctx.stores,
+                    &resolver,
+                    &rec_ctx.primary_refs,
+                    &rec_ctx.zone_ref.zone_name,
+                    &old_name,
+                    record_type,
+                    true, // fail_on_error: do not publish the new name until the old one is gone
+                )
+                .await
+            }
+        };
+        if let Err(e) = handover {
             warn!(
-                "Failed to delete renamed {} record '{}' from zone {}: {}",
+                "Failed to hand over renamed {} record '{}' in zone {}: {:#}",
                 record_type, old_name, rec_ctx.zone_ref.zone_name, e
             );
             // published_name stays as it is, so the deletion is retried
@@ -417,7 +451,7 @@ where
                 &record,
                 &RecordStatusUpdate::not_ready(
                     REASON_RECONCILE_FAILED,
-                    &format!("Failed to delete renamed record '{old_name}' from zone: {e}"),
+                    &format!("Failed to hand over renamed record '{old_name}' in zone: {e:#}"),
                     current_generation,
                 ),
             )
@@ -630,6 +664,83 @@ pub(crate) fn primaries_step<I>(filtered: Result<Vec<I>>) -> DeleteStep<Vec<I>> 
     }
 }
 
+/// The live record of kind `T` that still declares the RRset `record` is
+/// about to delete, if any.
+///
+/// Deleting a record from BIND9 removes its whole RRset (zone, name, type).
+/// When another live record of the same kind in the same zone declares the
+/// same name, the RRset must stay (ADR-0022 Decision 5): since ADR-0021 every
+/// write replaces the whole RRset, so it already holds the claimant's values,
+/// and with no periodic resync (ADR-0016) nothing would re-push them. The
+/// rule itself is [`bindy_controller_sdk::rrset_claim::claims_rrset`], shared
+/// with the zone controller's stale-record cleanup.
+///
+/// # Arguments
+///
+/// * `record` - The record whose RRset would be deleted
+/// * `zone_ref` - The zone the RRset belongs to (the record's `status.zoneRef`)
+/// * `dns_name` - The DNS name being deleted: the published name on a
+///   finalizer, the old name on a rename
+/// * `live` - The records of kind `T` (the kind's reflector store)
+///
+/// # Returns
+///
+/// The claimant, or `None` when the RRset may be deleted.
+pub(crate) fn rrset_claimant<'a, T: RecordKind>(
+    record: &T,
+    zone_ref: &crate::crd::ZoneReference,
+    dns_name: &str,
+    live: &'a [Arc<T>],
+) -> Option<&'a Arc<T>> {
+    let gone = bindy_controller_sdk::rrset_claim::claim_of(record, zone_ref, dns_name);
+    bindy_controller_sdk::rrset_claim::live_claimant(&gone, live)
+}
+
+/// Re-pushes `claimant`, the live record that still declares `dns_name`,
+/// after another record stopped declaring it (deleted or renamed).
+///
+/// The departing record may have written the RRset last, so it can still
+/// hold that record's values (ADR-0022 Decision 5). The write compares by
+/// value first (ADR-0021) and sends nothing when BIND9 already serves the
+/// claimant.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client
+/// * `stores` - Reflector stores
+/// * `resolver` - Resolves each primary's RNDC key and endpoints
+/// * `primary_refs` - The zone's primary instances
+/// * `zone_name` - The zone the RRset belongs to
+/// * `claimant` - The record that still declares the name
+/// * `dns_name` - The name the departing record published
+///
+/// # Errors
+///
+/// Returns an error when the re-push fails, so the caller keeps its
+/// finalizer (or its `status.publishedName`) and retries.
+async fn repush_claimant<T: ReconcilableRecord>(
+    client: &Client,
+    stores: &crate::context::Stores,
+    resolver: &bindy_bind9::instances::InstanceResolver,
+    primary_refs: &[crate::crd::InstanceReference],
+    zone_name: &str,
+    claimant: &T,
+    dns_name: &str,
+) -> Result<()> {
+    add_record_to_instances_generic(client, stores, resolver, primary_refs, zone_name, claimant)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to re-push {} record {}/{}, which still declares '{}' in zone {}",
+                T::KIND,
+                claimant.namespace().unwrap_or_default(),
+                claimant.name_any(),
+                dns_name,
+                zone_name
+            )
+        })
+}
+
 /// Generic function to delete a DNS record from BIND9 primaries.
 ///
 /// This function handles deletion of any record type using the generic approach:
@@ -639,6 +750,8 @@ pub(crate) fn primaries_step<I>(filtered: Result<Vec<I>>) -> DeleteStep<Vec<I>> 
 /// 4. Deletes the record from all primaries (best-effort), using
 ///    `status.publishedName` when present so renamed records delete the
 ///    name actually published to DNS, falling back to `spec.name`
+/// 5. Skips the BIND9 delete when another live record of the same kind in
+///    the zone still declares that name (ADR-0022 Decision 5)
 ///
 /// # Arguments
 ///
@@ -648,9 +761,10 @@ pub(crate) fn primaries_step<I>(filtered: Result<Vec<I>>) -> DeleteStep<Vec<I>> 
 ///
 /// # Returns
 ///
-/// Returns `Ok(())` if deletion succeeded, or if the record is definitely not
-/// published: no `zoneRef`, the zone does not exist or is being deleted, the
-/// zone selects no instances, or none of them is a primary.
+/// Returns `Ok(())` if deletion succeeded, if another live record still
+/// declares the RRset, or if the record is definitely not published: no
+/// `zoneRef`, the zone does not exist or is being deleted, the zone selects
+/// no instances, or none of them is a primary.
 ///
 /// # Errors
 ///
@@ -662,7 +776,7 @@ pub(crate) fn primaries_step<I>(filtered: Result<Vec<I>>) -> DeleteStep<Vec<I>> 
 ///
 /// Panics if RNDC key is not found for an instance (should never happen in production).
 #[allow(clippy::too_many_lines)]
-pub async fn delete_record<T: RecordKind>(
+pub async fn delete_record<T: ReconcilableRecord>(
     client: &Client,
     record: &T,
     stores: &crate::context::Stores,
@@ -767,12 +881,45 @@ pub async fn delete_record<T: RecordKind>(
         .and_then(|s| s.published_name.as_deref())
         .unwrap_or_else(|| record.spec_name());
 
+    let resolver = bindy_bind9::instances::InstanceResolver::for_kube(client, stores);
+
+    // Another live record of this kind in the zone still declares the name:
+    // deleting the RRset would take the survivor's data off the air with
+    // nothing to re-push it (ADR-0022 Decision 5). The RRset may still hold
+    // the deleted record's values if it wrote last, so the survivor is
+    // re-pushed instead; its write compares by value first (ADR-0021) and
+    // sends nothing when BIND9 already serves it. A failed re-push keeps the
+    // finalizer, so the deletion is retried.
+    let live = stores.records.get::<T>().state();
+    if let Some(claimant) = rrset_claimant(record, &zone_ref, record_name_str, &live) {
+        info!(
+            "Keeping {} RRset '{}' in zone {} for deleted record {}/{}: still declared by {}/{}, re-pushing it",
+            record_type,
+            record_name_str,
+            zone_ref.zone_name,
+            namespace,
+            name,
+            claimant.namespace().unwrap_or_default(),
+            claimant.name_any()
+        );
+        repush_claimant(
+            client,
+            stores,
+            &resolver,
+            &primary_refs,
+            &zone_ref.zone_name,
+            claimant.as_ref(),
+            record_name_str,
+        )
+        .await?;
+        return Ok(());
+    }
+
     // Delete record from all primaries. An instance whose data is gone does
     // not block the finalizer; a pod that still holds the zone but cannot be
     // reached right now (a container restarting) does, and the deletion is
     // retried with backoff (ADR-0015 amended: removing the finalizer then
     // left the record served from the pod's surviving emptyDir).
-    let resolver = bindy_bind9::instances::InstanceResolver::for_kube(client, stores);
     delete_record_from_primaries(
         client,
         stores,
