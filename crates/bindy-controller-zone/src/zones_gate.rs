@@ -56,8 +56,9 @@ use bindy_bind9::instances::{
 };
 use bindy_controller_sdk::context::Context;
 use bindy_controller_sdk::error::{converged_action, error_policy, retry_action, ReconcileError};
-use bindy_controller_sdk::metrics;
-use bindy_controller_sdk::namespace_scope::owned_targets;
+use bindy_controller_sdk::kube_errors::is_not_found_anyhow;
+use bindy_controller_sdk::namespace_scope::{owned_targets, run_per_target, target_label};
+use bindy_controller_sdk::reconcile::instrumented_action;
 use bindy_controller_sdk::watch::changed_only;
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::{Pod, PodCondition};
@@ -502,16 +503,6 @@ async fn served_by_sibling(
     false
 }
 
-/// HTTP status of a missing object.
-const HTTP_NOT_FOUND: u16 = 404;
-
-/// Whether `error` is the API server reporting the object as gone.
-fn is_not_found(error: &anyhow::Error) -> bool {
-    error
-        .downcast_ref::<kube::Error>()
-        .is_some_and(|e| matches!(e, kube::Error::Api(status) if status.code == HTTP_NOT_FOUND))
-}
-
 /// Write the gate condition unless the pod already carries exactly it.
 async fn set_gate(
     ctx: &Context,
@@ -581,8 +572,11 @@ async fn load_zone_on_pod(
         pod_ip,
     );
     let mut discarded = bindy_controller_sdk::status::DNSZoneStatusUpdater::new(zone);
-    let (primary_refs, _secondary_refs, peers) =
-        crate::dnszone::transfer_peers::zone_transfer_peers(ctx, &instance_refs).await?;
+    let crate::dnszone::transfer_peers::ZonePeers {
+        primary_refs,
+        peers,
+        ..
+    } = crate::dnszone::transfer_peers::zone_transfer_peers(ctx, &instance_refs).await?;
 
     if instance.spec.role == ServerRole::Secondary {
         ensure!(
@@ -687,7 +681,7 @@ async fn reconcile_pod(pod: Arc<Pod>, ctx: Arc<Context>) -> anyhow::Result<Actio
                     );
                     return Ok(converged_action(pod.as_ref()));
                 }
-                Err(e) if is_not_found(&e) => {
+                Err(e) if is_not_found_anyhow(&e) => {
                     debug!(
                         "Zones-loaded gate: terminating pod {} is already gone",
                         pod.name_any()
@@ -794,35 +788,37 @@ async fn reconcile_pod(pod: Arc<Pod>, ctx: Arc<Context>) -> anyhow::Result<Actio
 
 /// The reconcile entry point: metrics around [`reconcile_pod`].
 async fn reconcile_pod_wrapper(pod: Arc<Pod>, ctx: Arc<Context>) -> Result<Action, ReconcileError> {
-    let start = std::time::Instant::now();
-    let result = reconcile_pod(pod, ctx).await;
-    let duration = start.elapsed();
-    if result.is_ok() {
-        metrics::record_reconciliation_success(KIND_ZONES_GATE, duration);
-    } else {
-        metrics::record_reconciliation_error(KIND_ZONES_GATE, duration);
-        metrics::record_error(KIND_ZONES_GATE, "reconcile_error");
-    }
-    result.map_err(ReconcileError::from)
+    instrumented_action(KIND_ZONES_GATE, reconcile_pod(pod, ctx))
+        .await
+        .map_err(ReconcileError::from)
 }
 
 /// Run one zones-loaded gate controller per namespace target. Cluster-wide
 /// mode yields exactly one.
+///
+/// # Errors
+/// Returns an error when a target's controller exits before the shutdown
+/// signal fired (see [`run_per_target`]).
 pub(crate) async fn run_zones_gate_controllers(ctx: Arc<Context>) -> anyhow::Result<()> {
     info!("Starting zones-loaded readiness gate controller");
     let targets = owned_targets(&ctx.namespace_scope);
-    futures::future::join_all(
-        targets
-            .into_iter()
-            .map(|target| run_zones_gate_controller(ctx.clone(), target)),
-    )
-    .await;
-    Ok(())
+    run_per_target(targets, &ctx.shutdown, |target| {
+        run_zones_gate_controller(ctx.clone(), target)
+    })
+    .await
 }
 
-async fn run_zones_gate_controller(ctx: Arc<Context>, target: Option<String>) {
+/// Run the zones-loaded gate controller for one namespace target until the
+/// shutdown signal fires and its reconciles have drained.
+///
+/// # Errors
+/// Never fails on its own: the controller stream only ends on shutdown.
+async fn run_zones_gate_controller(
+    ctx: Arc<Context>,
+    target: Option<String>,
+) -> anyhow::Result<()> {
     debug!(
-        namespace = target.as_deref().unwrap_or("<all>"),
+        namespace = target_label(target.as_deref()),
         "Starting zones-loaded readiness gate controller"
     );
     let ws = ctx.watch.clone();
@@ -870,6 +866,7 @@ async fn run_zones_gate_controller(ctx: Arc<Context>, target: Option<String>) {
         .run(reconcile_pod_wrapper, error_policy, ctx.clone())
         .for_each(|_| futures::future::ready(()))
         .await;
+    Ok(())
 }
 
 #[cfg(test)]

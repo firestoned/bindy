@@ -9,7 +9,9 @@
 #[allow(clippy::wildcard_imports)]
 use super::types::*;
 use crate::constants::{API_GROUP_VERSION, KIND_BIND9_INSTANCE};
+use crate::FIELD_MANAGER;
 use bindy_controller_sdk::pagination::list_all_paginated;
+use bindy_controller_sdk::resources::{create_or_force_apply, delete_if_present};
 
 /// Reconcile managed `Bind9Instance` resources for a cluster
 ///
@@ -391,7 +393,7 @@ pub(super) async fn update_existing_managed_instances(
             match instance_api
                 .patch(
                     &instance_name,
-                    &PatchParams::apply("bindy-controller").force(),
+                    &PatchParams::apply(FIELD_MANAGER).force(),
                     &Patch::Apply(&patch),
                 )
                 .await
@@ -640,7 +642,7 @@ async fn create_managed_instance_with_owner(
         metadata: ObjectMeta {
             name: Some(instance_name.clone()),
             namespace: Some(namespace.to_string()),
-            labels: Some(labels.clone()),
+            labels: Some(labels),
             annotations: Some(annotations),
             owner_references: owner_ref.map(|r| vec![r]),
             ..Default::default()
@@ -651,77 +653,17 @@ async fn create_managed_instance_with_owner(
 
     let api: Api<Bind9Instance> = Api::namespaced(client.clone(), namespace);
 
-    match api.create(&PostParams::default(), &instance).await {
-        Ok(_) => {
-            info!(
-                "Successfully created managed instance {}/{}",
-                namespace, instance_name
+    // POST, and on AlreadyExists force-apply the spec, labels, annotations and
+    // owner references so an existing instance converges on the cluster spec.
+    create_or_force_apply(&api, &instance, FIELD_MANAGER)
+        .await
+        .map(|_| ())
+        .inspect_err(|e| {
+            error!(
+                "Failed to create or apply managed instance {}/{}: {:#}",
+                namespace, instance_name, e
             );
-            Ok(())
-        }
-        Err(e) => {
-            // If already exists, patch it to ensure spec is up to date
-            if e.to_string().contains("AlreadyExists") {
-                debug!(
-                    "Managed instance {}/{} already exists, patching with updated spec",
-                    namespace, instance_name
-                );
-
-                // Build a complete patch object for server-side apply
-                // Convert BTreeMap labels to serde_json::Value for patch
-                let labels_json: serde_json::Map<String, serde_json::Value> = labels
-                    .iter()
-                    .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
-                    .collect();
-
-                let patch = serde_json::json!({
-                    "apiVersion": API_GROUP_VERSION,
-                    "kind": KIND_BIND9_INSTANCE,
-                    "metadata": {
-                        "name": instance_name,
-                        "namespace": namespace,
-                        "labels": labels_json,
-                        "annotations": {
-                            BINDY_INSTANCE_INDEX_ANNOTATION: index.to_string(),
-                        },
-                        "ownerReferences": instance.metadata.owner_references,
-                    },
-                    "spec": instance.spec,
-                });
-
-                // Apply the patch to update the spec, labels, annotations, and owner references
-                match api
-                    .patch(
-                        &instance_name,
-                        &PatchParams::apply("bindy-controller").force(),
-                        &Patch::Apply(&patch),
-                    )
-                    .await
-                {
-                    Ok(_) => {
-                        info!(
-                            "Successfully patched managed instance {}/{} with updated spec",
-                            namespace, instance_name
-                        );
-                        Ok(())
-                    }
-                    Err(patch_err) => {
-                        error!(
-                            "Failed to patch managed instance {}/{}: {}",
-                            namespace, instance_name, patch_err
-                        );
-                        Err(patch_err.into())
-                    }
-                }
-            } else {
-                error!(
-                    "Failed to create managed instance {}/{}: {}",
-                    namespace, instance_name, e
-                );
-                Err(e.into())
-            }
-        }
-    }
+        })
 }
 
 /// Delete a single managed `Bind9Instance` resource.
@@ -744,29 +686,18 @@ pub async fn delete_managed_instance(
 ) -> Result<()> {
     let api: Api<Bind9Instance> = Api::namespaced(client.clone(), namespace);
 
-    match api.delete(instance_name, &DeleteParams::default()).await {
-        Ok(_) => {
-            info!(
-                "Successfully deleted managed instance {}/{}",
-                namespace, instance_name
-            );
-            Ok(())
-        }
-        Err(e) if e.to_string().contains("NotFound") => {
-            debug!(
-                "Managed instance {}/{} already deleted",
-                namespace, instance_name
-            );
-            Ok(())
-        }
-        Err(e) => {
-            error!(
-                "Failed to delete managed instance {}/{}: {}",
-                namespace, instance_name, e
-            );
-            Err(e.into())
-        }
+    if delete_if_present(&api, instance_name).await? {
+        info!(
+            "Successfully deleted managed instance {}/{}",
+            namespace, instance_name
+        );
+        return Ok(());
     }
+    debug!(
+        "Managed instance {}/{} already deleted",
+        namespace, instance_name
+    );
+    Ok(())
 }
 
 /// Delete all `Bind9Instance` resources that reference the given cluster
@@ -826,28 +757,16 @@ pub(super) async fn delete_cluster_instances(
             namespace, instance_name, cluster_name
         );
 
-        match api.delete(&instance_name, &DeleteParams::default()).await {
-            Ok(_) => {
-                info!(
-                    "Successfully deleted Bind9Instance {}/{}",
-                    namespace, instance_name
-                );
-            }
-            Err(e) => {
-                // If the resource is already deleted, treat it as success
-                if e.to_string().contains("NotFound") {
-                    warn!(
-                        "Bind9Instance {}/{} already deleted",
-                        namespace, instance_name
-                    );
-                } else {
-                    error!(
-                        "Failed to delete Bind9Instance {}/{}: {}",
-                        namespace, instance_name, e
-                    );
-                    return Err(e.into());
-                }
-            }
+        if delete_if_present(&api, &instance_name).await? {
+            info!(
+                "Successfully deleted Bind9Instance {}/{}",
+                namespace, instance_name
+            );
+        } else {
+            warn!(
+                "Bind9Instance {}/{} already deleted",
+                namespace, instance_name
+            );
         }
     }
 

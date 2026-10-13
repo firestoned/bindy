@@ -14,7 +14,13 @@ use super::types::{
     ZoneOutcome, REASON_CLEANUP_PENDING, REASON_DEGRADED, REASON_DNSSEC_KEYS_PENDING,
     REASON_TRANSFER_PENDING,
 };
+use crate::constants::{CONDITION_STATUS_FALSE, CONDITION_STATUS_TRUE};
 use crate::crd::{DNSSECStatus, InstanceReference};
+use bindy_api::status_reasons::{CONDITION_TYPE_PROGRESSING, CONDITION_TYPE_READY};
+
+/// Reason on `Degraded` and `Ready` when not every expected instance has the
+/// zone configured.
+const REASON_PARTIAL_RECONCILIATION: &str = "PartialReconciliation";
 
 /// Calculate expected instance counts (primary and secondary).
 ///
@@ -104,9 +110,7 @@ pub fn set_final_zone_conditions(
         // Keep the Degraded condition that was already set, but make the
         // condition triple consistent: a stale Ready=True from a previous
         // successful reconciliation must not survive a failure.
-        status_updater.set_condition(
-            "Ready",
-            "False",
+        status_updater.set_not_ready(
             "ReconcileDegraded",
             &format!("Zone {zone_name} reconciliation completed with degraded state - see Degraded condition for details"),
         );
@@ -132,8 +136,8 @@ pub fn set_final_zone_conditions(
             expected_primary_count.saturating_sub(primary.instances_configured)
                 + expected_secondary_count.saturating_sub(secondary.instances_configured)
         );
-        status_updater.set_condition("Degraded", "True", "PartialReconciliation", &message);
-        status_updater.set_condition("Ready", "False", "PartialReconciliation", &message);
+        status_updater.set_degraded(REASON_PARTIAL_RECONCILIATION, &message);
+        status_updater.set_not_ready(REASON_PARTIAL_RECONCILIATION, &message);
         tracing::info!(
             "DNSZone {}/{} partially configured: {}/{} primaries, {}/{} secondaries",
             namespace,
@@ -146,8 +150,8 @@ pub fn set_final_zone_conditions(
     } else {
         // All reconciliation steps succeeded - set Ready status and clear any stale Degraded condition
         status_updater.set_condition(
-            "Ready",
-            "True",
+            CONDITION_TYPE_READY,
+            CONDITION_STATUS_TRUE,
             "ReconcileSucceeded",
             &format!(
                 "Zone {} configured on {} primary and {} secondary instance(s) ({} endpoint(s)), discovered {} DNS record(s)",
@@ -166,8 +170,8 @@ pub fn set_final_zone_conditions(
     // Progressing condition set at the start of BIND9 configuration so it
     // does not stay True forever.
     status_updater.set_condition(
-        "Progressing",
-        "False",
+        CONDITION_TYPE_PROGRESSING,
+        CONDITION_STATUS_FALSE,
         "ReconcileComplete",
         "Reconciliation attempt finished",
     );
@@ -200,9 +204,7 @@ pub fn mark_record_deletions_pending(
     if unselected_pending {
         what.push("a record no longer selected by the zone".to_string());
     }
-    status_updater.set_condition(
-        "Degraded",
-        "True",
+    status_updater.set_degraded(
         REASON_RECORD_DELETION_PENDING,
         &format!(
             "Zone {zone_name}: DNS data not yet confirmed gone from every server for {}; retrying",
@@ -328,7 +330,13 @@ pub fn zone_outcome(
     dnssec: Option<&DNSSECStatus>,
     now: Timestamp,
 ) -> ZoneOutcome {
-    if degraded_reason == Some(super::transfer_peers::REASON_SECONDARY_NOT_LOADED) {
+    if matches!(
+        degraded_reason,
+        Some(
+            super::transfer_peers::REASON_SECONDARY_NOT_LOADED
+                | super::transfer_peers::REASON_NOTIFY_TARGET_PENDING
+        )
+    ) {
         return ZoneOutcome::Retry {
             reason: REASON_TRANSFER_PENDING,
         };

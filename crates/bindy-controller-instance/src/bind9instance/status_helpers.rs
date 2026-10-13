@@ -8,8 +8,12 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::types::*;
-use crate::rollout::RolloutStatus;
+use crate::constants::{CONDITION_STATUS_FALSE, CONDITION_STATUS_TRUE, CONDITION_STATUS_UNKNOWN};
+use crate::rollout::{RolloutStatus, POD_CONDITION_READY};
 use bindy_controller_sdk::pagination::list_all_paginated;
+use bindy_controller_sdk::status::{
+    conditions_changed, ready_condition_from_counts, ReadyCountWording,
+};
 
 /// The generations a status write records as observed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -104,20 +108,18 @@ pub(super) async fn update_status_from_deployment(
 
             // Create pod-level conditions
             let mut pod_conditions = Vec::new();
-            let mut ready_pod_count = 0;
+            let mut ready_pod_count: usize = 0;
 
             for (index, pod) in pods.iter().enumerate() {
                 let pod_name = pod.metadata.name.as_deref().unwrap_or("unknown");
-                // Using map_or for explicit false default on None - more readable than is_some_and
-                #[allow(clippy::unnecessary_map_or)]
                 let is_pod_ready = pod
                     .status
                     .as_ref()
                     .and_then(|status| status.conditions.as_ref())
-                    .map_or(false, |conditions| {
-                        conditions
-                            .iter()
-                            .any(|c| c.type_ == "Ready" && c.status == "True")
+                    .is_some_and(|conditions| {
+                        conditions.iter().any(|c| {
+                            c.type_ == POD_CONDITION_READY && c.status == CONDITION_STATUS_TRUE
+                        })
                     });
 
                 if is_pod_ready {
@@ -125,10 +127,14 @@ pub(super) async fn update_status_from_deployment(
                 }
 
                 let (status, reason, message) = if is_pod_ready {
-                    ("True", REASON_READY, format!("Pod {pod_name} is ready"))
+                    (
+                        CONDITION_STATUS_TRUE,
+                        REASON_READY,
+                        format!("Pod {pod_name} is ready"),
+                    )
                 } else {
                     (
-                        "False",
+                        CONDITION_STATUS_FALSE,
                         REASON_NOT_READY,
                         format!("Pod {pod_name} is not ready"),
                     )
@@ -143,37 +149,7 @@ pub(super) async fn update_status_from_deployment(
                 });
             }
 
-            // Create encompassing Ready condition
-            let (encompassing_status, encompassing_reason, encompassing_message) =
-                if ready_pod_count == 0 && actual_replicas > 0 {
-                    (
-                        "False",
-                        REASON_NOT_READY,
-                        "Waiting for pods to become ready".to_string(),
-                    )
-                } else if ready_pod_count == actual_replicas && actual_replicas > 0 {
-                    (
-                        "True",
-                        REASON_ALL_READY,
-                        format!("All {ready_pod_count} pods are ready"),
-                    )
-                } else if ready_pod_count > 0 {
-                    (
-                        "False",
-                        REASON_PARTIALLY_READY,
-                        format!("{ready_pod_count}/{actual_replicas} pods are ready"),
-                    )
-                } else {
-                    ("False", REASON_NOT_READY, "No pods are ready".to_string())
-                };
-
-            let encompassing_condition = Condition {
-                r#type: CONDITION_TYPE_READY.to_string(),
-                status: encompassing_status.to_string(),
-                reason: Some(encompassing_reason.to_string()),
-                message: Some(encompassing_message),
-                last_transition_time: Some(Utc::now().to_rfc3339()),
-            };
+            let encompassing_condition = pods_ready_condition(ready_pod_count, actual_replicas);
 
             // Combine encompassing condition + pod-level conditions, then the
             // rollout condition when a change is queued (ADR-0018)
@@ -192,7 +168,7 @@ pub(super) async fn update_status_from_deployment(
             // Set status as unknown if we can't check deployment
             let unknown_condition = Condition {
                 r#type: CONDITION_TYPE_READY.to_string(),
-                status: "Unknown".to_string(),
+                status: CONDITION_STATUS_UNKNOWN.to_string(),
                 reason: Some(REASON_NOT_READY.to_string()),
                 message: Some("Unable to determine deployment status".to_string()),
                 last_transition_time: Some(Utc::now().to_rfc3339()),
@@ -211,6 +187,33 @@ pub(super) async fn update_status_from_deployment(
     Ok(())
 }
 
+/// How the encompassing `Ready` condition of an instance words the cases
+/// with no ready pod.
+const PODS_READY_WORDING: ReadyCountWording<'static> = ReadyCountWording {
+    empty_reason: REASON_NOT_READY,
+    empty_message: "No pods are ready",
+    none_ready_message: "Waiting for pods to become ready",
+};
+
+/// The encompassing `Ready` condition of an instance from its pod counts.
+///
+/// # Arguments
+///
+/// * `ready_pods` - Non-terminating pods whose `Ready` condition is `True`
+/// * `desired_replicas` - The Deployment's `spec.replicas` (a negative value
+///   counts as zero)
+///
+/// # Returns
+///
+/// `Ready=True` (`AllReady`) when every desired pod is ready, `PartiallyReady`
+/// when some are (also while scaling down), and `NotReady` otherwise: "Waiting
+/// for pods to become ready" when pods are desired, "No pods are ready" when
+/// none are.
+pub(crate) fn pods_ready_condition(ready_pods: usize, desired_replicas: i32) -> Condition {
+    let desired = usize::try_from(desired_replicas).unwrap_or(0);
+    ready_condition_from_counts(ready_pods, desired, "pods", &PODS_READY_WORDING)
+}
+
 /// Determines whether the `Bind9Instance` status patch is needed.
 ///
 /// Compares the current status against the values about to be written. The
@@ -220,7 +223,8 @@ pub(super) async fn update_status_from_deployment(
 ///   advance `observedGeneration` and stop perpetual re-reconciliation)
 /// - `observed_parent_generation` (so parent cluster config changes are
 ///   recorded once applied)
-/// - Any condition's type, status, reason, or message
+/// - The set of condition types, or any condition's status, reason, or
+///   message (conditions are matched by type, so their order does not matter)
 ///
 /// # Arguments
 ///
@@ -263,21 +267,8 @@ pub fn instance_status_changed(
         return true;
     }
 
-    // Check if any condition changed
-    if current.conditions.len() != conditions.len() {
-        return true;
-    }
-
-    current
-        .conditions
-        .iter()
-        .zip(conditions.iter())
-        .any(|(current_cond, new_cond)| {
-            current_cond.r#type != new_cond.r#type
-                || current_cond.status != new_cond.status
-                || current_cond.message != new_cond.message
-                || current_cond.reason != new_cond.reason
-        })
+    // Check if any condition changed, matched by type
+    conditions_changed(&current.conditions, conditions)
 }
 
 /// Update the status of a `Bind9Instance` with multiple conditions.

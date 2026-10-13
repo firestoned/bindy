@@ -17,6 +17,7 @@ workspace = true
 
 [dependencies]
 bindy-api.workspace = true
+bindy-controller-sdk.workspace = true
 kube.workspace = true
 tokio.workspace = true
 serde.workspace = true

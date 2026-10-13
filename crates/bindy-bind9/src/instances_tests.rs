@@ -494,7 +494,7 @@ mod tests {
     fn test_is_unavailable_for_deletion_kube_404_is_unavailable() {
         // A missing Secret/Endpoints object (404) means the target is gone:
         // safe to skip during deletion cleanup
-        let err = kube_api_error(HTTP_STATUS_NOT_FOUND);
+        let err = kube_api_error(crate::constants::HTTP_NOT_FOUND);
         assert!(is_unavailable_for_deletion(&err));
     }
 
@@ -525,7 +525,7 @@ mod tests {
         use anyhow::Context;
         let err: anyhow::Error = Err::<(), _>(kube::Error::Api(
             kube::core::Status::failure("secret not found", "NotFound")
-                .with_code(HTTP_STATUS_NOT_FOUND)
+                .with_code(crate::constants::HTTP_NOT_FOUND)
                 .boxed(),
         ))
         .context("Failed to get RNDC secret")
@@ -539,6 +539,37 @@ mod tests {
         // deletion: skip with a warning
         let err = anyhow::anyhow!("No ready endpoints found for service foo with port 'http'");
         assert!(is_unavailable_for_deletion(&err));
+    }
+
+    /// A non-kube error that names a kube error as its `source`, as a typed
+    /// error wrapping a failed API call does.
+    #[derive(Debug, thiserror::Error)]
+    #[error("lookup failed")]
+    struct WrapsKubeError(#[source] kube::Error);
+
+    fn source_wrapped_kube_error(code: u16) -> anyhow::Error {
+        anyhow::Error::new(WrapsKubeError(kube::Error::Api(
+            kube::core::Status::failure("test error", "TestReason")
+                .with_code(code)
+                .boxed(),
+        )))
+    }
+
+    #[test]
+    fn test_is_unavailable_for_deletion_source_wrapped_kube_404_is_unavailable() {
+        // A 404 reached through an error's source chain is still a missing
+        // object: safe to skip
+        let err = source_wrapped_kube_error(crate::constants::HTTP_NOT_FOUND);
+        assert!(is_unavailable_for_deletion(&err));
+    }
+
+    #[test]
+    fn test_is_unavailable_for_deletion_source_wrapped_kube_transient_is_not() {
+        // A transient kube error behind a non-kube wrapper must be retried,
+        // not mistaken for a non-kube "nothing to operate on" error
+        const HTTP_SERVICE_UNAVAILABLE: u16 = 503;
+        let err = source_wrapped_kube_error(HTTP_SERVICE_UNAVAILABLE);
+        assert!(!is_unavailable_for_deletion(&err));
     }
 }
 

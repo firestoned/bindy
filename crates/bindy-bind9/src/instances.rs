@@ -25,6 +25,7 @@
 use crate::bind9::RndcKeyData;
 use crate::crd::DNSZone;
 use anyhow::{anyhow, Context as AnyhowContext, Result};
+use bindy_controller_sdk::kube_errors::is_not_found_anyhow;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{Endpoints, Pod, Secret};
 use kube::{Api, Client, ResourceExt};
@@ -43,9 +44,6 @@ pub struct EndpointAddress {
     /// Container port number
     pub port: i32,
 }
-
-/// HTTP status code for "Not Found" responses from the Kubernetes API.
-pub const HTTP_STATUS_NOT_FOUND: u16 = 404;
 
 /// How [`for_each_instance_endpoint_with_policy`] treats per-instance
 /// RNDC-key and endpoint lookup failures.
@@ -69,21 +67,30 @@ pub enum EndpointFailurePolicy {
 
 /// Classifies an error from `load_rndc_key`/`get_endpoint` during DELETION cleanup.
 ///
+/// The whole error chain is inspected, so a Kubernetes error is found through
+/// `.context(...)` layers and behind another error that names it as its
+/// source.
+///
 /// Returns `true` when the failure means the lookup target is gone or there is
 /// nothing to operate on (safe to skip during deletion):
-/// - a Kubernetes 404 (Secret or Endpoints object missing), or
-/// - a non-Kubernetes error (e.g. "no ready endpoints found", malformed
-///   Secret data) - conditions that will not be fixed by retrying the delete.
+/// - a Kubernetes 404 anywhere in the chain (Secret or Endpoints object
+///   missing), or
+/// - an error with no Kubernetes error in its chain (e.g. "no ready endpoints
+///   found", malformed Secret data) - conditions that will not be fixed by
+///   retrying the delete.
 ///
-/// Returns `false` for any other Kubernetes API error (timeout, 429, 5xx, ...)
-/// which is potentially transient and must be retried instead of skipped.
+/// Returns `false` for any other Kubernetes error in the chain (timeout, 429,
+/// 5xx, transport, ...) which is potentially transient and must be retried
+/// instead of skipped.
 #[must_use]
 pub fn is_unavailable_for_deletion(err: &anyhow::Error) -> bool {
-    match err.downcast_ref::<kube::Error>() {
-        Some(kube::Error::Api(ae)) => ae.code == HTTP_STATUS_NOT_FOUND,
-        Some(_) => false,
-        None => true,
+    let has_kube_cause = err
+        .chain()
+        .any(|cause| cause.downcast_ref::<kube::Error>().is_some());
+    if !has_kube_cause {
+        return true;
     }
+    is_not_found_anyhow(err)
 }
 
 //

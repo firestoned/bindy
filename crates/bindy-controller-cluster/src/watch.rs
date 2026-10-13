@@ -11,7 +11,7 @@ use crate::constants::{KIND_BIND9_CLUSTER, KIND_CLUSTER_BIND9_PROVIDER};
 use crate::crd::{Bind9Cluster, Bind9Instance, ClusterBind9Provider};
 use bindy_controller_sdk::context::Context;
 use bindy_controller_sdk::error::{error_policy, ReconcileError};
-use bindy_controller_sdk::namespace_scope::owned_targets;
+use bindy_controller_sdk::namespace_scope::{owned_targets, run_per_target, target_label};
 use bindy_controller_sdk::reconcile::instrumented;
 use futures::StreamExt;
 use kube::runtime::reflector::ObjectRef;
@@ -126,19 +126,28 @@ pub(crate) fn providers_for_instance(
 ///
 /// A `Controller` watches one namespace or all of them; cluster-wide mode
 /// yields exactly one controller.
+///
+/// # Errors
+///
+/// Returns an error when a target's controller exits before the shutdown
+/// fired, or when there is no target ([`run_per_target`]).
 pub(crate) async fn run_bind9cluster_controllers(ctx: Arc<Context>) -> anyhow::Result<()> {
     info!("Starting Bind9Cluster controller");
     let targets = owned_targets(&ctx.namespace_scope);
-    futures::future::join_all(
-        targets
-            .into_iter()
-            .map(|target| run_bind9cluster_controller(ctx.clone(), target)),
-    )
-    .await;
-    Ok(())
+    run_per_target(targets, &ctx.shutdown, |target| {
+        run_bind9cluster_controller(ctx.clone(), target)
+    })
+    .await
 }
 
-async fn run_bind9cluster_controller(ctx: Arc<Context>, target: Option<String>) {
+async fn run_bind9cluster_controller(
+    ctx: Arc<Context>,
+    target: Option<String>,
+) -> anyhow::Result<()> {
+    debug!(
+        namespace = target_label(target.as_deref()),
+        "Starting Bind9Cluster controller"
+    );
     let ws = ctx.watch.clone();
     let target = target.as_deref();
 
@@ -156,6 +165,7 @@ async fn run_bind9cluster_controller(ctx: Arc<Context>, target: Option<String>) 
     .run(reconcile_bind9cluster_wrapper, error_policy, ctx)
     .for_each(|_| futures::future::ready(()))
     .await;
+    Ok(())
 }
 
 async fn reconcile_bind9cluster_wrapper(

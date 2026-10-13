@@ -305,11 +305,12 @@ pub(crate) async fn reconcile_bind9instance(
     );
 
     // Check if the instance is being deleted
+    let api: Api<Bind9Instance> = Api::namespaced(client.clone(), &namespace);
     if instance.metadata.deletion_timestamp.is_some() {
         // A deleted instance waits for nothing and must not hold a place in
         // the rollout queue (ADR-0018), nor a known no-op patch.
         rollouts.forget(&InstanceId::of(&instance));
-        handle_deletion(&client, &instance, FINALIZER_BIND9_INSTANCE, || {
+        handle_deletion(&api, &instance, FINALIZER_BIND9_INSTANCE, || {
             cleanup_bind9instance(&instance, &client)
         })
         .await?;
@@ -317,7 +318,7 @@ pub(crate) async fn reconcile_bind9instance(
     }
 
     // Add finalizer if not present
-    ensure_finalizer(&client, &instance, FINALIZER_BIND9_INSTANCE).await?;
+    ensure_finalizer(&api, &instance, FINALIZER_BIND9_INSTANCE).await?;
 
     let spec = &instance.spec;
     let replicas = spec.replicas.unwrap_or(1);
@@ -696,7 +697,7 @@ pub(crate) async fn reconcile_bind9instance(
             };
             let error_condition = Condition {
                 r#type: CONDITION_TYPE_READY.to_string(),
-                status: "False".to_string(),
+                status: crate::constants::CONDITION_STATUS_FALSE.to_string(),
                 reason: Some(reason.to_string()),
                 message: Some(message),
                 last_transition_time: Some(Utc::now().to_rfc3339()),

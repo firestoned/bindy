@@ -16,6 +16,7 @@ use std::collections::HashSet;
 use tracing::{debug, info, warn};
 
 use crate::crd::DNSZone;
+use bindy_controller_sdk::kube_errors::{is_not_found, is_not_found_anyhow};
 use bindy_controller_sdk::pagination::list_all_paginated;
 
 /// Reconciles DNS records for a zone by discovering records that match the zone's label selectors.
@@ -224,8 +225,9 @@ pub async fn reconcile_zone_records(
         // Try to untag the record, but don't fail if it was deleted
         // If the record was deleted, the API will return NotFound, which is fine
         if let Err(e) = untag_record_from_zone(&client, &namespace, kind, name, zone_name).await {
-            // Check if error is because record was deleted (NotFound)
-            if e.to_string().contains("NotFound") || e.to_string().contains("not found") {
+            // Check if error is because record was deleted (a 404 anywhere in
+            // the chain: the patch error is wrapped in context)
+            if is_not_found_anyhow(&e) {
                 info!(
                     "Record {} {}/{} was deleted, removing from zone {} status",
                     kind, namespace, name, zone_name
@@ -268,9 +270,6 @@ pub async fn reconcile_zone_records(
 
     Ok((all_record_refs, cleanup_pending))
 }
-
-/// HTTP status code returned by the Kubernetes API when a resource does not exist.
-const HTTP_STATUS_NOT_FOUND: u16 = 404;
 
 /// Returns the previously matched record references that are no longer selected.
 ///
@@ -541,7 +540,7 @@ async fn cleanup_unselected_record_dns(
     let api = dynamic_record_api(client, namespace, kind);
     let record = match api.get(name).await {
         Ok(record) => record,
-        Err(kube::Error::Api(ae)) if ae.code == HTTP_STATUS_NOT_FOUND => {
+        Err(e) if is_not_found(&e) => {
             // The record resource is gone. Its finalizer deleted its data,
             // but do not take that on trust: confirm it gone from every pod
             // that holds the zone before the zone stops tracking it
@@ -1112,9 +1111,7 @@ pub async fn discover_and_update_records(
     let spec = &dnszone.spec;
 
     // Set progressing status
-    status_updater.set_condition(
-        "Progressing",
-        "True",
+    status_updater.set_progressing(
         "RecordsDiscovering",
         "Discovering DNS records via label selectors",
     );

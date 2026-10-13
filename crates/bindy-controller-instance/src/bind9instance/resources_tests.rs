@@ -1581,40 +1581,6 @@ mod tests {
         }
     }
 
-    /// Finalizer cleanup: only "already gone" (404) counts as success;
-    /// every other API error must keep the finalizer (B10).
-    mod delete_classification {
-        use crate::bind9instance::resources::deleted_or_absent;
-
-        fn api_error(code: u16) -> kube::Error {
-            kube::Error::Api(
-                kube::core::Status::failure("test error", "TestReason")
-                    .with_code(code)
-                    .boxed(),
-            )
-        }
-
-        #[test]
-        fn a_successful_delete_is_deleted() {
-            assert!(deleted_or_absent(Ok::<(), kube::Error>(())).expect("ok"));
-        }
-
-        #[test]
-        fn not_found_is_already_absent() {
-            assert!(!deleted_or_absent(Err::<(), _>(api_error(404))).expect("ok"));
-        }
-
-        #[test]
-        fn forbidden_and_server_errors_propagate() {
-            for code in [403, 409, 429, 500, 503] {
-                assert!(
-                    deleted_or_absent(Err::<(), _>(api_error(code))).is_err(),
-                    "HTTP {code} must fail the cleanup"
-                );
-            }
-        }
-    }
-
     /// Finalizer cleanup deletes only the RNDC Secret the operator generated:
     /// never a user's `secretRef` Secret, even one that happens to carry the
     /// default name, and never a Secret the pods do not mount.

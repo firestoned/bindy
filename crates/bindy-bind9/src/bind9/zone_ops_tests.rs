@@ -1673,3 +1673,28 @@ mod tests {
         assert!(added);
     }
 }
+
+/// ADR-0019: NOTIFY goes to the secondary Services on port 53. A zone created
+/// before those Services are known must carry no `also-notify` at all, never
+/// the pods on the operand port: bindcar 0.9.0 cannot rewrite a
+/// port-qualified `also-notify` later, so the zone kept notifying a pod that
+/// was gone (CI, PR #546).
+#[cfg(test)]
+mod also_notify_tests {
+    use super::super::primary_zone_also_notify;
+
+    #[test]
+    fn known_notify_targets_are_used_as_is() {
+        let targets = vec!["10.96.0.10".to_string()];
+
+        assert_eq!(
+            primary_zone_also_notify(Some(&targets)),
+            Some(targets.clone())
+        );
+    }
+
+    #[test]
+    fn no_notify_targets_means_no_also_notify() {
+        assert_eq!(primary_zone_also_notify(None), None);
+    }
+}

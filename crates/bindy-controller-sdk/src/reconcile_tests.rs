@@ -125,4 +125,61 @@ mod tests {
         let invalid = finalizer_error("ARecord", finalizer::Error::InvalidFinalizer);
         assert!(invalid.to_string().contains("ARecord"), "{invalid}");
     }
+
+    // ========== instrumented_action: reconciles that return their own Action ==========
+
+    use crate::reconcile::instrumented_action;
+
+    #[tokio::test]
+    async fn instrumented_action_passes_the_action_through_and_counts_success() {
+        const KIND: &str = "InstrumentedActionOkTest";
+        let wake = Duration::from_secs(5);
+
+        let action = instrumented_action(KIND, async move {
+            Ok::<_, anyhow::Error>(Action::requeue(wake))
+        })
+        .await
+        .expect("success passes through");
+
+        assert_eq!(
+            action,
+            Action::requeue(wake),
+            "the reconcile's own action is kept"
+        );
+        let successes = RECONCILIATION_TOTAL
+            .with_label_values(&[KIND, "success"])
+            .get();
+        assert!((successes - 1.0).abs() < f64::EPSILON);
+        let failures = RECONCILIATION_TOTAL
+            .with_label_values(&[KIND, "error"])
+            .get();
+        assert!(failures.abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn instrumented_action_returns_the_error_unchanged_and_counts_it() {
+        const KIND: &str = "InstrumentedActionErrTest";
+
+        /// An error type that is not anyhow: the helper must not convert it.
+        #[derive(Debug, PartialEq)]
+        struct Custom(u8);
+        const CUSTOM_CODE: u8 = 7;
+
+        let result =
+            instrumented_action(KIND, async { Err::<Action, _>(Custom(CUSTOM_CODE)) }).await;
+
+        assert_eq!(result, Err(Custom(CUSTOM_CODE)));
+        let failures = RECONCILIATION_TOTAL
+            .with_label_values(&[KIND, "error"])
+            .get();
+        assert!((failures - 1.0).abs() < f64::EPSILON);
+        let errors = ERRORS_TOTAL
+            .with_label_values(&[KIND, "reconcile_error"])
+            .get();
+        assert!((errors - 1.0).abs() < f64::EPSILON);
+        let successes = RECONCILIATION_TOTAL
+            .with_label_values(&[KIND, "success"])
+            .get();
+        assert!(successes.abs() < f64::EPSILON);
+    }
 }

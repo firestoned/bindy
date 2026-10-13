@@ -177,6 +177,7 @@ mod tests {
     use super::super::clusterbind9provider::{
         cluster_status_needs_update, expected_cluster_namespaces,
     };
+    use crate::crd::Bind9ClusterStatus;
 
     #[test]
     fn test_cluster_status_needs_update_no_current_status() {
@@ -222,6 +223,75 @@ mod tests {
         let new_status = calculate_cluster_status(&two, Some(2));
 
         assert!(cluster_status_needs_update(Some(&current), &new_status));
+    }
+
+    /// A status with the given conditions, counts and generation fixed.
+    fn status_with_conditions(conditions: Vec<Condition>) -> Bind9ClusterStatus {
+        Bind9ClusterStatus {
+            conditions,
+            instances: vec!["test-ns/primary-0".to_string()],
+            observed_generation: Some(2),
+            instance_count: Some(1),
+            ready_instances: Some(1),
+        }
+    }
+
+    fn condition(type_: &str, status: &str, reason: &str, message: &str) -> Condition {
+        Condition {
+            r#type: type_.to_string(),
+            status: status.to_string(),
+            reason: Some(reason.to_string()),
+            message: Some(message.to_string()),
+            last_transition_time: None,
+        }
+    }
+
+    #[test]
+    fn test_cluster_status_needs_update_reason_only_change_triggers_patch() {
+        // Behaviour change: the provider used to ignore the reason, so a
+        // reason-only change never reached the API server.
+        let current = status_with_conditions(vec![condition(
+            "Ready",
+            "False",
+            "NotReady",
+            "No instances are ready",
+        )]);
+        let new_status = status_with_conditions(vec![condition(
+            "Ready",
+            "False",
+            "NoChildren",
+            "No instances are ready",
+        )]);
+
+        assert!(cluster_status_needs_update(Some(&current), &new_status));
+    }
+
+    #[test]
+    fn test_cluster_status_needs_update_ignores_condition_order() {
+        // Behaviour change: conditions are matched by type, so the same set in
+        // another order is no change (the first-condition comparison saw one).
+        let ready = condition("Ready", "True", "AllReady", "All 1 instances are ready");
+        let degraded = condition("Degraded", "False", "AllReady", "Nothing degraded");
+        let current = status_with_conditions(vec![ready.clone(), degraded.clone()]);
+        let new_status = status_with_conditions(vec![degraded, ready]);
+
+        assert!(!cluster_status_needs_update(Some(&current), &new_status));
+    }
+
+    #[test]
+    fn test_calculate_cluster_status_counts_ready_condition_not_first() {
+        let mut instance = create_test_instance("primary-0", "test-ns", true);
+        if let Some(status) = instance.status.as_mut() {
+            status.conditions.insert(
+                0,
+                condition("Pod-0", "True", "Ready", "Pod primary-0-abc is ready"),
+            );
+        }
+
+        let status = calculate_cluster_status(&[instance], Some(1));
+
+        assert_eq!(status.ready_instances, Some(1));
+        assert_eq!(status.conditions[0].status, "True");
     }
 
     // ========================================================================

@@ -16,7 +16,7 @@
 //! `Controller::for_stream` / `watches_stream` / `owns_stream`.
 
 use crate::metrics::{record_watch_error, record_watch_event, record_watch_restart};
-use crate::namespace_scope::{scoped_namespaced_api, NamespaceScope};
+use crate::namespace_scope::{scoped_namespaced_api, NamespaceScope, ALL_NAMESPACES_LABEL};
 use async_broadcast::{InactiveReceiver, Sender};
 use futures::{Stream, StreamExt};
 use kube::runtime::reflector::{self, Store};
@@ -40,9 +40,6 @@ pub const WATCH_RESTART_BACKOFF_INITIAL: Duration = Duration::from_secs(1);
 
 /// Longest delay between restarts of a watch stream that keeps ending.
 pub const WATCH_RESTART_BACKOFF_MAX: Duration = Duration::from_secs(60);
-
-/// Label used for the namespace of a cluster-wide shard.
-const ALL_NAMESPACES_LABEL: &str = "<all>";
 
 /// Delay schedule for restarting a watch stream that ended.
 ///

@@ -17,8 +17,8 @@ pub use crate::labels::{
     PART_OF_BINDY, ROLE_PRIMARY, ROLE_SECONDARY,
 };
 pub use crate::status_reasons::{
-    bind9_instance_condition_type, CONDITION_TYPE_READY, REASON_ALL_READY, REASON_NOT_READY,
-    REASON_NO_CHILDREN, REASON_PARTIALLY_READY, REASON_READY,
+    bind9_instance_condition_type, CONDITION_TYPE_READY, REASON_NOT_READY, REASON_NO_CHILDREN,
+    REASON_READY,
 };
 
 // Re-export commonly used Kubernetes types
@@ -33,7 +33,7 @@ pub use k8s_openapi::{
 
 // Re-export kube-rs types
 pub use kube::{
-    api::{DeleteParams, ListParams, Patch, PatchParams, PostParams},
+    api::{ListParams, Patch, PatchParams, PostParams},
     client::Client,
     Api, ResourceExt,
 };

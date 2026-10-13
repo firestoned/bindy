@@ -31,12 +31,12 @@ mod zones_gate;
 /// signal in `ctx` fires and every reconcile has drained.
 ///
 /// # Errors
-/// Returns an error if either controller fails.
+/// Returns the first error either controller reports, without waiting for
+/// the other: a failed or prematurely exited namespace target ends it.
 pub async fn controller(ctx: Arc<Context>) -> anyhow::Result<()> {
-    let (zones, gate) = futures::join!(
+    futures::try_join!(
         watch::run_dnszone_controllers(ctx.clone()),
         zones_gate::run_zones_gate_controllers(ctx)
-    );
-    zones?;
-    gate
+    )?;
+    Ok(())
 }

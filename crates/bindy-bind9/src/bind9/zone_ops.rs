@@ -27,6 +27,24 @@ use bindy_controller_sdk::retry::{http_backoff, is_retryable_http_status, Expone
 /// that port. bindcar (`0.7.2`+) parses this form and renders BIND's
 /// `<ip> port <n>` syntax. `allow-transfer` is a port-agnostic ACL and must stay
 /// bare IPs, so it deliberately does **not** use this helper.
+/// The `also-notify` a primary zone is created with (ADR-0019).
+///
+/// NOTIFY goes to the secondary Services on port 53, as bare entries bindcar
+/// 0.9.0 can PATCH later. When no Service is known yet the zone gets no
+/// `also-notify` at all: never the pods on the operand port, which bindcar
+/// cannot rewrite in place, so the zone kept notifying a pod that was gone.
+/// The zone stays not Ready until every secondary has a target
+/// (`NotifyTargetPending`), and the refresh then writes it.
+///
+/// # Arguments
+/// * `notify_targets` - The secondary Services' ClusterIPs, if any are known
+///
+/// # Returns
+/// The targets as given, or `None`.
+pub(crate) fn primary_zone_also_notify(notify_targets: Option<&[String]>) -> Option<Vec<String>> {
+    notify_targets.map(<[String]>::to_vec)
+}
+
 fn with_transfer_port(ips: &[String]) -> Vec<String> {
     ips.iter()
         .map(|ip| {
@@ -719,12 +737,9 @@ pub async fn add_primary_zone(
         name_server_ips: name_server_ips.cloned().unwrap_or_default(),
         records: vec![],
         // Configure zone transfers to secondary servers. allow-transfer is a
-        // bare-IP ACL of the secondary pods. NOTIFY goes to the secondary
-        // Services on port 53 when known (bare entries bindcar 0.9.0 can
-        // PATCH later, ADR-0019), else to the pods on the operand port.
-        also_notify: notify_targets
-            .map(<[String]>::to_vec)
-            .or_else(|| secondary_ips.map(with_transfer_port)),
+        // bare-IP ACL of the secondary pods; NOTIFY goes to the secondary
+        // Services on port 53 ([`primary_zone_also_notify`]).
+        also_notify: primary_zone_also_notify(notify_targets),
         allow_transfer: secondary_ips.map(<[String]>::to_vec),
         // Primary zones don't have primaries field (only secondary zones do)
         primaries: None,

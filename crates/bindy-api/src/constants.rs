@@ -184,6 +184,9 @@ pub const CONDITION_STATUS_TRUE: &str = "True";
 /// The status value of a condition that does not hold.
 pub const CONDITION_STATUS_FALSE: &str = "False";
 
+/// The status value of a condition whose state could not be determined.
+pub const CONDITION_STATUS_UNKNOWN: &str = "Unknown";
+
 // ============================================================================
 // Leader Election Constants
 // ============================================================================
@@ -528,3 +531,15 @@ pub const MAX_SPREAD_RULES: usize = 8;
 /// a genuine failure, both when revoking multi-cluster credentials and when
 /// detecting whether the Gateway API CRDs are installed.
 pub const HTTP_NOT_FOUND: u16 = 404;
+
+/// HTTP 409 Conflict.
+///
+/// The Kubernetes API answers a create of an object that already exists
+/// (`AlreadyExists`) and a write against a stale `resourceVersion`
+/// (`Conflict`) with this code.
+pub const HTTP_CONFLICT: u16 = 409;
+
+/// Server-side apply field manager for every object the operator's
+/// controllers own (`metadata.managedFields`). One value, so two controllers
+/// writing the same object never split field ownership between names.
+pub const CONTROLLER_FIELD_MANAGER: &str = "bindy-controller";

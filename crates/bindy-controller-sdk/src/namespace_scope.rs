@@ -122,6 +122,88 @@ pub fn owned_targets(scope: &NamespaceScope) -> Vec<Option<String>> {
         .collect()
 }
 
+/// How logs and metrics name the cluster-wide target (`None`).
+pub const ALL_NAMESPACES_LABEL: &str = "<all>";
+
+/// The label of a namespace target: the namespace, or
+/// [`ALL_NAMESPACES_LABEL`] when cluster-wide.
+///
+/// # Arguments
+/// * `target` - One of [`owned_targets`]'s targets, borrowed
+///
+/// # Returns
+/// The namespace name, or `<all>`.
+#[must_use]
+pub fn target_label(target: Option<&str>) -> &str {
+    target.unwrap_or(ALL_NAMESPACES_LABEL)
+}
+
+/// Run one controller per namespace target and report the first that ends.
+///
+/// A target controller runs until the shutdown fires, so returning at all is
+/// judged as [`crate::shutdown::supervise`] judges a whole controller: an
+/// error is a failure; `Ok` after the shutdown fired is a drain; `Ok` before
+/// it is an unexpected exit, and an error. Built on `try_join_all`, so the
+/// first failure or unexpected exit is returned at once, without waiting for
+/// the other targets; the drains are awaited until every target has drained.
+///
+/// # Arguments
+/// * `targets` - The namespace targets, normally [`owned_targets`]
+/// * `shutdown` - The shared shutdown signal
+/// * `run` - Builds the controller future for one target
+///
+/// # Returns
+/// `Ok(())` once every target has drained after the shutdown fired.
+///
+/// # Errors
+/// Returns the first target's error, with the target named, an error for the
+/// first target that exits before the shutdown fired, or an error when there
+/// are no targets (nothing would run).
+pub async fn run_per_target<I, F, Fut>(
+    targets: I,
+    shutdown: &crate::shutdown::ShutdownSignal,
+    mut run: F,
+) -> anyhow::Result<()>
+where
+    I: IntoIterator<Item = Option<String>>,
+    F: FnMut(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
+    let controllers: Vec<_> = targets
+        .into_iter()
+        .map(|target| {
+            let label = target_label(target.as_deref()).to_string();
+            let controller = run(target);
+            async move {
+                match controller.await {
+                    Err(e) => {
+                        tracing::error!("controller for namespace {label} failed: {e:#}");
+                        Err(e.context(format!("controller for namespace {label} failed")))
+                    }
+                    Ok(()) if shutdown.is_triggered() => {
+                        tracing::debug!("controller for namespace {label} drained");
+                        Ok(())
+                    }
+                    Ok(()) => {
+                        tracing::error!("controller for namespace {label} exited unexpectedly");
+                        Err(anyhow::anyhow!(
+                            "controller for namespace {label} exited unexpectedly"
+                        ))
+                    }
+                }
+            }
+        })
+        .collect();
+
+    if controllers.is_empty() {
+        return Err(anyhow::anyhow!(
+            "no namespace targets to run a controller for"
+        ));
+    }
+
+    futures::future::try_join_all(controllers).await.map(|_| ())
+}
+
 #[cfg(test)]
 #[path = "namespace_scope_tests.rs"]
 mod namespace_scope_tests;

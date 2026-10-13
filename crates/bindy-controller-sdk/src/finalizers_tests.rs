@@ -5,12 +5,13 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::finalizers::{handle_cluster_deletion, handle_deletion};
+    use crate::finalizers::{ensure_finalizer, handle_deletion, has_finalizer, remove_finalizer};
+    use crate::test_api::{requests, scripted_client, status_body, HTTP_OK};
     use bindy_api::crd::{
         Bind9Cluster, Bind9ClusterCommonSpec, Bind9ClusterSpec, ClusterBind9Provider,
     };
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::{ObjectMeta, Time};
-    use kube::Client;
+    use kube::Api;
 
     const TEST_FINALIZER: &str = "test.firestoned.io/finalizer";
     const TEST_NAMESPACE: &str = "test-namespace";
@@ -198,163 +199,241 @@ mod tests {
         }
     }
 
-    /// Helper to create a mock Kubernetes client
-    async fn mock_client() -> Client {
-        // In real integration tests, this would use k8s-openapi test fixtures
-        // For unit tests, we'll use a simplified mock
-        Client::try_default()
+    /// The PATCH content type kube sends for a JSON Patch.
+    const JSON_PATCH_CONTENT_TYPE: &str = "application/json-patch+json";
+    const HTTP_CONFLICT: u16 = 409;
+    const RESOURCE_VERSION: &str = "42";
+    const OTHER_FINALIZER: &str = "other.firestoned.io/finalizer";
+
+    fn with_resource_version(mut cluster: Bind9Cluster) -> Bind9Cluster {
+        cluster.metadata.resource_version = Some(RESOURCE_VERSION.to_string());
+        cluster
+    }
+
+    fn json<T: serde::Serialize>(obj: &T) -> serde_json::Value {
+        serde_json::to_value(obj).expect("serializes")
+    }
+
+    // ========================================================================
+    // has_finalizer: the decision every helper starts from
+    // ========================================================================
+
+    #[test]
+    fn has_finalizer_is_false_without_finalizers() {
+        assert!(!has_finalizer(&create_test_cluster(), TEST_FINALIZER));
+        assert!(!has_finalizer(
+            &create_test_cluster_with_finalizers(vec![]),
+            TEST_FINALIZER
+        ));
+    }
+
+    #[test]
+    fn has_finalizer_matches_the_exact_string_only() {
+        let cluster = create_test_cluster_with_finalizers(vec![OTHER_FINALIZER.to_string()]);
+        assert!(!has_finalizer(&cluster, TEST_FINALIZER));
+        assert!(has_finalizer(&cluster, OTHER_FINALIZER));
+    }
+
+    // ========================================================================
+    // ensure_finalizer / remove_finalizer against the mock API server,
+    // namespaced and cluster-scoped
+    // ========================================================================
+
+    #[tokio::test]
+    async fn ensure_finalizer_patches_a_namespaced_resource_when_missing() {
+        let cluster = with_resource_version(create_test_cluster());
+        let (client, seen) = scripted_client(vec![(HTTP_OK, json(&cluster))]);
+        let api: Api<Bind9Cluster> = Api::namespaced(client, TEST_NAMESPACE);
+
+        ensure_finalizer(&api, &cluster, TEST_FINALIZER)
             .await
-            .expect("Failed to create mock client")
+            .expect("finalizer added");
+
+        let seen = requests(&seen);
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].method, "PATCH");
+        assert_eq!(seen[0].content_type, JSON_PATCH_CONTENT_TYPE);
+        assert!(
+            seen[0]
+                .path
+                .ends_with("/namespaces/test-namespace/bind9clusters/test-resource"),
+            "{}",
+            seen[0].path
+        );
+        assert_eq!(
+            seen[0].body,
+            serde_json::json!([
+                {"op": "test", "path": "/metadata/finalizers", "value": null},
+                {"op": "add", "path": "/metadata/finalizers", "value": [TEST_FINALIZER]},
+            ])
+        );
     }
 
     #[tokio::test]
-    #[ignore = "Requires Kubernetes cluster"]
-    async fn test_ensure_finalizer_adds_when_missing() {
-        let _client = mock_client().await;
-        let cluster = create_test_cluster();
+    async fn ensure_finalizer_appends_with_a_resource_version_guard() {
+        let cluster = with_resource_version(create_test_cluster_with_finalizers(vec![
+            OTHER_FINALIZER.to_string(),
+        ]));
+        let (client, seen) = scripted_client(vec![(HTTP_OK, json(&cluster))]);
+        let api: Api<Bind9Cluster> = Api::namespaced(client, TEST_NAMESPACE);
 
-        // Verify no finalizers initially
-        assert!(cluster.metadata.finalizers.is_none());
+        ensure_finalizer(&api, &cluster, TEST_FINALIZER)
+            .await
+            .expect("finalizer added");
 
-        // This test requires a real cluster, so we skip the actual API call
-        // In integration tests, we would:
-        // 1. Create the resource
-        // 2. Call ensure_finalizer
-        // 3. Verify the finalizer was added
+        assert_eq!(
+            requests(&seen)[0].body,
+            serde_json::json!([
+                {"op": "test", "path": "/metadata/resourceVersion", "value": RESOURCE_VERSION},
+                {"op": "add", "path": "/metadata/finalizers/-", "value": TEST_FINALIZER},
+            ])
+        );
     }
 
     #[tokio::test]
-    #[ignore = "Requires Kubernetes cluster"]
-    async fn test_ensure_finalizer_idempotent_when_present() {
-        let _client = mock_client().await;
+    async fn ensure_finalizer_is_a_no_op_when_present() {
         let cluster = create_test_cluster_with_finalizers(vec![TEST_FINALIZER.to_string()]);
+        let (client, seen) = scripted_client(vec![]);
+        let api: Api<Bind9Cluster> = Api::namespaced(client, TEST_NAMESPACE);
 
-        // Verify finalizer already present
-        assert!(cluster
-            .metadata
-            .finalizers
-            .as_ref()
-            .unwrap()
-            .contains(&TEST_FINALIZER.to_string()));
+        ensure_finalizer(&api, &cluster, TEST_FINALIZER)
+            .await
+            .expect("nothing to do");
 
-        // This test requires a real cluster, so we skip the actual API call
-        // In integration tests, we would:
-        // 1. Create the resource with the finalizer
-        // 2. Call ensure_finalizer again
-        // 3. Verify only one instance of the finalizer exists
+        assert!(requests(&seen).is_empty(), "no API call");
     }
 
     #[tokio::test]
-    #[ignore = "Requires Kubernetes cluster"]
-    async fn test_remove_finalizer_removes_when_present() {
-        let _client = mock_client().await;
-        let cluster = create_test_cluster_with_finalizers(vec![TEST_FINALIZER.to_string()]);
+    async fn ensure_finalizer_patches_a_cluster_scoped_resource() {
+        let provider = create_test_cluster_provider();
+        let (client, seen) = scripted_client(vec![(HTTP_OK, json(&provider))]);
+        let api: Api<ClusterBind9Provider> = Api::all(client);
 
-        // Verify finalizer is present
-        assert!(cluster
-            .metadata
-            .finalizers
-            .as_ref()
-            .unwrap()
-            .contains(&TEST_FINALIZER.to_string()));
+        ensure_finalizer(&api, &provider, TEST_FINALIZER)
+            .await
+            .expect("finalizer added");
 
-        // This test requires a real cluster, so we skip the actual API call
-        // In integration tests, we would:
-        // 1. Create the resource with the finalizer
-        // 2. Call remove_finalizer
-        // 3. Verify the finalizer was removed
+        let seen = requests(&seen);
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].method, "PATCH");
+        assert!(
+            seen[0]
+                .path
+                .ends_with("/clusterbind9providers/test-resource")
+                && !seen[0].path.contains("/namespaces/"),
+            "{}",
+            seen[0].path
+        );
     }
 
     #[tokio::test]
-    #[ignore = "Requires Kubernetes cluster"]
-    async fn test_remove_finalizer_idempotent_when_absent() {
-        let _client = mock_client().await;
-        let cluster = create_test_cluster();
+    async fn ensure_finalizer_fails_when_the_guarded_patch_is_rejected() {
+        let cluster = with_resource_version(create_test_cluster());
+        let (client, _seen) = scripted_client(vec![(
+            HTTP_CONFLICT,
+            status_body(HTTP_CONFLICT, "Conflict"),
+        )]);
+        let api: Api<Bind9Cluster> = Api::namespaced(client, TEST_NAMESPACE);
 
-        // Verify no finalizers
-        assert!(cluster.metadata.finalizers.is_none());
+        let err = ensure_finalizer(&api, &cluster, TEST_FINALIZER)
+            .await
+            .expect_err("a rejected patch fails");
 
-        // This test requires a real cluster, so we skip the actual API call
-        // In integration tests, we would:
-        // 1. Create the resource without finalizers
-        // 2. Call remove_finalizer
-        // 3. Verify no error occurs
+        let text = format!("{err:#}");
+        assert!(text.contains("test-namespace/test-resource"), "{text}");
+        assert!(crate::kube_errors::is_conflict_anyhow(&err));
     }
 
     #[tokio::test]
-    #[ignore = "Requires Kubernetes cluster"]
-    async fn test_ensure_cluster_finalizer_adds_when_missing() {
-        let _client = mock_client().await;
-        let cluster = create_test_cluster_provider();
+    async fn ensure_finalizer_requires_a_resource_version_to_append() {
+        // Existing finalizers and no resourceVersion: no safe patch exists.
+        let cluster = create_test_cluster_with_finalizers(vec![OTHER_FINALIZER.to_string()]);
+        let (client, seen) = scripted_client(vec![]);
+        let api: Api<Bind9Cluster> = Api::namespaced(client, TEST_NAMESPACE);
 
-        // Verify no finalizers initially
-        assert!(cluster.metadata.finalizers.is_none());
-
-        // This test requires a real cluster, so we skip the actual API call
-        // In integration tests, we would:
-        // 1. Create the cluster-scoped resource
-        // 2. Call ensure_cluster_finalizer
-        // 3. Verify the finalizer was added
+        assert!(ensure_finalizer(&api, &cluster, TEST_FINALIZER)
+            .await
+            .is_err());
+        assert!(requests(&seen).is_empty());
     }
 
     #[tokio::test]
-    #[ignore = "Requires Kubernetes cluster"]
-    async fn test_ensure_cluster_finalizer_idempotent_when_present() {
-        let _client = mock_client().await;
-        let cluster =
+    async fn remove_finalizer_patches_the_exact_index() {
+        let cluster = create_test_cluster_with_finalizers(vec![
+            OTHER_FINALIZER.to_string(),
+            TEST_FINALIZER.to_string(),
+        ]);
+        let (client, seen) = scripted_client(vec![(HTTP_OK, json(&cluster))]);
+        let api: Api<Bind9Cluster> = Api::namespaced(client, TEST_NAMESPACE);
+
+        remove_finalizer(&api, &cluster, TEST_FINALIZER)
+            .await
+            .expect("finalizer removed");
+
+        let seen = requests(&seen);
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].method, "PATCH");
+        assert_eq!(
+            seen[0].body,
+            serde_json::json!([
+                {"op": "test", "path": "/metadata/finalizers/1", "value": TEST_FINALIZER},
+                {"op": "remove", "path": "/metadata/finalizers/1"},
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_finalizer_is_a_no_op_when_absent() {
+        let cluster = create_test_cluster_with_finalizers(vec![OTHER_FINALIZER.to_string()]);
+        let (client, seen) = scripted_client(vec![]);
+        let api: Api<Bind9Cluster> = Api::namespaced(client, TEST_NAMESPACE);
+
+        remove_finalizer(&api, &cluster, TEST_FINALIZER)
+            .await
+            .expect("nothing to do");
+
+        assert!(requests(&seen).is_empty());
+    }
+
+    #[tokio::test]
+    async fn remove_finalizer_patches_a_cluster_scoped_resource() {
+        let provider =
             create_test_cluster_provider_with_finalizers(vec![TEST_FINALIZER.to_string()]);
+        let (client, seen) = scripted_client(vec![(HTTP_OK, json(&provider))]);
+        let api: Api<ClusterBind9Provider> = Api::all(client);
 
-        // Verify finalizer already present
-        assert!(cluster
-            .metadata
-            .finalizers
-            .as_ref()
-            .unwrap()
-            .contains(&TEST_FINALIZER.to_string()));
+        remove_finalizer(&api, &provider, TEST_FINALIZER)
+            .await
+            .expect("finalizer removed");
 
-        // This test requires a real cluster, so we skip the actual API call
-        // In integration tests, we would:
-        // 1. Create the cluster-scoped resource with the finalizer
-        // 2. Call ensure_cluster_finalizer again
-        // 3. Verify only one instance of the finalizer exists
+        let seen = requests(&seen);
+        assert_eq!(seen.len(), 1);
+        assert!(
+            seen[0]
+                .path
+                .ends_with("/clusterbind9providers/test-resource")
+                && !seen[0].path.contains("/namespaces/"),
+            "{}",
+            seen[0].path
+        );
     }
 
     #[tokio::test]
-    #[ignore = "Requires Kubernetes cluster"]
-    async fn test_remove_cluster_finalizer_removes_when_present() {
-        let _client = mock_client().await;
-        let cluster =
+    async fn remove_finalizer_failure_names_the_cluster_scoped_object() {
+        let provider =
             create_test_cluster_provider_with_finalizers(vec![TEST_FINALIZER.to_string()]);
+        let (client, _seen) = scripted_client(vec![(
+            HTTP_CONFLICT,
+            status_body(HTTP_CONFLICT, "Conflict"),
+        )]);
+        let api: Api<ClusterBind9Provider> = Api::all(client);
 
-        // Verify finalizer is present
-        assert!(cluster
-            .metadata
-            .finalizers
-            .as_ref()
-            .unwrap()
-            .contains(&TEST_FINALIZER.to_string()));
+        let err = remove_finalizer(&api, &provider, TEST_FINALIZER)
+            .await
+            .expect_err("a rejected patch fails");
 
-        // This test requires a real cluster, so we skip the actual API call
-        // In integration tests, we would:
-        // 1. Create the cluster-scoped resource with the finalizer
-        // 2. Call remove_cluster_finalizer
-        // 3. Verify the finalizer was removed
-    }
-
-    #[tokio::test]
-    #[ignore = "Requires Kubernetes cluster"]
-    async fn test_remove_cluster_finalizer_idempotent_when_absent() {
-        let _client = mock_client().await;
-        let cluster = create_test_cluster_provider();
-
-        // Verify no finalizers
-        assert!(cluster.metadata.finalizers.is_none());
-
-        // This test requires a real cluster, so we skip the actual API call
-        // In integration tests, we would:
-        // 1. Create the cluster-scoped resource without finalizers
-        // 2. Call remove_cluster_finalizer
-        // 3. Verify no error occurs
+        let text = format!("{err:#}");
+        assert!(text.contains("from test-resource"), "{text}");
     }
 
     #[test]
@@ -730,46 +809,19 @@ mod tests {
     }
 
     // =====================================================
-    // handle_deletion / handle_cluster_deletion against a mock API server
+    // handle_deletion against the mock API server, both scopes
     // =====================================================
 
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
-
-    /// Requests the mock API server saw, as (method, path).
-    type Seen = Arc<Mutex<Vec<(String, String)>>>;
-
-    /// A client whose API server answers every request with `reply` and
-    /// records what it was asked.
-    fn recording_client(reply: serde_json::Value) -> (Client, Seen) {
-        let seen: Seen = Arc::default();
-        let log = seen.clone();
-        let service = tower::service_fn(move |req: http::Request<kube::client::Body>| {
-            let log = log.clone();
-            let body = serde_json::to_vec(&reply).expect("reply serializes");
-            async move {
-                log.lock()
-                    .expect("lock")
-                    .push((req.method().to_string(), req.uri().path().to_string()));
-                Ok::<_, std::convert::Infallible>(
-                    http::Response::builder()
-                        .status(http::StatusCode::OK)
-                        .header("content-type", "application/json")
-                        .body(kube::client::Body::from(body))
-                        .expect("response builds"),
-                )
-            }
-        });
-        (Client::new(service, TEST_NAMESPACE), seen)
-    }
 
     #[tokio::test]
     async fn handle_deletion_runs_cleanup_then_removes_the_finalizer() {
         let cluster = create_test_cluster_being_deleted(vec![TEST_FINALIZER.to_string()]);
-        let (client, seen) = recording_client(serde_json::to_value(&cluster).unwrap());
+        let (client, seen) = scripted_client(vec![(HTTP_OK, json(&cluster))]);
+        let api: Api<Bind9Cluster> = Api::namespaced(client, TEST_NAMESPACE);
         let cleaned = AtomicBool::new(false);
 
-        handle_deletion(&client, &cluster, TEST_FINALIZER, || async {
+        handle_deletion(&api, &cluster, TEST_FINALIZER, || async {
             cleaned.store(true, Ordering::SeqCst);
             Ok(())
         })
@@ -777,25 +829,26 @@ mod tests {
         .expect("deletion succeeds");
 
         assert!(cleaned.load(Ordering::SeqCst), "cleanup must run");
-        let seen = seen.lock().unwrap();
+        let seen = requests(&seen);
         assert_eq!(seen.len(), 1, "exactly one API call: the finalizer patch");
-        assert_eq!(seen[0].0, "PATCH");
+        assert_eq!(seen[0].method, "PATCH");
         assert!(
             seen[0]
-                .1
+                .path
                 .ends_with("/namespaces/test-namespace/bind9clusters/test-resource"),
             "patched the resource itself: {}",
-            seen[0].1
+            seen[0].path
         );
     }
 
     #[tokio::test]
     async fn handle_deletion_skips_cleanup_when_the_finalizer_is_absent() {
         let cluster = create_test_cluster_being_deleted(vec![]);
-        let (client, seen) = recording_client(serde_json::to_value(&cluster).unwrap());
+        let (client, seen) = scripted_client(vec![]);
+        let api: Api<Bind9Cluster> = Api::namespaced(client, TEST_NAMESPACE);
         let cleaned = AtomicBool::new(false);
 
-        handle_deletion(&client, &cluster, TEST_FINALIZER, || async {
+        handle_deletion(&api, &cluster, TEST_FINALIZER, || async {
             cleaned.store(true, Ordering::SeqCst);
             Ok(())
         })
@@ -803,33 +856,35 @@ mod tests {
         .expect("nothing to do is not an error");
 
         assert!(!cleaned.load(Ordering::SeqCst), "no finalizer, no cleanup");
-        assert!(seen.lock().unwrap().is_empty(), "no API call");
+        assert!(requests(&seen).is_empty(), "no API call");
     }
 
     #[tokio::test]
     async fn handle_deletion_keeps_the_finalizer_when_cleanup_fails() {
         let cluster = create_test_cluster_being_deleted(vec![TEST_FINALIZER.to_string()]);
-        let (client, seen) = recording_client(serde_json::to_value(&cluster).unwrap());
+        let (client, seen) = scripted_client(vec![]);
+        let api: Api<Bind9Cluster> = Api::namespaced(client, TEST_NAMESPACE);
 
-        let result = handle_deletion(&client, &cluster, TEST_FINALIZER, || async {
+        let result = handle_deletion(&api, &cluster, TEST_FINALIZER, || async {
             Err(anyhow::anyhow!("child resources still present"))
         })
         .await;
 
         assert!(result.is_err(), "a failed cleanup fails the deletion");
         assert!(
-            seen.lock().unwrap().is_empty(),
+            requests(&seen).is_empty(),
             "the finalizer must stay until cleanup succeeds"
         );
     }
 
     #[tokio::test]
-    async fn handle_cluster_deletion_runs_cleanup_then_removes_the_finalizer() {
+    async fn handle_deletion_of_a_cluster_scoped_resource_removes_the_finalizer() {
         let provider = create_test_cluster_provider_being_deleted(vec![TEST_FINALIZER.to_string()]);
-        let (client, seen) = recording_client(serde_json::to_value(&provider).unwrap());
+        let (client, seen) = scripted_client(vec![(HTTP_OK, json(&provider))]);
+        let api: Api<ClusterBind9Provider> = Api::all(client);
         let cleaned = AtomicBool::new(false);
 
-        handle_cluster_deletion(&client, &provider, TEST_FINALIZER, || async {
+        handle_deletion(&api, &provider, TEST_FINALIZER, || async {
             cleaned.store(true, Ordering::SeqCst);
             Ok(())
         })
@@ -837,24 +892,27 @@ mod tests {
         .expect("deletion succeeds");
 
         assert!(cleaned.load(Ordering::SeqCst), "cleanup must run");
-        let seen = seen.lock().unwrap();
+        let seen = requests(&seen);
         assert_eq!(seen.len(), 1, "exactly one API call: the finalizer patch");
-        assert_eq!(seen[0].0, "PATCH");
+        assert_eq!(seen[0].method, "PATCH");
         assert!(
-            seen[0].1.ends_with("/clusterbind9providers/test-resource")
-                && !seen[0].1.contains("/namespaces/"),
+            seen[0]
+                .path
+                .ends_with("/clusterbind9providers/test-resource")
+                && !seen[0].path.contains("/namespaces/"),
             "patched the cluster-scoped resource: {}",
-            seen[0].1
+            seen[0].path
         );
     }
 
     #[tokio::test]
-    async fn handle_cluster_deletion_skips_cleanup_when_the_finalizer_is_absent() {
+    async fn handle_deletion_of_a_cluster_scoped_resource_skips_cleanup_without_finalizer() {
         let provider = create_test_cluster_provider_being_deleted(vec![]);
-        let (client, seen) = recording_client(serde_json::to_value(&provider).unwrap());
+        let (client, seen) = scripted_client(vec![]);
+        let api: Api<ClusterBind9Provider> = Api::all(client);
         let cleaned = AtomicBool::new(false);
 
-        handle_cluster_deletion(&client, &provider, TEST_FINALIZER, || async {
+        handle_deletion(&api, &provider, TEST_FINALIZER, || async {
             cleaned.store(true, Ordering::SeqCst);
             Ok(())
         })
@@ -862,20 +920,21 @@ mod tests {
         .expect("nothing to do is not an error");
 
         assert!(!cleaned.load(Ordering::SeqCst));
-        assert!(seen.lock().unwrap().is_empty());
+        assert!(requests(&seen).is_empty());
     }
 
     #[tokio::test]
-    async fn handle_cluster_deletion_keeps_the_finalizer_when_cleanup_fails() {
+    async fn handle_deletion_of_a_cluster_scoped_resource_keeps_finalizer_on_failure() {
         let provider = create_test_cluster_provider_being_deleted(vec![TEST_FINALIZER.to_string()]);
-        let (client, seen) = recording_client(serde_json::to_value(&provider).unwrap());
+        let (client, seen) = scripted_client(vec![]);
+        let api: Api<ClusterBind9Provider> = Api::all(client);
 
-        let result = handle_cluster_deletion(&client, &provider, TEST_FINALIZER, || async {
+        let result = handle_deletion(&api, &provider, TEST_FINALIZER, || async {
             Err(anyhow::anyhow!("instances still present"))
         })
         .await;
 
         assert!(result.is_err());
-        assert!(seen.lock().unwrap().is_empty());
+        assert!(requests(&seen).is_empty());
     }
 }

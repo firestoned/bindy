@@ -27,12 +27,14 @@ use crate::labels::{
     COMPONENT_DNS_CLUSTER, K8S_COMPONENT, K8S_INSTANCE, K8S_MANAGED_BY, MANAGED_BY_BIND9_CLUSTER,
 };
 use crate::rollout::{
-    deployment_rollout_key, instance_of_deployment, instance_of_pod, pod_rollout_key,
-    waiters_to_wake, InstanceId, RolloutQueue,
+    deployment_rollout_key, instance_of_deployment, instance_of_pod, owned_deployment_key,
+    pod_rollout_key, waiters_to_wake, InstanceId, RolloutQueue,
 };
 use bindy_controller_sdk::context::{Context, Stores};
 use bindy_controller_sdk::error::{error_policy, ReconcileError};
-use bindy_controller_sdk::namespace_scope::{owned_targets, scoped_namespaced_api};
+use bindy_controller_sdk::namespace_scope::{
+    owned_targets, run_per_target, scoped_namespaced_api, target_label,
+};
 use bindy_controller_sdk::reconcile::instrumented_scheduled;
 use bindy_controller_sdk::watch::changed_only;
 use futures::StreamExt;
@@ -212,17 +214,19 @@ pub(crate) fn rollout_waiters(
 /// Run one `Bind9Instance` controller per namespace target. Cluster-wide mode
 /// yields exactly one. Every target shares one rollout queue, so instances of
 /// a `ClusterBind9Provider` in different namespaces are ordered together.
+///
+/// # Errors
+///
+/// Returns an error when a target's controller exits before the shutdown
+/// fired, or when there is no target ([`run_per_target`]).
 pub(crate) async fn run_bind9instance_controllers(ctx: Arc<Context>) -> anyhow::Result<()> {
     info!("Starting Bind9Instance controller");
     let targets = owned_targets(&ctx.namespace_scope);
     let rollouts = Arc::new(RolloutQueue::new());
-    futures::future::join_all(
-        targets
-            .into_iter()
-            .map(|target| run_bind9instance_controller(ctx.clone(), target, rollouts.clone())),
-    )
-    .await;
-    Ok(())
+    run_per_target(targets, &ctx.shutdown, |target| {
+        run_bind9instance_controller(ctx.clone(), target, rollouts.clone())
+    })
+    .await
 }
 
 #[allow(clippy::too_many_lines)] // one builder chain: every watch of the controller
@@ -230,9 +234,9 @@ async fn run_bind9instance_controller(
     ctx: Arc<Context>,
     target: Option<String>,
     rollouts: Arc<RolloutQueue>,
-) {
+) -> anyhow::Result<()> {
     debug!(
-        namespace = target.as_deref().unwrap_or("<all>"),
+        namespace = target_label(target.as_deref()),
         "Starting Bind9Instance controller"
     );
 
@@ -268,6 +272,19 @@ async fn run_bind9instance_controller(
         deployment_rollout_key,
         move |deployment: &Deployment| {
             deployment_store
+                .get(&ObjectRef::from_obj(deployment))
+                .is_some()
+        },
+    );
+    // The owned Deployments, filtered on what the reconcile reads, so a
+    // status-only write by the Deployment controller does not wake the
+    // instance ([`owned_deployment_key`]).
+    let owned_deployment_store = ws.store::<Deployment>(target.as_deref());
+    let owned_deployment_changes = changed_only(
+        ws.subscribe::<Deployment>(target.as_deref()),
+        owned_deployment_key,
+        move |deployment: &Deployment| {
+            owned_deployment_store
                 .get(&ObjectRef::from_obj(deployment))
                 .is_some()
         },
@@ -321,7 +338,7 @@ async fn run_bind9instance_controller(
             )
         },
     )
-    .owns_stream(ws.subscribe::<k8s_openapi::api::apps::v1::Deployment>(target.as_deref()))
+    .owns_stream(owned_deployment_changes)
     .owns(
         scoped_namespaced_api::<Service>(&client, target.as_deref()),
         watcher::Config::default(),
@@ -371,6 +388,7 @@ async fn run_bind9instance_controller(
     )
     .for_each(|_| futures::future::ready(()))
     .await;
+    Ok(())
 }
 
 async fn reconcile_bind9instance_wrapper(

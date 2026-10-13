@@ -13,8 +13,7 @@ pub use crate::crd::{
 };
 pub use crate::labels::{BINDY_MANAGED_BY_LABEL, FINALIZER_BIND9_INSTANCE};
 pub use crate::status_reasons::{
-    pod_condition_type, CONDITION_TYPE_READY, REASON_ALL_READY, REASON_NOT_READY,
-    REASON_PARTIALLY_READY, REASON_READY,
+    pod_condition_type, CONDITION_TYPE_READY, REASON_NOT_READY, REASON_READY,
 };
 
 // Re-export commonly used Kubernetes types

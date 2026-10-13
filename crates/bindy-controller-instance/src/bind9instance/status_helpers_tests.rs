@@ -102,6 +102,92 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn test_instance_status_changed_ignores_condition_order() {
+        // Behaviour change: conditions are matched by type, so the same set
+        // in another order is no change (the pairwise comparison saw one).
+        let pod = Condition {
+            r#type: "Pod-0".to_string(),
+            status: "True".to_string(),
+            reason: Some("Ready".to_string()),
+            message: Some("Pod a-0 is ready".to_string()),
+            last_transition_time: None,
+        };
+        let mut current = build_current_status(Some(2), Some(5));
+        current.conditions = vec![ready_condition(), pod.clone()];
+
+        assert!(!instance_status_changed(
+            Some(&current),
+            &[pod, ready_condition()],
+            None,
+            &[],
+            Some(2),
+            Some(5)
+        ));
+    }
+
+    // ------------------------------------------------------------------
+    // The encompassing Ready condition from pod counts
+    // ------------------------------------------------------------------
+
+    mod pods_ready {
+        use crate::bind9instance::status_helpers::pods_ready_condition;
+
+        fn triple(ready: usize, replicas: i32) -> (String, String, String) {
+            let c = pods_ready_condition(ready, replicas);
+            assert_eq!(c.r#type, "Ready");
+            (
+                c.status,
+                c.reason.unwrap_or_default(),
+                c.message.unwrap_or_default(),
+            )
+        }
+
+        fn expect(status: &str, reason: &str, message: &str) -> (String, String, String) {
+            (status.to_string(), reason.to_string(), message.to_string())
+        }
+
+        #[test]
+        fn no_replicas_and_no_pods_is_not_ready() {
+            assert_eq!(
+                triple(0, 0),
+                expect("False", "NotReady", "No pods are ready")
+            );
+        }
+
+        #[test]
+        fn replicas_but_no_ready_pod_is_waiting() {
+            assert_eq!(
+                triple(0, 3),
+                expect("False", "NotReady", "Waiting for pods to become ready")
+            );
+        }
+
+        #[test]
+        fn all_pods_ready_is_ready() {
+            assert_eq!(
+                triple(3, 3),
+                expect("True", "AllReady", "All 3 pods are ready")
+            );
+        }
+
+        #[test]
+        fn some_pods_ready_is_partially_ready() {
+            assert_eq!(
+                triple(1, 3),
+                expect("False", "PartiallyReady", "1/3 pods are ready")
+            );
+        }
+
+        #[test]
+        fn ready_pods_after_scale_to_zero_are_partially_ready() {
+            assert_eq!(
+                triple(2, 0),
+                expect("False", "PartiallyReady", "2/0 pods are ready")
+            );
+        }
+    }
+
     // ------------------------------------------------------------------
     // ADR-0018: a queued pod-template change does not advance the observed
     // generations, so the next reconcile still applies it.

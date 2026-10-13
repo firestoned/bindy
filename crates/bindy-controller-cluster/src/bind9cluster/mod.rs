@@ -81,15 +81,16 @@ pub async fn reconcile_bind9cluster(ctx: Arc<Context>, cluster: Bind9Cluster) ->
     );
 
     // Handle deletion if cluster is being deleted
+    let api: Api<Bind9Cluster> = Api::namespaced(client.clone(), &namespace);
     if cluster.metadata.deletion_timestamp.is_some() {
-        return handle_deletion(&client, &cluster, FINALIZER_BIND9_CLUSTER, || {
+        return handle_deletion(&api, &cluster, FINALIZER_BIND9_CLUSTER, || {
             cleanup_bind9cluster(&cluster, &client)
         })
         .await;
     }
 
     // Ensure finalizer is present
-    ensure_finalizer(&client, &cluster, FINALIZER_BIND9_CLUSTER).await?;
+    ensure_finalizer(&api, &cluster, FINALIZER_BIND9_CLUSTER).await?;
 
     // Check if spec has changed using the standard generation check
     let current_generation = cluster.metadata.generation;
@@ -222,7 +223,7 @@ async fn list_cluster_instances(
             // Update status to show error
             let error_condition = Condition {
                 r#type: CONDITION_TYPE_READY.to_string(),
-                status: "False".to_string(),
+                status: crate::constants::CONDITION_STATUS_FALSE.to_string(),
                 reason: Some(REASON_NOT_READY.to_string()),
                 message: Some(format!("Failed to list instances: {e}")),
                 last_transition_time: Some(Utc::now().to_rfc3339()),
@@ -244,7 +245,7 @@ async fn report_invalid_config(
     let status = cluster.status.clone().unwrap_or_default();
     let condition = crate::crd::Condition {
         r#type: crate::status_reasons::CONDITION_TYPE_READY.to_string(),
-        status: "False".to_string(),
+        status: crate::constants::CONDITION_STATUS_FALSE.to_string(),
         reason: Some(crate::status_reasons::REASON_CONFIGURATION_INVALID.to_string()),
         message: Some(format!("Configuration not published: {detail}")),
         last_transition_time: Some(chrono::Utc::now().to_rfc3339()),

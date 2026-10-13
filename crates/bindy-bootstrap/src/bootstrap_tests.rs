@@ -2489,3 +2489,91 @@ mod mc_output_tests {
         );
     }
 }
+
+/// `bindy bootstrap revoke-mc` deletes each object it created, skipping one
+/// that is already gone and failing on any other error.
+#[cfg(test)]
+mod mc_revoke_tests {
+    use crate::bootstrap::delete_mc_resource;
+    use k8s_openapi::api::rbac::v1::Role;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const NAMESPACE: &str = "bindy-system";
+    const NAME: &str = "bindy-scout-remote";
+    const ROLE_PATH: &str =
+        "/apis/rbac.authorization.k8s.io/v1/namespaces/bindy-system/roles/bindy-scout-remote";
+    const HTTP_OK: u16 = 200;
+    const HTTP_INTERNAL_SERVER_ERROR: u16 = 500;
+
+    fn client_for(server: &MockServer) -> kube::Client {
+        let config = kube::Config::new(server.uri().parse().expect("mock server uri"));
+        kube::Client::try_from(config).expect("client from mock config")
+    }
+
+    fn status_json(code: u16, reason: &str) -> serde_json::Value {
+        serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Status",
+            "status": "Failure",
+            "message": "test",
+            "reason": reason,
+            "code": code
+        })
+    }
+
+    async fn server_answering_delete(response: ResponseTemplate) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path(ROLE_PATH))
+            .respond_with(response)
+            .expect(1)
+            .mount(&server)
+            .await;
+        server
+    }
+
+    #[tokio::test]
+    async fn deletes_a_present_object() {
+        let server = server_answering_delete(ResponseTemplate::new(HTTP_OK).set_body_json(
+            serde_json::json!({
+                "apiVersion": "rbac.authorization.k8s.io/v1",
+                "kind": "Role",
+                "metadata": {"name": NAME, "namespace": NAMESPACE}
+            }),
+        ))
+        .await;
+
+        delete_mc_resource::<Role>(&client_for(&server), NAMESPACE, NAME)
+            .await
+            .expect("a present object is deleted");
+    }
+
+    #[tokio::test]
+    async fn skips_an_absent_object() {
+        let server = server_answering_delete(
+            ResponseTemplate::new(crate::constants::HTTP_NOT_FOUND)
+                .set_body_json(status_json(crate::constants::HTTP_NOT_FOUND, "NotFound")),
+        )
+        .await;
+
+        delete_mc_resource::<Role>(&client_for(&server), NAMESPACE, NAME)
+            .await
+            .expect("an absent object is skipped, not an error");
+    }
+
+    #[tokio::test]
+    async fn fails_on_a_server_error_naming_the_object() {
+        let server = server_answering_delete(
+            ResponseTemplate::new(HTTP_INTERNAL_SERVER_ERROR)
+                .set_body_json(status_json(HTTP_INTERNAL_SERVER_ERROR, "InternalError")),
+        )
+        .await;
+
+        let err = delete_mc_resource::<Role>(&client_for(&server), NAMESPACE, NAME)
+            .await
+            .expect_err("a server error propagates");
+
+        assert_eq!(err.to_string(), format!("Failed to delete Role/{NAME}"));
+    }
+}

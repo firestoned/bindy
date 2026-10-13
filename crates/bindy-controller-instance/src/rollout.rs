@@ -25,6 +25,7 @@
 //! ([`waiters_to_wake`]), or by the queue itself when a claim is released or
 //! a waiter leaves ([`RolloutQueue::subscribe`]). No timer.
 
+use crate::constants::{CONDITION_STATUS_FALSE, CONDITION_STATUS_TRUE};
 use crate::crd::{Bind9Instance, Condition, DNSZone};
 use crate::labels::K8S_INSTANCE;
 use crate::status_reasons::{
@@ -48,14 +49,9 @@ const DEPLOYMENT_CONDITION_PROGRESSING: &str = "Progressing";
 /// rollout is complete.
 const REASON_NEW_REPLICA_SET_AVAILABLE: &str = "NewReplicaSetAvailable";
 
-/// The Pod condition that says the pod is in its Service.
-const POD_CONDITION_READY: &str = "Ready";
-
-/// A Kubernetes condition status.
-const STATUS_TRUE: &str = "True";
-
-/// A Kubernetes condition status.
-const STATUS_FALSE: &str = "False";
+/// The Pod condition that says the pod is in its Service (the Pod API's
+/// condition type, not the `Ready` condition of a bindy resource).
+pub(crate) const POD_CONDITION_READY: &str = "Ready";
 
 /// A `Bind9Instance`, by namespace and name. Ordered by namespace then name,
 /// which is the tie-break wherever the order must be deterministic.
@@ -192,7 +188,7 @@ fn pod_ready(pod: &Pod) -> bool {
         .is_some_and(|conditions| {
             conditions
                 .iter()
-                .any(|c| c.type_ == POD_CONDITION_READY && c.status == STATUS_TRUE)
+                .any(|c| c.type_ == POD_CONDITION_READY && c.status == CONDITION_STATUS_TRUE)
         })
 }
 
@@ -219,7 +215,7 @@ pub(crate) fn peer_rollout(deployment: Option<&Deployment>, pods: &[Arc<Pod>]) -
     };
     let progress = progressing(deployment);
     if progress.is_some_and(|(status, reason)| {
-        status == STATUS_FALSE && reason == REASON_PROGRESS_DEADLINE_EXCEEDED
+        status == CONDITION_STATUS_FALSE && reason == REASON_PROGRESS_DEADLINE_EXCEEDED
     }) {
         return PeerRollout::Stalled;
     }
@@ -806,6 +802,25 @@ pub(crate) fn deployment_rollout_key(deployment: &Deployment) -> u64 {
     hasher.finish()
 }
 
+/// What the instance reconcile reads from its own Deployment: everything the
+/// rollout decision reads ([`deployment_rollout_key`], which includes the
+/// generation, so any spec or pod-template change), plus whether deletion
+/// has started. The owned-Deployment stream is filtered on it.
+///
+/// Status-only writes that change none of these (Kubernetes 1.33+ rewrites a
+/// Deployment's status when its old pods finish terminating, updating
+/// `terminatingReplicas` and condition timestamps) no longer wake the instance.
+pub(crate) fn owned_deployment_key(deployment: &Deployment) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    deployment_rollout_key(deployment).hash(&mut hasher);
+    deployment
+        .metadata
+        .deletion_timestamp
+        .is_some()
+        .hash(&mut hasher);
+    hasher.finish()
+}
+
 /// What the rollout decision reads from a pod: its instance, readiness and
 /// deletion. The Pod stream is filtered on it.
 pub(crate) fn pod_rollout_key(pod: &Pod) -> u64 {
@@ -858,9 +873,9 @@ impl RolloutStatus {
 pub(crate) fn rollout_condition(status: &RolloutStatus) -> Option<Condition> {
     let (condition_status, reason, message) = match status {
         RolloutStatus::None => return None,
-        RolloutStatus::Queued(message) => (STATUS_FALSE, REASON_ROLLOUT_QUEUED, message),
+        RolloutStatus::Queued(message) => (CONDITION_STATUS_FALSE, REASON_ROLLOUT_QUEUED, message),
         RolloutStatus::ProceededPastStalled(message) => {
-            (STATUS_TRUE, REASON_ROLLOUT_PEER_STALLED, message)
+            (CONDITION_STATUS_TRUE, REASON_ROLLOUT_PEER_STALLED, message)
         }
     };
     Some(Condition {

@@ -31,13 +31,14 @@ use crate::crd::{
 use crate::dnszone::types::{ZoneOutcome, REASON_DUPLICATE_ZONE, REASON_TRANSFER_PENDING};
 use crate::dnszone::{delete_dnszone, discovery::zones_configured_on_instance, reconcile_dnszone};
 use crate::labels::FINALIZER_DNS_ZONE;
+use bindy_api::status_reasons::CONDITION_TYPE_READY;
 use bindy_controller_sdk::context::{Context, RecordKind};
 use bindy_controller_sdk::error::{
     converged_action, error_policy, fast_retry_action, retry_action, ReconcileError,
 };
 use bindy_controller_sdk::metrics;
-use bindy_controller_sdk::namespace_scope::owned_targets;
-use bindy_controller_sdk::reconcile::{finalizer_error, scheduled_action};
+use bindy_controller_sdk::namespace_scope::{owned_targets, run_per_target, target_label};
+use bindy_controller_sdk::reconcile::{finalizer_error, instrumented_action, scheduled_action};
 use bindy_controller_sdk::watch::{changed_only, primary_predicate};
 use futures::StreamExt;
 use k8s_openapi::api::core::v1::Endpoints;
@@ -46,9 +47,6 @@ use kube::runtime::{controller::Action, finalizer, Controller, WatchStreamExt};
 use kube::{Api, ResourceExt};
 use std::sync::Arc;
 use tracing::{debug, info, warn};
-
-/// The `Ready` condition type on a `DNSZone`.
-const CONDITION_TYPE_READY: &str = "Ready";
 
 /// The part of a zone the duplicate-zone mapper reads: its zone name and
 /// whether it is being deleted. Zone status writes leave it unchanged, so
@@ -220,21 +218,27 @@ fn watch_records<T: RecordKind>(
 
 /// Run one `DNSZone` controller per namespace target. Cluster-wide mode
 /// yields exactly one.
+///
+/// # Errors
+/// Returns an error when a target's controller exits before the shutdown
+/// signal fired (see [`run_per_target`]).
 pub(crate) async fn run_dnszone_controllers(ctx: Arc<Context>) -> anyhow::Result<()> {
     info!("Starting DNSZone controller");
     let targets = owned_targets(&ctx.namespace_scope);
-    futures::future::join_all(
-        targets
-            .into_iter()
-            .map(|target| run_dnszone_controller(ctx.clone(), target)),
-    )
-    .await;
-    Ok(())
+    run_per_target(targets, &ctx.shutdown, |target| {
+        run_dnszone_controller(ctx.clone(), target)
+    })
+    .await
 }
 
-async fn run_dnszone_controller(ctx: Arc<Context>, target: Option<String>) {
+/// Run the `DNSZone` controller for one namespace target until the shutdown
+/// signal fires and its reconciles have drained.
+///
+/// # Errors
+/// Never fails on its own: the controller stream only ends on shutdown.
+async fn run_dnszone_controller(ctx: Arc<Context>, target: Option<String>) -> anyhow::Result<()> {
     debug!(
-        namespace = target.as_deref().unwrap_or("<all>"),
+        namespace = target_label(target.as_deref()),
         "Starting DNSZone controller"
     );
 
@@ -290,20 +294,20 @@ async fn run_dnszone_controller(ctx: Arc<Context>, target: Option<String>) {
         .run(reconcile_dnszone_wrapper, error_policy, ctx.clone())
         .for_each(|_| futures::future::ready(()))
         .await;
+    Ok(())
 }
 
 async fn reconcile_dnszone_wrapper(
     dnszone: Arc<DNSZone>,
     ctx: Arc<Context>,
 ) -> Result<Action, ReconcileError> {
-    let start = std::time::Instant::now();
     // No shared Bind9Manager here on purpose: every bindcar call the DNSZone
     // reconciler makes resolves a manager for the specific instance it is
     // addressing, so it picks up that instance's TLS configuration.
     let namespace = dnszone.namespace().unwrap_or_default();
     let api: Api<DNSZone> = Api::namespaced(ctx.client.clone(), &namespace);
 
-    let result = finalizer(&api, FINALIZER_DNS_ZONE, dnszone, |event| async {
+    let reconcile = finalizer(&api, FINALIZER_DNS_ZONE, dnszone, |event| async {
         match event {
             finalizer::Event::Apply(zone) => {
                 // The outcome comes from the status this reconcile built; the
@@ -348,18 +352,11 @@ async fn reconcile_dnszone_wrapper(
                 Ok(Action::await_change())
             }
         }
-    })
-    .await;
+    });
 
-    let duration = start.elapsed();
-    if result.is_ok() {
-        metrics::record_reconciliation_success(KIND_DNS_ZONE, duration);
-    } else {
-        metrics::record_reconciliation_error(KIND_DNS_ZONE, duration);
-        metrics::record_error(KIND_DNS_ZONE, "reconcile_error");
-    }
-
-    result.map_err(|e| finalizer_error(KIND_DNS_ZONE, e))
+    instrumented_action(KIND_DNS_ZONE, reconcile)
+        .await
+        .map_err(|e| finalizer_error(KIND_DNS_ZONE, e))
 }
 
 #[cfg(test)]
