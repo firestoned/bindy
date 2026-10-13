@@ -1,3 +1,41 @@
+## [2026-10-13 22:00] - Record kinds declared once (ADR-0020); an RRset replaced in one DNS UPDATE (ADR-0021)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0020-record-kinds-declared-once.md`, `docs/adr/0021-rrset-replaced-in-one-update.md` (Accepted).
+- `crates/bindy-api/src/record_kinds.rs`: `for_each_record_kind!`, the one list of the nine record kinds (variant = hickory `RecordType`, type, kind string, finalizer).
+  - It generates `DNSRecordKind` (now with `finalizer()` and `COUNT`), the SDK `RecordKind` impls and `RECORD_KINDS`, the replay dispatch, the record controllers, the zone watch, discovery and cleanup, and the crdgen, crddoc and bootstrap CRD lists.
+  - Helpers `each_record_kind!`, `match_record_kind!` and `record_kind_array!` replace every hand-written per-kind list or match.
+- `crates/bindy-bind9/src/bind9/records/mod.rs`: `replace_rrset_message`, `send_rrset_update`, `needs_update`, `update_transport` and `write_rrset`, plus one validated spec-to-`RData` conversion per kind.
+
+### Changed
+- One trait, `RecordKind`, now says what a kind is. Deleted: `DnsRecordType` and `record_impls.rs`, `RecordOperation` and the nine `*RecordOp` structs, the nine `FINALIZER_*_RECORD` constants, and the duplicated accessors (`record_type_name`, `RECORD_TYPE_STR`, `get_status`, `hickory_record_type`, ...).
+  - The rejection-cooldown key is built by one helper, `rejected_write_key`.
+- Adding a record kind is now three source places instead of about 20: its CRD struct, one table row, and its `ReconcilableRecord` impl. Updated: the `add-new-crd` skill and the cerebrum checklist.
+- Every record write is one TSIG-signed UPDATE: delete the RRset, then add every value. BIND9 applies it atomically, so a replaced name never answers NXDOMAIN or a partial RRset.
+  - Before, A/AAAA sent N + 1 messages and the other kinds sent 2.
+  - The 8 hand-written writers collapse onto `write_rrset`.
+  - An UPDATE larger than the EDNS payload goes over TCP; hickory's UDP client has no TCP fallback.
+- The current RRset is compared by value: case and trailing dot are normalised, order does not matter, and the TTL is compared. A CNAME, NS, PTR, MX, SRV or CAA-issuer target that differs from BIND9's form only in case or trailing dot is no longer deleted and recreated on every reconcile.
+- Validation before any network call:
+  - an out-of-range MX priority is now an error; before, it was silently set to 10;
+  - a TXT string over 255 bytes is rejected;
+  - names are parsed before the query.
+- `RECORD_KINDS` follows `DNSRecordKind::all()` (TXT before CNAME, the discovery order), which changes the record replay order. `docs/src/reference/api.md` is regenerated in the same order.
+- `crates/bindy-bind9/Cargo.toml`: `futures` (workspace) is added, to read the UPDATE response stream. `thiserror` is removed from `bindy-api`.
+- `docs/src/security/threat-model.md`: v1.24 full pass, adding M-62 (atomic RRset replacement) and updating M-57.
+- `.github/community/30-code-simplification.md` (new) and `ROADMAPS.md` (row 30) track the simplification PRs.
+
+### Why
+The same nine kinds were described by three overlapping traits and about 20 hand-written lists, and the copies had drifted (the cooldown key). Record writes deleted then re-added the RRset in separate messages, leaving a window of missing data. Text comparison then re-opened that window on every reconcile.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (operator binary; no CRD change, CRDs byte-identical)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-13 18:00] - Zone, instance, cluster, bind9 and bootstrap restructuring
 
 **Author:** Erick Bourgeois

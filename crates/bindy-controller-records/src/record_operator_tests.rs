@@ -48,11 +48,10 @@ mod tests {
 
     // NOTE: The following functions require integration testing with real/mocked Kubernetes API:
     //
-    // DnsRecordType trait implementations:
-    //   - Test KIND, FINALIZER, RECORD_TYPE_STR constants for all record types
-    //   - Test hickory_record_type() returns correct RecordType for each type
-    //   - Test reconcile_record() calls the appropriate reconcile function
-    //   - Test metadata() and status() accessors
+    // (Each kind's constants, finalizer, hickory type and accessors are pinned
+    // in bindy-api `record_kinds_tests`, bindy-controller-sdk
+    // `context_tests::record_kind_pins` and bindy-bind9
+    // `record_push_tests::record_kind_pins`, ADR-0020.)
     //
     // error_policy():
     //   - Tests that error_policy returns correct requeue action

@@ -51,8 +51,8 @@ pub enum ReadyState<'a> {
 /// reason and message, or [`ReadyState::Unknown`] when there is no `Ready`
 /// condition to read.
 #[must_use]
-pub fn ready_state(status: &Option<RecordStatus>) -> ReadyState<'_> {
-    let Some(status) = status.as_ref() else {
+pub fn ready_state(status: Option<&RecordStatus>) -> ReadyState<'_> {
+    let Some(status) = status else {
         return ReadyState::Unknown;
     };
 

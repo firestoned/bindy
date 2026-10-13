@@ -24,10 +24,7 @@
 //! controller, whose store holds only its own namespace's zones.
 
 use crate::constants::KIND_DNS_ZONE;
-use crate::crd::{
-    AAAARecord, ARecord, Bind9Instance, CAARecord, CNAMERecord, DNSZone, MXRecord, NSRecord,
-    PTRRecord, SRVRecord, TXTRecord,
-};
+use crate::crd::{Bind9Instance, DNSZone};
 use crate::dnszone::types::{ZoneOutcome, REASON_DUPLICATE_ZONE, REASON_TRANSFER_PENDING};
 use crate::dnszone::{delete_dnszone, discovery::zones_configured_on_instance, reconcile_dnszone};
 use crate::labels::FINALIZER_DNS_ZONE;
@@ -196,8 +193,8 @@ fn zones_for_endpoints(zones: &[Arc<DNSZone>], endpoints: &Endpoints) -> Vec<Obj
 }
 
 /// Reconcile the zones whose `recordsFrom` selectors match a record of kind
-/// `T` when it changes. One call per record kind replaces the nine identical
-/// closures this controller used to carry.
+/// `T` when it changes. Called once per kind of the record-kind table
+/// (ADR-0020).
 fn watch_records<T: RecordKind>(
     controller: Controller<DNSZone>,
     ctx: &Arc<Context>,
@@ -257,7 +254,7 @@ async fn run_dnszone_controller(ctx: Arc<Context>, target: Option<String>) -> an
         .subscribe::<DNSZone>(target)
         .predicate_filter(primary_predicate(), Default::default());
 
-    let controller = Controller::for_stream(primary, ws.store::<DNSZone>(target))
+    let mut controller = Controller::for_stream(primary, ws.store::<DNSZone>(target))
         .watches_stream(ws.subscribe_all::<Endpoints>(), move |endpoints| {
             zones_for_endpoints(&stores_for_endpoints.dnszones.state(), &endpoints)
         })
@@ -279,15 +276,7 @@ async fn run_dnszone_controller(ctx: Arc<Context>, target: Option<String>) -> an
             ),
             move |zone| zones_contending_for_name(&stores_for_duplicates.dnszones.state(), &zone),
         );
-    let controller = watch_records::<ARecord>(controller, &ctx, target);
-    let controller = watch_records::<AAAARecord>(controller, &ctx, target);
-    let controller = watch_records::<TXTRecord>(controller, &ctx, target);
-    let controller = watch_records::<CNAMERecord>(controller, &ctx, target);
-    let controller = watch_records::<MXRecord>(controller, &ctx, target);
-    let controller = watch_records::<NSRecord>(controller, &ctx, target);
-    let controller = watch_records::<SRVRecord>(controller, &ctx, target);
-    let controller = watch_records::<CAARecord>(controller, &ctx, target);
-    let controller = watch_records::<PTRRecord>(controller, &ctx, target);
+    bindy_api::each_record_kind!(K => controller = watch_records::<K>(controller, &ctx, target));
 
     controller
         .graceful_shutdown_on(ctx.shutdown.wait())

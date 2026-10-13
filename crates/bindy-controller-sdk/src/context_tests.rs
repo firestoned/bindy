@@ -126,16 +126,25 @@ mod tests {
         }
     }
 
+    /// The registry follows the record-kind table, the order zone discovery
+    /// lists kinds in (`DNSRecordKind::all`, TXT before CNAME). The
+    /// hand-written list had CNAME before TXT while claiming discovery order;
+    /// only `records_tagged_with_zone`'s output order followed it (ADR-0020).
     #[test]
     fn record_kinds_cover_all_nine_kinds_in_discovery_order() {
         let kinds: Vec<&str> = RECORD_KINDS.iter().map(|ops| ops.kind).collect();
+        let discovery: Vec<&str> = bindy_api::crd::DNSRecordKind::all()
+            .iter()
+            .map(|kind| kind.as_str())
+            .collect();
+        assert_eq!(kinds, discovery);
         assert_eq!(
             kinds,
             [
                 "ARecord",
                 "AAAARecord",
-                "CNAMERecord",
                 "TXTRecord",
+                "CNAMERecord",
                 "MXRecord",
                 "NSRecord",
                 "SRVRecord",
@@ -452,6 +461,112 @@ mod record_stores_ready_tests {
         assert!(
             !matches!(waited, Ok(Ok(()))),
             "record stores that never listed must not report ready"
+        );
+    }
+}
+
+/// Per-kind facts of [`RecordKind`](crate::context::RecordKind), pinned for
+/// all nine record kinds before the record-kind table generated them
+/// (ADR-0020).
+#[cfg(test)]
+mod record_kind_pins {
+    use crate::context::{RecordKind, RECORD_KINDS};
+    use bindy_api::crd::{
+        AAAARecord, ARecord, CAARecord, CNAMERecord, MXRecord, NSRecord, PTRRecord, SRVRecord,
+        TXTRecord,
+    };
+    use serde_json::json;
+
+    /// The facts every record kind must report, for a record of kind `K`
+    /// whose spec is `spec` and whose status names zone `example.com`.
+    #[allow(deprecated)] // `status.zone` is a plain field to read back
+    fn assert_kind<K: RecordKind>(kind: &str, spec: serde_json::Value, spec_name: &str) {
+        assert_eq!(K::KIND, kind);
+        assert_eq!(K::DNS_KIND.as_str(), kind);
+        let record: K = serde_json::from_value(json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": kind,
+            "metadata": {"name": "rec", "namespace": "team"},
+            "spec": spec,
+            "status": {"zone": "example.com"},
+        }))
+        .expect("valid fixture");
+        assert_eq!(record.spec_name(), spec_name, "{kind} spec name");
+        assert_eq!(record.ttl(), Some(300), "{kind} ttl");
+        assert_eq!(
+            record.record_status().and_then(|s| s.zone.as_deref()),
+            Some("example.com"),
+            "{kind} status"
+        );
+    }
+
+    #[test]
+    fn every_kind_reports_its_kind_spec_name_and_status() {
+        assert_kind::<ARecord>(
+            "ARecord",
+            json!({"name": "www", "ipv4Addresses": ["192.0.2.1"], "ttl": 300}),
+            "www",
+        );
+        assert_kind::<AAAARecord>(
+            "AAAARecord",
+            json!({"name": "v6", "ipv6Addresses": ["2001:db8::1"], "ttl": 300}),
+            "v6",
+        );
+        assert_kind::<TXTRecord>(
+            "TXTRecord",
+            json!({"name": "@", "text": ["v=spf1 -all"], "ttl": 300}),
+            "@",
+        );
+        assert_kind::<CNAMERecord>(
+            "CNAMERecord",
+            json!({"name": "alias", "target": "www.example.com.", "ttl": 300}),
+            "alias",
+        );
+        assert_kind::<MXRecord>(
+            "MXRecord",
+            json!({"name": "@", "priority": 10, "mailServer": "mail.example.com.", "ttl": 300}),
+            "@",
+        );
+        assert_kind::<NSRecord>(
+            "NSRecord",
+            json!({"name": "sub", "nameserver": "ns1.sub.example.com.", "ttl": 300}),
+            "sub",
+        );
+        assert_kind::<SRVRecord>(
+            "SRVRecord",
+            json!({"name": "_sip._tcp", "priority": 10, "weight": 20, "port": 5060,
+                   "target": "sip.example.com.", "ttl": 300}),
+            "_sip._tcp",
+        );
+        assert_kind::<CAARecord>(
+            "CAARecord",
+            json!({"name": "@", "flags": 0, "tag": "issue", "value": "letsencrypt.org", "ttl": 300}),
+            "@",
+        );
+        assert_kind::<PTRRecord>(
+            "PTRRecord",
+            json!({"name": "10", "target": "www.example.com.", "ttl": 300}),
+            "10",
+        );
+    }
+
+    #[test]
+    fn registry_holds_each_kind_once() {
+        let mut kinds: Vec<&str> = RECORD_KINDS.iter().map(|ops| ops.kind).collect();
+        kinds.sort_unstable();
+        assert_eq!(
+            kinds,
+            [
+                "AAAARecord",
+                "ARecord",
+                "CAARecord",
+                "CNAMERecord",
+                "MXRecord",
+                "NSRecord",
+                "PTRRecord",
+                "SRVRecord",
+                "TXTRecord"
+            ]
         );
     }
 }

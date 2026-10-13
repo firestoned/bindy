@@ -1,14 +1,29 @@
 # Threat Model - Bindy DNS Operator
 
-**Version:** 1.23
-**Last Updated:** 2026-10-12
+**Version:** 1.24
+**Last Updated:** 2026-10-13
 **Owner:** Security Team
 **Compliance:** SOX 404, PCI-DSS 6.4.1, Basel III Cyber Risk
 
-> Last full pass 2026-10-12, against ADR-0001 ... ADR-0019 (ADR-0006 as amended;
+> Last full pass 2026-10-13, against ADR-0001 ... ADR-0021 (ADR-0006 as amended;
 > ADR-0009 as amended 2026-10-05, fully implemented; ADR-0013 stages 1 to 3,
 > ADR-0014, ADR-0015, ADR-0016, ADR-0017 as amended and corrected 2026-10-07
-> and by ADR-0019, ADR-0018 as amended 2026-10-07 and ADR-0019 implemented).
+> and by ADR-0019, ADR-0018 as amended 2026-10-07, ADR-0019, ADR-0020 and
+> ADR-0021 implemented).
+>
+> **Revision note (v1.24):** Full pass for ADR-0020 (record kinds declared
+> once) and ADR-0021 (an RRset replaced in one DNS UPDATE). ADR-0020 changes
+> no component, boundary, RBAC grant or data: the same nine kinds, finalizers
+> and CRDs, now generated from one table. ADR-0021 narrows T1: a record write
+> used to delete the RRset and append each value in its own message, so the
+> name answered NXDOMAIN or a partial RRset between them, and a CNAME, NS,
+> PTR, MX or SRV target differing only in case or trailing dot was rewritten
+> on every reconcile, reopening that window. Each RRset is now replaced in one
+> TSIG-signed UPDATE that BIND9 applies atomically (RFC 2136 section 3.7),
+> values are validated before any network call, and the RRset is compared by
+> value (**M-62**). An UPDATE too large for UDP goes over TCP on the DNS port
+> the pod network policy already allows. No new actor, asset, trust boundary
+> or dependency; other sections re-walked, unchanged.
 >
 > **Revision note (v1.23):** `bindy bootstrap mc` no longer prints the
 > remote kubeconfig Secret, and with it the ServiceAccount token, to stdout:
@@ -527,6 +542,9 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
      workspace (ADR-0009), one crate per controller over a shared controller SDK
    - Watches custom resources (Bind9Cluster, Bind9Instance, DNSZone, DNS records)
      through one shared watch and cache per kind and namespace target
+   - Writes DNS records as TSIG-signed RFC 2136 UPDATEs, one per RRset, to each
+     primary pod's `named` on container port 5353 (UDP, or TCP when the UPDATE
+     exceeds the EDNS payload; ADR-0021, M-62)
    - Leader-elected; controllers start only after the shared caches finish their
      first list (M-56); SIGTERM or loss of the lease drains in-flight reconciles,
      and a SIGTERM while waiting for the lease or the caches exits cleanly
@@ -883,11 +901,16 @@ attributable, not prevented)
   confirmed gone from every primary endpoint, so a failed finalizer cleanup is
   retried instead of forgotten; and a zone replay skips a record that is gone
   or being deleted, so it cannot re-publish data the finalizer just removed
-- ✅ **Failures no longer count as success** (M-56, M-57, 2026-10-11): a record
+- ✅ **A record write is atomic** (M-62, ADR-0021, 2026-10-13): each RRset is
+  replaced in one TSIG-signed UPDATE, so a resolver never sees the name
+  missing or half written during a reconcile, and unchanged records are not
+  rewritten
+- ✅ **Failures no longer count as success** (M-56, M-57, M-62, 2026-10-11): a record
   finalizer keeps its finalizer when the zone or a primary-role lookup fails,
   a primary whose role cannot be read fails the write instead of being
-  skipped, an invalid A/AAAA entry fails before the live RRset is touched,
-  and a refused RRset delete fails the write; Scout prunes the records of
+  skipped, every record kind's values are validated before the live RRset is
+  touched, and an RRset replacement answered with anything but `NOERROR`
+  fails the write (M-57, M-62); Scout prunes the records of
   removed hosts and validates TCPRoute record names (M-59)
 - ⚠️ **Out-of-band changes inside BIND9 are not reverted on a timer**
   (ADR-0016, 2026-10-06, accepted risk 13): an attacker holding an
@@ -2108,11 +2131,12 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-54 | **Owned container env replaced whole** (2026-10-07): the bindcar container's `env` in the Deployment patch carries `$patch: replace`, like the volumes, init containers and readiness gates, so a variable removed from `bindcarConfig` leaves the pods (a strategic merge kept removed entries forever and the drift check sent a no-op patch on every operator start) | T3 (a setting removed from the spec, possibly for security reasons, stays in effect) | ✅ `crates/bindy-controller-instance/src/bind9instance/resources.rs` (`build_deployment_patch`), `resources_tests.rs` |
 | M-55 | **Every pod that holds a zone is reached** (2026-10-08, ADR-0015 decision 7): `for_each_instance_endpoint_with_policy` fails, whatever the policy, when a pod that holds the instance's zones (live, admitted by the zones-loaded gate, instance not deleted: `coverage_pod_ips`) was not reached or its operation failed; record writes and deletions (finalizer, rename, unselected), the zone stale-record pass and zone deletion (primaries and secondaries) go through it; `SkipUnavailable` skips only an instance whose data is gone; the record finalizer allows deletion when the zone is gone or being deleted; discovery deletes a deleted record's data itself and keeps tracking it until confirmed; a pending deletion makes the zone `Degraded` (`RecordDeletionPending`) | T1 (a removed record stays served from a restarted pod), truthful status | ✅ `crates/bindy-bind9/src/instances.rs` (`coverage_pod_ips`, `for_each_instance_endpoint_with_policy`), `crates/bindy-bind9/src/record_push.rs`, `crates/bindy-controller-records/src/records/mod.rs`, `crates/bindy-controller-zone/src/dnszone.rs` (`delete_dnszone`), `dnszone/discovery.rs`, `dnszone/status_helpers.rs`; tests `instances_tests.rs` (9), `transfer_peers_tests.rs` (3); chaos step 15 |
 | M-56 | **Failures stop the operation instead of proceeding on partial data** (2026-10-11): a record finalizer keeps the finalizer and retries when the zone or a role lookup fails (it lets go only when the record has no `zoneRef`, or the zone is gone, being deleted, selects no instances or has no primaries); the instance finalizer treats only 404 as deleted and deletes only the RNDC Secret the operator generated (never a `secretRef` Secret, `generated_rndc_secret`); a primary or secondary whose role cannot be read fails the filter instead of dropping out of the target set; a failed parent `Bind9Cluster` / `ClusterBind9Provider` read fails the reconcile instead of rolling pods to an instance-only spec; a paginated LIST that hits a repeated token, an empty page with a token or the page cap is an error, not a partial list; a failed role lookup never counts as zero expected instances (which could report `Ready=True`); no controller starts before every watch cache (provider, cluster, instance, Deployment, Endpoints, Pod, DNSZone and the nine record kinds) has listed once, so the zones-loaded gate never replays an empty record list onto a new pod; an owner without a UID is an error, not an empty `ownerReference` | T1 (a removed record stays served; a primary silently not updated), truthful status, D-class correctness under API failure | ✅ `crates/bindy-controller-records/src/records/mod.rs` (`zone_lookup_step`, `primaries_step`), `crates/bindy-controller-instance/src/bind9instance/{resources,cluster_helpers}.rs` (`deleted_or_absent`, `parent_or_none`), `crates/bindy-bind9/src/primary.rs` (`role_from_get_result`, `try_filter_instances_by_role_cached`), `crates/bindy-controller-zone/src/dnszone/{secondary,status_helpers}.rs`, `crates/bindy-controller-sdk/src/{pagination,watch,context}.rs` (`next_page_step`, `wait_until_ready`), `crates/bindy/src/main.rs` (`acquire_unless_shutdown`), `crates/bindy-controller-instance/src/bind9instance/mod.rs` (`fetch_cluster_info` fallible), `crates/bindy-bind9/src/bind9_resources/` (`controller_owner_reference`) |
-| M-57 | **A record write validates before it replaces** (2026-10-11): A/AAAA addresses are parsed before the RRset is touched, so an invalid entry fails the write with the live RRset intact; the delete of the old RRset is checked (a transport error or any response other than `NOERROR`, `NXDOMAIN`, `NXRRSET` fails the write) for A, AAAA, CAA, MX, NS, PTR, SRV and TXT; CNAME is written with a single append | T1 (a partly rebuilt RRset; new data appended to stale data while the write reports success) | ✅ `crates/bindy-bind9/src/bind9/records/{a,mod}.rs` (`parse_ipv4_addresses`, `delete_rrset_for_replace`) and the other record writers |
+| M-57 | **A record write validates before it replaces** (2026-10-11; superseded in mechanism by M-62, 2026-10-13): every kind's values are parsed and validated before any query or update, so an invalid entry fails the write with the live RRset intact; since ADR-0021 the old RRset's delete and the new values travel in one UPDATE, and any response other than `NOERROR` fails the write | T1 (a partly rebuilt RRset; new data appended to stale data while the write reports success) | ✅ `crates/bindy-bind9/src/bind9/records/` (per-kind `*_rdata` conversions, `check_replace_response`) |
 | M-58 | **The operator uses the RNDC key the pods hold** (2026-10-11): the key loader reads the Secret name from the instance Deployment's `rndc-key` volume (`rndcKey.secretRef`, an inline `rndcKey.secret` name, or the default), and the writer, the drift check and the Deployment share one name helper; the instance Service follows the merged `bindcarConfig` (instance, cluster, provider). Anyone who can patch the Deployment could already mount that Secret into the pod, so reading the name from it adds no read path | I1 (no fallback Secret read outside the configured one), availability of dynamic updates | ✅ `crates/bindy-bind9/src/bind9_resources/` (`rndc_secret_name`, `rndc_secret_name_from_deployment`, `instance_configmap_name`), `crates/bindy-bind9/src/instances.rs` (`effective_rndc_secret_name`); uses the operator's existing `deployments: get` |
 | M-59 | **Scout keeps published records in step with the source** (2026-10-11): the TCPRoute record-name override goes through the same P2-7 validation as every other source kind; an `Ingress`/`HTTPRoute`/`TLSRoute` host that was removed or no longer matches the zone has its record pruned; a `Service` that stops being a `LoadBalancer` releases its records and finalizer; `Service` records left by an old `--cluster-name` are cleaned up; `bindy bootstrap scout --namespace X` points the scout at `X`, where its writer Role is | T1 (tenant-controlled record names; stale records served after the source changed), least privilege (the scout writes where its RBAC is) | ✅ `crates/bindy-scout/src/scout.rs` (`tcproute_record_name`, `arecords_to_prune`, `prune_unapplied_arecords`, `service_publishes_dns`, `delete_stale_cluster_service_arecords`), `crates/bindy-bootstrap/src/bootstrap.rs` (`SCOUT_TARGET_NAMESPACE_ENV`) |
 | M-60 | **bindcar transport fails closed** (2026-10-11): the TLS CA bundle is read only from the instance's namespace (a manager without one refuses TLS instead of reading `default`), and a bindcar HTTP client that cannot be built with its timeouts fails every call instead of falling back to a client without timeouts | Spoofing of the bindcar endpoint (a CA bundle planted in `default` trusted for TLS, ADR-0004), availability (an untimed bindcar request hangs a reconcile; D5 is the API-server analogue) | ✅ `crates/bindy-bind9/src/bind9/mod.rs` (`new_for_instance`, `read_ca_bundle`, `build_http_client_with_timeouts`), `crates/bindy-bind9/src/context.rs` |
 | M-61 | **The multi-cluster kubeconfig Secret is written to a private file** (2026-10-12): `bindy bootstrap mc` writes the `bindy.firestoned.io/remote-kubeconfig` Secret, which carries the remote ServiceAccount token, to a file created with mode `0600` (`--output`, default `<service-account>-kubeconfig.yaml`); an existing file is restricted to `0600` before it is truncated; the Secret is never printed (`--output -` is refused). Status messages stay on stderr | I1 (a token left in terminal scrollback, a CI log or a shared session recording), CodeQL `rust/cleartext-logging` | ✅ `crates/bindy-bootstrap/src/bootstrap.rs` (`mc_output_path`, `write_private_file`), `crates/bindy/src/cli.rs` (`--output`); tests `bootstrap_tests.rs` (`mc_output_tests`, 5) |
+| M-62 | **An RRset is replaced in one atomic DNS UPDATE** (2026-10-13, ADR-0021): each record write is one TSIG-signed UPDATE (delete the RRset, then add every value), which BIND9 applies as a unit, so a replaced name never answers NXDOMAIN or a partial RRset; every kind's values are validated before any network call (an out-of-range MX priority is now rejected, not coerced); the current RRset is compared with the desired one by value (names normalised for case and trailing dot, order-insensitive, TTL compared), so an unchanged record sends nothing; an UPDATE larger than the EDNS payload is sent over TCP instead of an oversized UDP datagram; the compare before the write reads the RRset with an unsigned query, only the UPDATE is TSIG-signed (a spoofed answer can at most make the operator skip a write, not inject data) | T1 (DNS tampering: no window of missing or partial data during a write; no churn from text comparison) | ✅ `crates/bindy-bind9/src/bind9/records/mod.rs` (`replace_rrset_message`, `send_rrset_update`, `needs_update`, `update_transport`, `write_rrset`) and the per-kind conversions in `records/*.rs` |
 | M-25 | **Scout Secret RBAC scoped** (fixed 2026-07-19, same day as this finding's discovery): removed the cluster-wide `secrets: get` `PolicyRule` from the `bindy-scout` `ClusterRole` entirely. Replaced with a namespaced, `resourceNames`-restricted Role (`bindy-scout-secrets-reader`) scoped to exactly the one Phase 2 kubeconfig Secret, applied only when `--remote-secret` is configured. Same-cluster-only deployments (the default) now get zero Secret access. See I4/E4/Scenario 6 for the full before/after. | I4, E4, T4 (Secret-read component), Scenario 6 | ✅ RBAC: **was the highest-priority open item in v1.1; closed same-day** |
 
 ---
@@ -2164,7 +2188,7 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 
 ### Medium Residual Risks
 
-1. **DNS Tampering (T1)** - Substantially reduced by RBAC and, as of 2026-07-01, an 8-policy `ValidatingAdmissionPolicy` suite (M-24) covering ACLs, zone names, RNDC strictness, pod shape, and record values. DNSSEC signing (M-14) shipped 2026-09-27 as the in-transit tampering defense, opt-in, so the residual gap is deployment coverage (unsigned zones) and DS publication in parent zones, not a missing capability. Since 2026-10-11 a record write or deletion no longer reports success on partial data (M-55, M-56, M-57).
+1. **DNS Tampering (T1)** - Substantially reduced by RBAC and, as of 2026-07-01, an 8-policy `ValidatingAdmissionPolicy` suite (M-24) covering ACLs, zone names, RNDC strictness, pod shape, and record values. DNSSEC signing (M-14) shipped 2026-09-27 as the in-transit tampering defense, opt-in, so the residual gap is deployment coverage (unsigned zones) and DS publication in parent zones, not a missing capability. Since 2026-10-11 a record write or deletion no longer reports success on partial data (M-55, M-56, M-57). Since 2026-10-13 a record write replaces its RRset in one atomic UPDATE, so a reconcile opens no window of missing or partial data (M-62).
 
 2. **Operator Resource Exhaustion (D2)** - Risk reduced by resource limits, client-side API rate limiting (M-31), the removal of self-triggered and out-of-band reconcile work (M-41), and of the periodic resync (M-48), so steady-state cost no longer grows with object count; a per-namespace CR quota (admission) is still needed.
 
@@ -2273,7 +2297,7 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 | **Data Protection** | Secrets encrypted, AXFR restricted, DNSSEC zone signing (opt-in, M-14/ADR-0006), RNDC key read from the mounted Secret only (M-58), bindcar TLS CA bundle read only from the instance's namespace (M-60) | TSIG for AXFR; DNSSEC-by-default | MEDIUM |
 | **Supply Chain** | Signed commits/images, SLSA Build L3 provenance for all release artifacts (M-33), NTIA-gated SBOM attestations (M-34), anchored signer identity (M-35), gated per-release crypto inventory (M-39), `--locked` release builds, vuln scanning | Required approving reviews (M-36); operand image digest pinning (M-15); reproducibility check (M-37); hybrid PQ key exchange (M-40); revisit Dependabot auto-merge human-review gap (M-29) | LOW-MEDIUM (no required review on `main`, see S3; automated auto-merge removed a manual checkpoint, see E3; classical key exchange is HNDL-exposed, see accepted risk 8) |
 | **Monitoring** | Kubernetes audit logs, vuln scanning | Audit retention policy, secret access trail | MEDIUM |
-| **Resilience** | Rate limiting, fail-fast on API errors and partial lists with a startup cache gate (M-56), validated RRset replacement (M-57), per-request API deadline (M-45), event-driven reconciliation with no periodic resync (M-48), zones-loaded readiness gate so a rollout never admits an empty BIND9 pod (M-49), handover at the start of termination (M-50), staggered rollouts across instances sharing a zone or cluster (M-51), resource limits | Edge DDoS protection, HPA | MEDIUM |
+| **Resilience** | Rate limiting, fail-fast on API errors and partial lists with a startup cache gate (M-56), validated, atomic RRset replacement in one UPDATE (M-57, M-62), per-request API deadline (M-45), event-driven reconciliation with no periodic resync (M-48), zones-loaded readiness gate so a rollout never admits an empty BIND9 pod (M-49), handover at the start of termination (M-50), staggered rollouts across instances sharing a zone or cluster (M-51), resource limits | Edge DDoS protection, HPA | MEDIUM |
 | **Container Security** | Non-root, read-only FS, Pod Security Standards, unprivileged DNS port + zero added capabilities (M-23) | Network policies (reference manifest exists, not auto-applied, M-17) | LOW |
 
 ---
@@ -2287,6 +2311,6 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 
 ---
 
-**Last Updated:** 2026-10-12
-**Next Review:** 2027-01-12 (Quarterly)
+**Last Updated:** 2026-10-13
+**Next Review:** 2027-01-13 (Quarterly)
 **Approved By:** Security Team *(pending re-approval for v1.1: this revision has not yet been formally reviewed/signed off; see the revision note at the top of this document)*

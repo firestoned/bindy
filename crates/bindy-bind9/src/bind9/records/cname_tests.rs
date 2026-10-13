@@ -6,7 +6,9 @@
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use hickory_proto::rr::rdata;
+    use crate::bind9::records::needs_update;
+    use hickory_proto::rr::{rdata, Name, RData, Record};
+    use std::str::FromStr;
 
     const TEST_TTL: u32 = 300;
     const OTHER_TTL: u32 = 600;
@@ -17,35 +19,59 @@ mod tests {
         Record::from_rdata(name, ttl, RData::CNAME(rdata::CNAME(target_name)))
     }
 
-    // ========== compare_cname_rrset ==========
+    // ========== cname_rdata ==========
 
     #[test]
-    fn test_compare_cname_rrset_matches_same_target_and_ttl() {
-        let existing = vec![make_cname_record("target.example.com.", TEST_TTL)];
-        assert!(compare_cname_rrset(
-            &existing,
-            "target.example.com.",
-            TEST_TTL
-        ));
+    fn test_cname_rdata_is_one_value() {
+        let rdata = cname_rdata("target.example.com.").expect("valid target");
+        assert_eq!(
+            rdata,
+            vec![RData::CNAME(rdata::CNAME(
+                Name::from_str("target.example.com.").expect("valid")
+            ))]
+        );
     }
 
     #[test]
-    fn test_compare_cname_rrset_detects_target_mismatch() {
+    fn test_cname_rdata_rejects_a_bad_name() {
+        let err = cname_rdata("bad..name").expect_err("empty label");
+        assert!(format!("{err:#}").contains("bad..name"), "{err:#}");
+    }
+
+    // ========== value comparison through needs_update ==========
+
+    #[test]
+    fn test_cname_same_target_and_ttl_need_no_update() {
         let existing = vec![make_cname_record("target.example.com.", TEST_TTL)];
-        assert!(!compare_cname_rrset(
-            &existing,
-            "other.example.com.",
-            TEST_TTL
-        ));
+        let desired = cname_rdata("target.example.com.").expect("valid");
+        assert!(!needs_update(&existing, &desired, TEST_TTL));
+    }
+
+    /// The reconcile loop ADR-0021 fixes: case and trailing dot only.
+    #[test]
+    fn test_cname_target_differing_in_case_or_trailing_dot_needs_no_update() {
+        let existing = vec![make_cname_record("target.example.com.", TEST_TTL)];
+        for spec in [
+            "target.example.com",
+            "TARGET.example.com.",
+            "Target.Example.Com",
+        ] {
+            let desired = cname_rdata(spec).expect("valid");
+            assert!(!needs_update(&existing, &desired, TEST_TTL), "{spec}");
+        }
     }
 
     #[test]
-    fn test_compare_cname_rrset_ttl_only_change_triggers_update() {
+    fn test_cname_changed_target_needs_update() {
         let existing = vec![make_cname_record("target.example.com.", TEST_TTL)];
-        assert!(!compare_cname_rrset(
-            &existing,
-            "target.example.com.",
-            OTHER_TTL
-        ));
+        let desired = cname_rdata("other.example.com.").expect("valid");
+        assert!(needs_update(&existing, &desired, TEST_TTL));
+    }
+
+    #[test]
+    fn test_cname_ttl_only_change_needs_update() {
+        let existing = vec![make_cname_record("target.example.com.", TEST_TTL)];
+        let desired = cname_rdata("target.example.com.").expect("valid");
+        assert!(needs_update(&existing, &desired, OTHER_TTL));
     }
 }

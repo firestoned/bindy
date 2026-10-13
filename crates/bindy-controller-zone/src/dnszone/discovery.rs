@@ -385,33 +385,10 @@ pub(crate) async fn discover_selected_records_detailed(
     for record_source in records_from {
         let selector = &record_source.selector;
 
-        refs.extend(
-            discover_records_generic::<crate::crd::ARecord>(client, dnszone, selector).await?,
-        );
-        refs.extend(
-            discover_records_generic::<crate::crd::AAAARecord>(client, dnszone, selector).await?,
-        );
-        refs.extend(
-            discover_records_generic::<crate::crd::TXTRecord>(client, dnszone, selector).await?,
-        );
-        refs.extend(
-            discover_records_generic::<crate::crd::CNAMERecord>(client, dnszone, selector).await?,
-        );
-        refs.extend(
-            discover_records_generic::<crate::crd::MXRecord>(client, dnszone, selector).await?,
-        );
-        refs.extend(
-            discover_records_generic::<crate::crd::NSRecord>(client, dnszone, selector).await?,
-        );
-        refs.extend(
-            discover_records_generic::<crate::crd::SRVRecord>(client, dnszone, selector).await?,
-        );
-        refs.extend(
-            discover_records_generic::<crate::crd::CAARecord>(client, dnszone, selector).await?,
-        );
-        refs.extend(
-            discover_records_generic::<crate::crd::PTRRecord>(client, dnszone, selector).await?,
-        );
+        // Every kind, in the record-kind table's order (ADR-0020)
+        bindy_api::each_record_kind!(K => refs.extend(
+            discover_records_generic::<K>(client, dnszone, selector).await?,
+        ));
     }
     Ok(refs)
 }
@@ -779,7 +756,7 @@ async fn untag_record_from_zone(
 
 /// Generic helper function to discover DNS records matching a label selector.
 ///
-/// One function for all nine record kinds: it works for any record type
+/// One function for every record kind: it works for any record type
 /// implementing [`bindy_controller_sdk::context::RecordKind`].
 ///
 /// # Type Parameters

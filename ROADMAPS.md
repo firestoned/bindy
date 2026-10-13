@@ -41,6 +41,7 @@ Statuses were verified against `fix-idempotency` @ `648ff7a` on 2026-09-10.
 | [04](.github/community/04-remove-clusterref-use-ownerreference.md) | Remove `clusterRef`, use `ownerReference` | ⛔ | `pub cluster_ref` still in `src/crd.rs` at `:994`, `:3679`, `:3839`. Breaking CRD change; needs an ADR first |
 | [05](.github/community/05-kubernetes-api-rate-limiting.md) | Kubernetes API rate limiting | ✅ | Complete 2026-09-27 (ADR-0005): tower `RateLimitLayer` client (20 QPS/30 burst, env-tunable), pagination + retry applied to all call sites, `kube_api_*` Prometheus metrics. Scale validation → 18 |
 | [06](.github/community/06-kube-condition-derive-macro.md) | `kube-condition` derive macro | ⛔ | Not a dependency; conditions are hand-built in `src/reconcilers/status.rs`. See 08 for what shipped instead |
+| [30](.github/community/30-code-simplification.md) | Code simplification and fail-fast review | 🔶 | PRs 1 to 4 merged 2026-10-11 to 13 (#544, #545, #546, #548): 16 fail-fast fixes, about 3,000 dead lines removed, shared SDK helpers, zone/instance/cluster/bootstrap restructured; non-test Rust 50,846 to 48,285. PR 5 (ADR-0020, ADR-0021) in review; PR 6 (generic Scout reconciler) needs an ADR |
 
 ### Features
 

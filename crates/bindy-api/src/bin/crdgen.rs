@@ -11,11 +11,8 @@
 //!
 //! Generated files will be written to deploy/operator/crds/ with proper headers.
 
-use bindy_api::crd::{
-    AAAARecord, ARecord, Bind9Cluster, Bind9Instance, CAARecord, CNAMERecord, ClusterBind9Provider,
-    DNSZone, MXRecord, NSRecord, PTRRecord, SRVRecord, TXTRecord,
-};
-use kube::CustomResourceExt;
+use bindy_api::crd::{Bind9Cluster, Bind9Instance, ClusterBind9Provider, DNSZone};
+use kube::{CustomResourceExt, Resource};
 use serde_json::Value;
 use std::fs;
 use std::path::Path;
@@ -36,20 +33,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Generating CRD YAML files from src/crd.rs...");
 
-    // Generate each CRD
-    generate_crd::<ARecord>("arecords.crd.yaml", output_dir)?;
-    generate_crd::<AAAARecord>("aaaarecords.crd.yaml", output_dir)?;
-    generate_crd::<CNAMERecord>("cnamerecords.crd.yaml", output_dir)?;
-    generate_crd::<MXRecord>("mxrecords.crd.yaml", output_dir)?;
-    generate_crd::<NSRecord>("nsrecords.crd.yaml", output_dir)?;
-    generate_crd::<TXTRecord>("txtrecords.crd.yaml", output_dir)?;
-    generate_crd::<SRVRecord>("srvrecords.crd.yaml", output_dir)?;
-    generate_crd::<CAARecord>("caarecords.crd.yaml", output_dir)?;
-    generate_crd::<PTRRecord>("ptrrecords.crd.yaml", output_dir)?;
-    generate_crd::<DNSZone>("dnszones.crd.yaml", output_dir)?;
-    generate_crd::<Bind9Cluster>("bind9clusters.crd.yaml", output_dir)?;
-    generate_crd::<ClusterBind9Provider>("clusterbind9providers.crd.yaml", output_dir)?;
-    generate_crd::<Bind9Instance>("bind9instances.crd.yaml", output_dir)?;
+    // Every record kind, from the record-kind table (ADR-0020), then the
+    // other CRDs. Each lands in `<plural>.crd.yaml`.
+    bindy_api::each_record_kind!(K => generate_crd::<K>(output_dir)?);
+    generate_crd::<DNSZone>(output_dir)?;
+    generate_crd::<Bind9Cluster>(output_dir)?;
+    generate_crd::<ClusterBind9Provider>(output_dir)?;
+    generate_crd::<Bind9Instance>(output_dir)?;
 
     println!("✓ Successfully generated CRD YAML files in deploy/operator/crds/");
     println!("\nNext steps:");
@@ -63,10 +53,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn generate_crd<T>(filename: &str, output_dir: &Path) -> Result<(), Box<dyn std::error::Error>>
+/// Write `T`'s CRD to `<output_dir>/<plural>.crd.yaml`.
+fn generate_crd<T>(output_dir: &Path) -> Result<(), Box<dyn std::error::Error>>
 where
-    T: CustomResourceExt,
+    T: CustomResourceExt + Resource<DynamicType = ()>,
 {
+    let filename = format!("{}.crd.yaml", T::plural(&()));
     let crd = T::crd();
 
     // Convert CRD to JSON for manipulation
@@ -86,7 +78,7 @@ where
     // Add copyright header
     let content = format!("{COPYRIGHT_HEADER}{yaml}");
 
-    let output_path = output_dir.join(filename);
+    let output_path = output_dir.join(&filename);
     fs::write(&output_path, content)?;
 
     println!("  ✓ Generated {filename}");

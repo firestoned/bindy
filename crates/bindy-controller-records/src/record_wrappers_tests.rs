@@ -177,7 +177,7 @@ mod tests {
         )]));
 
         // Act
-        let state = ready_state(&status);
+        let state = ready_state(status.as_ref());
 
         // Assert
         assert_eq!(state, ReadyState::Ready);
@@ -192,7 +192,7 @@ mod tests {
         let status = Some(create_status(vec![condition]));
 
         // Act
-        let state = ready_state(&status);
+        let state = ready_state(status.as_ref());
 
         // Assert
         assert_eq!(
@@ -214,7 +214,7 @@ mod tests {
         let status = Some(create_status(vec![condition]));
 
         // Act
-        let state = ready_state(&status);
+        let state = ready_state(status.as_ref());
 
         // Assert
         assert_eq!(
@@ -235,17 +235,17 @@ mod tests {
         )]));
 
         // Act / Assert
-        assert_eq!(ready_state(&status), ReadyState::Unknown);
+        assert_eq!(ready_state(status.as_ref()), ReadyState::Unknown);
     }
 
     #[test]
     fn test_ready_state_is_unknown_for_empty_conditions_and_no_status() {
         // Arrange / Act / Assert
         assert_eq!(
-            ready_state(&Some(create_status(vec![]))),
+            ready_state(Some(&create_status(vec![]))),
             ReadyState::Unknown
         );
-        assert_eq!(ready_state(&None), ReadyState::Unknown);
+        assert_eq!(ready_state(None), ReadyState::Unknown);
     }
 
     #[test]
@@ -258,6 +258,6 @@ mod tests {
         ]));
 
         // Act / Assert
-        assert_eq!(ready_state(&status), ReadyState::Ready);
+        assert_eq!(ready_state(status.as_ref()), ReadyState::Ready);
     }
 }

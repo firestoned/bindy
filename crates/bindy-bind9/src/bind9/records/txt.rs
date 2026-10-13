@@ -4,55 +4,40 @@
 //! TXT record management.
 
 use super::super::types::RndcKeyData;
-use super::{
-    build_authenticated_client, build_record_fqdn, delete_rrset_for_replace, effective_record_ttl,
-    rrset_ttl_matches, should_update_record,
-};
-use anyhow::Result;
-use hickory_net::client::ClientHandle;
-use hickory_proto::op::ResponseCode;
-use hickory_proto::rr::{rdata, DNSClass, Name, RData, Record, RecordType};
-use std::str::FromStr;
-use tracing::debug;
+use super::{effective_record_ttl, write_rrset};
+use anyhow::{anyhow, Result};
+use hickory_proto::rr::{rdata, RData, RecordType};
 
-/// Compare existing DNS `RRset` with the desired TXT strings and TTL.
-///
-/// # Arguments
-///
-/// * `existing_records` - Records currently in DNS (from query)
-/// * `texts` - Desired TXT strings from the spec
-/// * `desired_ttl` - Effective TTL from the spec
-///
-/// # Returns
-///
-/// `true` if the existing `RRset` matches the desired state exactly (no changes
-/// needed), `false` if an update is required (rdata or TTL differ).
-fn compare_txt_rrset(existing_records: &[Record], texts: &[String], desired_ttl: u32) -> bool {
-    if existing_records.len() != 1 {
-        return false;
-    }
-    if !rrset_ttl_matches(existing_records, desired_ttl) {
-        return false;
-    }
-    let RData::TXT(existing_txt) = &existing_records[0].data else {
-        return false;
-    };
-    let existing_texts: Vec<String> = existing_txt
-        .txt_data
-        .iter()
-        .map(|bytes| String::from_utf8_lossy(bytes).to_string())
-        .collect();
-    existing_texts == texts
-}
+/// The longest character-string a TXT record may carry (RFC 1035 3.3).
+const MAX_TXT_STRING_BYTES: usize = 255;
 
-/// Add a TXT record using dynamic DNS update (RFC 2136) with `RRset` synchronization.
-///
-/// If the existing `RRset` differs from the desired state, the entire TXT
-/// `RRset` for the name is deleted and recreated so stale rdata never lingers.
+/// Convert a `TXTRecord` spec's strings to the TXT `RRset` value: ONE TXT
+/// record carrying every string, in order (as the writer always did).
 ///
 /// # Errors
 ///
-/// Returns an error if the DNS update fails or the server rejects it.
+/// Returns an error if a string is longer than 255 bytes, which the wire
+/// format cannot encode.
+pub(crate) fn txt_rdata(texts: &[String]) -> Result<Vec<RData>> {
+    if let Some(long) = texts.iter().find(|t| t.len() > MAX_TXT_STRING_BYTES) {
+        return Err(anyhow!(
+            "TXT string of {} bytes exceeds the {MAX_TXT_STRING_BYTES}-byte limit",
+            long.len()
+        ));
+    }
+    Ok(vec![RData::TXT(rdata::TXT::new(texts.to_vec()))])
+}
+
+/// Write the TXT `RRset` for a name using dynamic DNS update (RFC 2136).
+///
+/// The strings are validated before any DNS traffic, compared with the live
+/// `RRset` by value, and if they differ the `RRset` is replaced in one
+/// UPDATE (ADR-0021), so stale rdata never lingers.
+///
+/// # Errors
+///
+/// Returns an error if a string is too long (nothing is sent), the DNS
+/// update fails, or the server rejects it.
 pub async fn add_txt_record(
     zone_name: &str,
     name: &str,
@@ -61,54 +46,17 @@ pub async fn add_txt_record(
     server: &str,
     key_data: &RndcKeyData,
 ) -> Result<()> {
-    let ttl_value = effective_record_ttl(ttl);
-    let should_update = should_update_record(
+    let desired = txt_rdata(texts)?;
+    write_rrset(
         zone_name,
         name,
         RecordType::TXT,
-        "TXT",
+        effective_record_ttl(ttl),
+        desired,
         server,
-        |existing_records| compare_txt_rrset(existing_records, texts, ttl_value),
+        key_data,
     )
-    .await?;
-
-    if !should_update {
-        return Ok(());
-    }
-
-    let zone = Name::from_str(zone_name)?;
-    let fqdn = build_record_fqdn(zone_name, name)?;
-
-    let mut record = Record::from_rdata(
-        fqdn.clone(),
-        ttl_value,
-        RData::TXT(rdata::TXT::new(texts.to_vec())),
-    );
-    record.dns_class = DNSClass::IN;
-
-    debug!(
-        "Adding TXT record: {} -> {:?} (TTL: {})",
-        record.name, texts, ttl_value
-    );
-
-    let mut client = build_authenticated_client(server, key_data).await?;
-
-    // Step 1: delete the existing RRset. NXRRSET (nothing there) is fine; a
-    // transport failure or REFUSED/NOTAUTH fails the write.
-    delete_rrset_for_replace(&mut client, &fqdn, RecordType::TXT, &zone).await?;
-
-    // Step 2: append the desired record to create the new RRset.
-    let response = client.append(record, zone, false).await?;
-
-    match response.metadata.response_code {
-        ResponseCode::NoError => {
-            debug!("Successfully added TXT record: {}", name);
-            Ok(())
-        }
-        code => Err(anyhow::anyhow!(
-            "DNS update failed with response code: {code:?}"
-        )),
-    }
+    .await
 }
 
 #[cfg(test)]

@@ -4,67 +4,44 @@
 //! SRV record management.
 
 use super::super::types::{RndcKeyData, SRVRecordData};
-use super::{
-    build_authenticated_client, build_record_fqdn, delete_rrset_for_replace, effective_record_ttl,
-    rrset_ttl_matches, should_update_record,
-};
+use super::{effective_record_ttl, write_rrset};
 use anyhow::{Context, Result};
-use hickory_net::client::ClientHandle;
-use hickory_proto::op::ResponseCode;
-use hickory_proto::rr::{rdata, DNSClass, Name, RData, Record, RecordType};
+use hickory_proto::rr::{rdata, Name, RData, RecordType};
 use std::str::FromStr;
-use tracing::debug;
 
-/// Compare existing DNS `RRset` with the desired SRV fields and TTL.
+/// Convert an `SRVRecord` spec to the SRV `RRset` value.
 ///
-/// # Arguments
+/// # Errors
 ///
-/// * `existing_records` - Records currently in DNS (from query)
-/// * `priority` - Desired SRV priority from the spec
-/// * `weight` - Desired SRV weight from the spec
-/// * `port` - Desired SRV port from the spec
-/// * `target` - Desired SRV target host from the spec
-/// * `desired_ttl` - Effective TTL from the spec
-///
-/// # Returns
-///
-/// `true` if the existing `RRset` matches the desired state exactly (no changes
-/// needed), `false` if an update is required (rdata or TTL differ).
-fn compare_srv_rrset(
-    existing_records: &[Record],
-    priority: u16,
-    weight: u16,
-    port: u16,
-    target: &str,
-    desired_ttl: u32,
-) -> bool {
-    if existing_records.len() != 1 {
-        return false;
-    }
-    if !rrset_ttl_matches(existing_records, desired_ttl) {
-        return false;
-    }
-    let RData::SRV(existing_srv) = &existing_records[0].data else {
-        return false;
-    };
-    existing_srv.priority == priority
-        && existing_srv.weight == weight
-        && existing_srv.port == port
-        && existing_srv.target.to_string() == target
+/// Returns an error if the priority, weight or port does not fit in a `u16`,
+/// or the target is not a valid domain name.
+pub(crate) fn srv_rdata(srv_data: &SRVRecordData) -> Result<Vec<RData>> {
+    let priority = u16::try_from(srv_data.priority)
+        .with_context(|| format!("Invalid SRV priority: {}", srv_data.priority))?;
+    let weight = u16::try_from(srv_data.weight)
+        .with_context(|| format!("Invalid SRV weight: {}", srv_data.weight))?;
+    let port = u16::try_from(srv_data.port)
+        .with_context(|| format!("Invalid SRV port: {}", srv_data.port))?;
+    let target = Name::from_str(&srv_data.target)
+        .with_context(|| format!("Invalid target for SRV record: {}", srv_data.target))?;
+    Ok(vec![RData::SRV(rdata::SRV::new(
+        priority, weight, port, target,
+    ))])
 }
 
-/// Add an SRV record using dynamic DNS update (RFC 2136) with `RRset` synchronization.
+/// Write the SRV `RRset` for a name using dynamic DNS update (RFC 2136).
 ///
-/// If the existing `RRset` differs from the desired state, the entire SRV
-/// `RRset` for the name is deleted and recreated so stale rdata never lingers.
+/// The spec is validated before any DNS traffic, compared with the live
+/// `RRset` by value, and if it differs the `RRset` is replaced in one UPDATE
+/// (ADR-0021), so stale rdata never lingers.
 ///
 /// # Errors
 ///
 /// Returns an error if:
+/// - A field is out of range or the target is invalid (nothing is sent)
 /// - DNS server connection fails
 /// - TSIG signer creation fails
 /// - DNS update is rejected by the server
-/// - Invalid domain name or target
 pub async fn add_srv_record(
     zone_name: &str,
     name: &str,
@@ -72,73 +49,17 @@ pub async fn add_srv_record(
     server: &str,
     key_data: &RndcKeyData,
 ) -> Result<()> {
-    let priority_u16 = u16::try_from(srv_data.priority)
-        .context(format!("Invalid SRV priority: {}", srv_data.priority))?;
-    let weight_u16 = u16::try_from(srv_data.weight)
-        .context(format!("Invalid SRV weight: {}", srv_data.weight))?;
-    let port_u16 =
-        u16::try_from(srv_data.port).context(format!("Invalid SRV port: {}", srv_data.port))?;
-    let ttl_value = effective_record_ttl(srv_data.ttl);
-
-    let should_update = should_update_record(
+    let desired = srv_rdata(srv_data)?;
+    write_rrset(
         zone_name,
         name,
         RecordType::SRV,
-        "SRV",
+        effective_record_ttl(srv_data.ttl),
+        desired,
         server,
-        |existing_records| {
-            compare_srv_rrset(
-                existing_records,
-                priority_u16,
-                weight_u16,
-                port_u16,
-                &srv_data.target,
-                ttl_value,
-            )
-        },
+        key_data,
     )
-    .await?;
-
-    if !should_update {
-        return Ok(());
-    }
-
-    let zone =
-        Name::from_str(zone_name).context(format!("Invalid zone name for SRV: {zone_name}"))?;
-    let fqdn = build_record_fqdn(zone_name, name)?;
-    let target_name = Name::from_str(&srv_data.target).context(format!(
-        "Invalid target for SRV record: {}",
-        srv_data.target
-    ))?;
-
-    let record_data = rdata::SRV::new(priority_u16, weight_u16, port_u16, target_name);
-    let mut record = Record::from_rdata(fqdn.clone(), ttl_value, RData::SRV(record_data));
-    record.dns_class = DNSClass::IN;
-
-    let mut client = build_authenticated_client(server, key_data).await?;
-
-    // Step 1: delete the existing RRset. NXRRSET (nothing there) is fine; a
-    // transport failure or REFUSED/NOTAUTH fails the write.
-    delete_rrset_for_replace(&mut client, &fqdn, RecordType::SRV, &zone).await?;
-
-    // Step 2: append the desired record to create the new RRset.
-    let response = client
-        .append(record, zone, false)
-        .await
-        .context(format!("Failed to send SRV record update for {fqdn}"))?;
-
-    match response.metadata.response_code {
-        ResponseCode::NoError => {
-            debug!(
-                "Successfully added SRV record: {} -> {}:{} (priority: {}, weight: {}, TTL: {})",
-                fqdn, srv_data.target, srv_data.port, srv_data.priority, srv_data.weight, ttl_value
-            );
-            Ok(())
-        }
-        code => {
-            anyhow::bail!("DNS server rejected SRV record update for {fqdn}: {code:?}");
-        }
-    }
+    .await
 }
 
 #[cfg(test)]

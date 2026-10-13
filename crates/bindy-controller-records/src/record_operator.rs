@@ -3,74 +3,30 @@
 
 //! Generic DNS record operator implementation.
 //!
-//! This module provides a generic operator pattern for all DNS record types,
-//! eliminating code duplication across A, AAAA, TXT, CNAME, MX, NS, SRV, and CAA records.
+//! One controller, generic over the record kind: every kind in the
+//! record-kind table runs it (ADR-0020). What a kind is comes from
+//! [`RecordKind`]; how its data is written, from
+//! [`ReconcilableRecord`].
 
-use crate::context::Context;
-use crate::crd::{DNSZone, RecordStatus};
-use crate::record_wrappers::{action_for_outcome, ready_state, ReadyState, RecordOutcome};
+use crate::context::{Context, RecordKind};
+use crate::crd::DNSZone;
+use crate::record_wrappers::{action_for_outcome, ready_state, ReadyState};
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
-use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::Api;
 use kube::runtime::controller::Action;
 use kube::runtime::finalizer;
 use kube::runtime::reflector::ObjectRef;
 use kube::runtime::{Controller, Predicate, WatchStreamExt};
 use kube::ResourceExt;
-use serde::Serialize;
 use std::sync::Arc;
 use tracing::{info, warn};
 
+use bindy_bind9::record_push::ReconcilableRecord;
 use bindy_controller_sdk::error::error_policy;
 pub use bindy_controller_sdk::error::ReconcileError;
 use bindy_controller_sdk::namespace_scope::{owned_targets, run_per_target, target_label};
 use bindy_controller_sdk::reconcile::{finalizer_error, instrumented_action};
-
-/// Trait for DNS record types that can be reconciled with a generic operator.
-///
-/// This trait abstracts over the common operations needed for all DNS record types,
-/// allowing a single operator implementation to handle all record types.
-/// The kind name comes from the supertrait
-/// [`RecordKind`](crate::context::RecordKind), so each record type declares it
-/// once for the stores, the watch layer and this controller; the BIND9 write
-/// comes from [`ReconcilableRecord`](bindy_bind9::record_push::ReconcilableRecord).
-pub trait DnsRecordType:
-    crate::context::RecordKind + bindy_bind9::record_push::ReconcilableRecord + Serialize
-{
-    /// The finalizer name for this record type
-    const FINALIZER: &'static str;
-
-    /// The DNS record type string (e.g., `A`, `TXT`)
-    const RECORD_TYPE_STR: &'static str;
-
-    /// Get the `hickory_proto` `RecordType` value
-    fn hickory_record_type() -> hickory_proto::rr::RecordType;
-
-    /// Reconcile this record (create/update in BIND9).
-    ///
-    /// Every kind goes through the one generic path
-    /// ([`crate::records::reconcile_record`]), so this default is the only
-    /// implementation; the nine per-kind `reconcile_*_record` wrappers that used
-    /// to sit in front of it are gone (roadmap 01 Phase D). Returns how the
-    /// reconcile ended, so the wrapper does not re-read the record (ADR-0016).
-    fn reconcile_record(
-        context: Arc<Context>,
-        record: Self,
-    ) -> impl std::future::Future<Output = Result<RecordOutcome, ReconcileError>> + Send {
-        async move {
-            crate::records::reconcile_record(context, record)
-                .await
-                .map_err(ReconcileError::from)
-        }
-    }
-
-    /// Get the metadata for this resource
-    fn metadata(&self) -> &ObjectMeta;
-
-    /// Get the status for this resource
-    fn status(&self) -> &Option<RecordStatus>;
-}
 
 /// Run a generic DNS record operator.
 ///
@@ -85,10 +41,10 @@ pub trait DnsRecordType:
 ///
 /// Returns an error when a namespace target's controller exits before the
 /// shutdown signal fired (see [`run_per_target`]), so the caller's
-/// `try_join!` stops at the first one.
+/// `try_join_all` stops at the first one.
 pub async fn run_generic_record_operator<T>(context: Arc<Context>) -> Result<()>
 where
-    T: DnsRecordType,
+    T: ReconcilableRecord,
 {
     info!("Starting {} operator", T::KIND);
 
@@ -113,7 +69,7 @@ async fn run_generic_record_controller<T>(
     target: Option<String>,
 ) -> Result<()>
 where
-    T: DnsRecordType,
+    T: ReconcilableRecord,
 {
     tracing::debug!(
         kind = T::KIND,
@@ -145,9 +101,9 @@ where
     Controller::for_stream(primary, ws.store::<T>(target))
         .watches_stream(ws.subscribe::<DNSZone>(target), move |zone| {
             records_to_wake_for_zone::<T>(&zone, |record_ref| {
-                record_store
-                    .get(record_ref)
-                    .is_some_and(|record| matches!(ready_state(record.status()), ReadyState::Ready))
+                record_store.get(record_ref).is_some_and(|record| {
+                    matches!(ready_state(record.record_status()), ReadyState::Ready)
+                })
             })
         })
         .graceful_shutdown_on(context.shutdown.wait())
@@ -176,7 +132,7 @@ where
 ///
 /// References to the records to reconcile.
 #[must_use]
-pub fn records_to_wake_for_zone<T: DnsRecordType>(
+pub fn records_to_wake_for_zone<T: RecordKind>(
     zone: &DNSZone,
     is_ready: impl Fn(&ObjectRef<T>) -> bool,
 ) -> Vec<ObjectRef<T>> {
@@ -210,11 +166,11 @@ pub fn records_to_wake_for_zone<T: DnsRecordType>(
 ///
 /// * `record` - The record whose zone assignment is hashed
 #[must_use]
-pub fn zone_ref_hash<T: DnsRecordType>(record: &T) -> Option<u64> {
+pub fn zone_ref_hash<T: RecordKind>(record: &T) -> Option<u64> {
     use std::hash::{Hash, Hasher};
 
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    let zone_ref = record.status().as_ref().and_then(|s| s.zone_ref.as_ref());
+    let zone_ref = record.record_status().and_then(|s| s.zone_ref.as_ref());
     match zone_ref {
         Some(z) => {
             true.hash(&mut hasher);
@@ -239,71 +195,69 @@ async fn reconcile_wrapper<T>(
     context: Arc<Context>,
 ) -> Result<Action, ReconcileError>
 where
-    T: DnsRecordType,
+    T: ReconcilableRecord,
 {
     let client = context.client.clone();
     let namespace = record
-        .metadata()
+        .meta()
         .namespace
         .as_ref()
         .ok_or_else(|| ReconcileError::from(anyhow!("{} has no namespace", T::KIND)))?;
     let api: Api<T> = Api::namespaced(client.clone(), namespace);
 
     // Handle deletion with finalizer
-    let reconcile = finalizer(&api, T::FINALIZER, record.clone(), |event| async {
-        match event {
-            finalizer::Event::Apply(rec) => {
-                // Create or update the record. The outcome is returned, not
-                // re-read with a GET (ADR-0016): a failed BIND9 write is
-                // reported through the record's own conditions and through
-                // the outcome, so the log below cannot contradict the status.
-                let outcome = T::reconcile_record(context.clone(), (*rec).clone()).await?;
-                if outcome.is_ready() {
-                    info!("Successfully reconciled {}: {}", T::KIND, rec.name_any());
-                } else {
-                    warn!(
-                        "Reconciled {} {} but it is not Ready: {}",
-                        T::KIND,
-                        rec.name_any(),
-                        outcome.describe()
-                    );
+    let reconcile = finalizer(
+        &api,
+        T::DNS_KIND.finalizer(),
+        record.clone(),
+        |event| async {
+            match event {
+                finalizer::Event::Apply(rec) => {
+                    // Create or update the record. The outcome is returned, not
+                    // re-read with a GET (ADR-0016): a failed BIND9 write is
+                    // reported through the record's own conditions and through
+                    // the outcome, so the log below cannot contradict the status.
+                    let outcome = crate::records::reconcile_record(context.clone(), (*rec).clone())
+                        .await
+                        .map_err(ReconcileError::from)?;
+                    if outcome.is_ready() {
+                        info!("Successfully reconciled {}: {}", T::KIND, rec.name_any());
+                    } else {
+                        warn!(
+                            "Reconciled {} {} but it is not Ready: {}",
+                            T::KIND,
+                            rec.name_any(),
+                            outcome.describe()
+                        );
+                    }
+
+                    Ok(action_for_outcome(rec.as_ref(), &outcome))
                 }
+                finalizer::Event::Cleanup(rec) => {
+                    // Delete the record from BIND9
+                    use crate::records::delete_record;
 
-                Ok(action_for_outcome(rec.as_ref(), &outcome))
+                    delete_record(&client, &*rec, &context.stores)
+                        .await
+                        .map_err(ReconcileError::from)?;
+
+                    // The object is gone; a recreated one must not inherit its
+                    // rejection cooldown.
+                    bindy_controller_sdk::retry::clear_rejected_write(
+                        &crate::records::rejected_write_key(&*rec),
+                    );
+
+                    info!(
+                        "Successfully deleted {} from BIND9: {}",
+                        T::KIND,
+                        rec.name_any()
+                    );
+                    crate::metrics::record_resource_deleted(T::KIND);
+                    Ok(Action::await_change())
+                }
             }
-            finalizer::Event::Cleanup(rec) => {
-                // Delete the record from BIND9
-                use crate::records::delete_record;
-
-                delete_record(
-                    &client,
-                    &*rec,
-                    T::RECORD_TYPE_STR,
-                    T::hickory_record_type(),
-                    &context.stores,
-                )
-                .await
-                .map_err(ReconcileError::from)?;
-
-                // The object is gone; a recreated one must not inherit its
-                // rejection cooldown.
-                bindy_controller_sdk::retry::clear_rejected_write(&format!(
-                    "{}/{}/{}",
-                    T::KIND,
-                    rec.namespace().unwrap_or_default(),
-                    rec.name_any()
-                ));
-
-                info!(
-                    "Successfully deleted {} from BIND9: {}",
-                    T::KIND,
-                    rec.name_any()
-                );
-                crate::metrics::record_resource_deleted(T::KIND);
-                Ok(Action::await_change())
-            }
-        }
-    });
+        },
+    );
 
     instrumented_action(T::KIND, reconcile)
         .await

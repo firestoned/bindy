@@ -256,7 +256,7 @@ crates/
 ├── bindy-controller-cluster/    ← Bind9Cluster + ClusterBind9Provider (bind9cluster/, watch.rs)
 ├── bindy-controller-instance/   ← Bind9Instance (bind9instance/, watch.rs)
 ├── bindy-controller-zone/       ← DNSZone (dnszone.rs, dnszone/, watch.rs)
-├── bindy-controller-records/    ← the 9 record kinds (records/, record_operator.rs, record_impls.rs)
+├── bindy-controller-records/    ← the 9 record kinds (records/, record_operator.rs); kinds declared once in bindy-api record_kinds.rs (ADR-0020)
 ├── bindy-scout/                 ← `bindy scout` (scout.rs; tests/scout_integration.rs)
 ├── bindy-bootstrap/             ← `bindy bootstrap` (bootstrap.rs; rbac_drift tests)
 └── bindy/                       ← the binary: main.rs (<300 lines), cli.rs; tests/ (live API)

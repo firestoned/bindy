@@ -11,39 +11,37 @@
 //! without depending on another controller crate (ADR-0009 §2, amended
 //! 2026-10-05).
 //!
-//! - [`ReconcilableRecord`] maps each record kind to its [`RecordOperation`].
-//! - [`add_record_to_instances_generic`] runs an operation on every primary endpoint.
+//! - [`ReconcilableRecord`] is the one hand-written part of a record kind: how
+//!   its spec becomes DNS data (ADR-0020). Everything else about a kind comes
+//!   from the record-kind table through [`RecordKind`].
+//! - [`add_record_to_instances_generic`] writes a record to every primary endpoint.
 //! - [`delete_record_from_primaries`] removes a record's RRset.
 //! - [`replay_zone_records`] re-pushes a zone's records after the zone is recreated.
 
-use crate::context::StoresBind9Ext;
+use crate::bind9::{Bind9Manager, PTRRecordData, RndcKeyData, SRVRecordData};
+use crate::context::{RecordKind, StoresBind9Ext};
 use crate::crd::{
     AAAARecord, ARecord, CAARecord, CNAMERecord, MXRecord, NSRecord, PTRRecord, SRVRecord,
     TXTRecord,
 };
 use anyhow::{Context, Result};
-use kube::{client::Client, Api, Resource, ResourceExt};
+use kube::{client::Client, Api};
 use tracing::{debug, warn};
 
-/// Trait for record-specific BIND9 operations.
+/// How a record kind's spec becomes the DNS data BIND9 publishes.
 ///
-/// This trait abstracts over the different record types and provides a uniform interface
-/// for adding records to BIND9 instances via the `Bind9Manager`.
-///
-/// Each DNS record type implements this trait to define how it should be added to BIND9
-/// using dynamic DNS updates (RFC 2136 nsupdate protocol).
-pub trait RecordOperation: Clone + Send + Sync {
-    /// Get the record type name (e.g., "A", "TXT", "AAAA") for logging and events.
-    fn record_type_name(&self) -> &'static str;
-
-    /// Add this record to a BIND9 instance via the `Bind9Manager`.
+/// The only per-kind code of a record kind outside the record-kind table
+/// (ADR-0020): one impl per kind, below, calling the matching
+/// `Bind9Manager::add_*_record`. The kind string, finalizer, hickory type,
+/// record name, TTL and status come from the [`RecordKind`] supertrait.
+pub trait ReconcilableRecord: RecordKind {
+    /// Publish this record's data on one BIND9 endpoint via dynamic DNS
+    /// update (RFC 2136), under its `spec.name` and `spec.ttl`.
     ///
     /// # Arguments
     ///
-    /// * `zone_manager` - The `Bind9Manager` instance to use for the operation
+    /// * `zone_manager` - The `Bind9Manager` of the instance behind `server`
     /// * `zone_name` - The DNS zone name (e.g., "example.com")
-    /// * `record_name` - The record name within the zone (e.g., "www")
-    /// * `ttl` - Optional TTL value
     /// * `server` - The BIND9 server endpoint (IP:port)
     /// * `key_data` - RNDC key data for authentication
     ///
@@ -52,106 +50,31 @@ pub trait RecordOperation: Clone + Send + Sync {
     /// Returns an error if the dynamic DNS update fails.
     fn add_to_bind9(
         &self,
-        zone_manager: &crate::bind9::Bind9Manager,
+        zone_manager: &Bind9Manager,
         zone_name: &str,
-        record_name: &str,
-        ttl: Option<i32>,
         server: &str,
-        key_data: &crate::bind9::RndcKeyData,
+        key_data: &RndcKeyData,
     ) -> impl std::future::Future<Output = Result<()>> + Send;
-}
-
-/// Trait for DNS record resources that can be reconciled.
-///
-/// This trait provides the interface for generic record reconciliation,
-/// allowing a single `reconcile_record<T>()` function to handle all record types.
-/// It eliminates duplication across 9 record type reconcilers by providing
-/// type-specific operations through trait methods.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// impl ReconcilableRecord for ARecord {
-///     type Spec = crate::crd::ARecordSpec;
-///     type Operation = ARecordOp;
-///
-///     fn get_spec(&self) -> &Self::Spec {
-///         &self.spec
-///     }
-///
-///     fn record_type_name() -> &'static str {
-///         "A"
-///     }
-///
-///     fn create_operation(spec: &Self::Spec) -> Self::Operation {
-///         ARecordOp {
-///             ipv4_address: spec.ipv4_address.clone(),
-///         }
-///     }
-///
-///     fn get_record_name(spec: &Self::Spec) -> &str {
-///         &spec.name
-///     }
-///
-///     fn get_ttl(spec: &Self::Spec) -> Option<i32> {
-///         spec.ttl
-///     }
-/// }
-/// ```
-pub trait ReconcilableRecord:
-    Resource<DynamicType = (), Scope = k8s_openapi::NamespaceResourceScope>
-    + ResourceExt
-    + Clone
-    + std::fmt::Debug
-    + serde::Serialize
-    + for<'de> serde::Deserialize<'de>
-    + Send
-    + Sync
-{
-    /// The spec type for this record (e.g., `ARecordSpec`, `TXTRecordSpec`)
-    type Spec: serde::Serialize + Clone + Send + Sync;
-
-    /// The operation type for BIND9 updates (e.g., `ARecordOp`, `TXTRecordOp`)
-    type Operation: RecordOperation;
-
-    /// Get the record's spec
-    fn get_spec(&self) -> &Self::Spec;
-
-    /// Get the record's status, if any
-    fn get_status(&self) -> Option<&crate::crd::RecordStatus>;
-
-    /// Get the record type name (e.g., "A", "TXT", "AAAA") for logging
-    fn record_type_name() -> &'static str;
-
-    /// Get the `hickory_proto` record type used for DNS deletion operations
-    fn record_type_hickory() -> hickory_proto::rr::RecordType;
-
-    /// Create the BIND9 operation from the spec
-    fn create_operation(spec: &Self::Spec) -> Self::Operation;
-
-    /// Get the record name from the spec
-    fn get_record_name(spec: &Self::Spec) -> &str;
-
-    /// Get the TTL from the spec
-    fn get_ttl(spec: &Self::Spec) -> Option<i32>;
 
     /// Comma-separated display addresses for `status.addresses` (A/AAAA only).
     ///
     /// Returns `None` for record types that do not publish addresses.
-    fn get_display_addresses(_spec: &Self::Spec) -> Option<String> {
+    fn display_addresses(&self) -> Option<String> {
         None
     }
 }
 
-/// Generic helper to add a record to all primary instances.
+/// The DNS type of record kind `T` (e.g. `A`), as logs and status messages
+/// name it.
+#[must_use]
+pub fn record_type<T: RecordKind>() -> hickory_proto::rr::RecordType {
+    T::DNS_KIND.to_hickory_record_type()
+}
+
+/// Write `record` to all primary instances.
 ///
-/// This function eliminates duplication across the 9 `add_*_record_to_instances` functions
-/// by providing a generic implementation that works for any record type implementing
-/// the `RecordOperation` trait.
-///
-/// # Type Parameters
-///
-/// * `R` - The record operation type implementing `RecordOperation`
+/// One implementation for every record kind: the kind-specific part is the
+/// record's [`ReconcilableRecord::add_to_bind9`].
 ///
 /// # Arguments
 ///
@@ -161,26 +84,21 @@ pub trait ReconcilableRecord:
 ///   (ADR-0015); share one across every write of a reconcile
 /// * `instance_refs` - Primary instance references
 /// * `zone_name` - DNS zone name
-/// * `record_name` - Record name within the zone
-/// * `ttl` - Optional TTL value
-/// * `record_op` - The record-specific operation to perform
+/// * `record` - The record to publish
 ///
 /// # Errors
 ///
 /// Returns an error if any dynamic DNS update fails.
-#[allow(clippy::too_many_arguments)]
-pub async fn add_record_to_instances_generic<R>(
+pub async fn add_record_to_instances_generic<T>(
     client: &Client,
     stores: &crate::context::Stores,
     resolver: &crate::instances::InstanceResolver,
     instance_refs: &[crate::crd::InstanceReference],
     zone_name: &str,
-    record_name: &str,
-    ttl: Option<i32>,
-    record_op: R,
+    record: &T,
 ) -> Result<()>
 where
-    R: RecordOperation,
+    T: ReconcilableRecord,
 {
     use crate::instances::for_each_instance_endpoint;
 
@@ -197,7 +115,6 @@ where
         "dns-tcp", // Use DNS TCP port for dynamic updates
         |pod_endpoint, instance_name, rndc_key| {
             let zone_name = zone_name.to_string();
-            let record_name = record_name.to_string();
 
             // Get namespace for this instance (always present: the
             // instance name came from `instance_refs`)
@@ -214,19 +131,20 @@ where
                     Some(client.clone()),
                 );
 
-            // Clone record_op for the async block
-            let record_op_clone = record_op.clone();
+            // Clone the record for the async block
+            let record = record.clone();
 
             async move {
                 let key_data = rndc_key
                     .ok_or_else(|| anyhow::anyhow!("RNDC key was not loaded for {instance_name}"))?;
 
-                record_op_clone
-                    .add_to_bind9(&zone_manager, &zone_name, &record_name, ttl, &pod_endpoint, &key_data)
+                record
+                    .add_to_bind9(&zone_manager, &zone_name, &pod_endpoint, &key_data)
                     .await
                     .context(format!(
-                        "Failed to add {} record {record_name}.{zone_name} to primary {pod_endpoint} (instance: {instance_name})",
-                        record_op_clone.record_type_name()
+                        "Failed to add {} record {}.{zone_name} to primary {pod_endpoint} (instance: {instance_name})",
+                        record_type::<T>(),
+                        record.spec_name(),
                     ))?;
 
                 Ok(())
@@ -238,107 +156,93 @@ where
     Ok(())
 }
 
-// Record operation implementations for each DNS record type
+// How each record kind's spec becomes DNS data: the one hand-written part of
+// a kind (ADR-0020). Every other per-kind fact comes from the table.
 
-/// A record operation wrapper.
-#[derive(Clone)]
-pub struct ARecordOp {
-    ipv4_addresses: Vec<String>,
-}
-
-impl RecordOperation for ARecordOp {
-    fn record_type_name(&self) -> &'static str {
-        "A"
-    }
-
+impl ReconcilableRecord for ARecord {
     async fn add_to_bind9(
         &self,
-        zone_manager: &crate::bind9::Bind9Manager,
+        zone_manager: &Bind9Manager,
         zone_name: &str,
-        record_name: &str,
-        ttl: Option<i32>,
         server: &str,
-        key_data: &crate::bind9::RndcKeyData,
+        key_data: &RndcKeyData,
     ) -> Result<()> {
+        let spec = &self.spec;
         zone_manager
             .add_a_record(
                 zone_name,
-                record_name,
-                &self.ipv4_addresses,
-                ttl,
+                &spec.name,
+                &spec.ipv4_addresses,
+                spec.ttl,
                 server,
                 key_data,
             )
             .await
     }
-}
 
-/// Implement `ReconcilableRecord` for `ARecord`.
-impl ReconcilableRecord for ARecord {
-    type Spec = crate::crd::ARecordSpec;
-    type Operation = ARecordOp;
-
-    fn get_spec(&self) -> &Self::Spec {
-        &self.spec
-    }
-
-    fn get_status(&self) -> Option<&crate::crd::RecordStatus> {
-        self.status.as_ref()
-    }
-
-    fn record_type_name() -> &'static str {
-        "A"
-    }
-
-    fn record_type_hickory() -> hickory_proto::rr::RecordType {
-        hickory_proto::rr::RecordType::A
-    }
-
-    fn create_operation(spec: &Self::Spec) -> Self::Operation {
-        ARecordOp {
-            ipv4_addresses: spec.ipv4_addresses.clone(),
-        }
-    }
-
-    fn get_record_name(spec: &Self::Spec) -> &str {
-        &spec.name
-    }
-
-    fn get_ttl(spec: &Self::Spec) -> Option<i32> {
-        spec.ttl
-    }
-
-    fn get_display_addresses(spec: &Self::Spec) -> Option<String> {
-        Some(spec.ipv4_addresses.join(","))
+    fn display_addresses(&self) -> Option<String> {
+        Some(self.spec.ipv4_addresses.join(","))
     }
 }
 
-/// AAAA record operation wrapper.
-#[derive(Clone)]
-pub struct AAAARecordOp {
-    ipv6_addresses: Vec<String>,
-}
-
-impl RecordOperation for AAAARecordOp {
-    fn record_type_name(&self) -> &'static str {
-        "AAAA"
-    }
-
+impl ReconcilableRecord for AAAARecord {
     async fn add_to_bind9(
         &self,
-        zone_manager: &crate::bind9::Bind9Manager,
+        zone_manager: &Bind9Manager,
         zone_name: &str,
-        record_name: &str,
-        ttl: Option<i32>,
         server: &str,
-        key_data: &crate::bind9::RndcKeyData,
+        key_data: &RndcKeyData,
     ) -> Result<()> {
+        let spec = &self.spec;
         zone_manager
             .add_aaaa_record(
                 zone_name,
-                record_name,
-                &self.ipv6_addresses,
-                ttl,
+                &spec.name,
+                &spec.ipv6_addresses,
+                spec.ttl,
+                server,
+                key_data,
+            )
+            .await
+    }
+
+    fn display_addresses(&self) -> Option<String> {
+        Some(self.spec.ipv6_addresses.join(","))
+    }
+}
+
+impl ReconcilableRecord for TXTRecord {
+    async fn add_to_bind9(
+        &self,
+        zone_manager: &Bind9Manager,
+        zone_name: &str,
+        server: &str,
+        key_data: &RndcKeyData,
+    ) -> Result<()> {
+        let spec = &self.spec;
+        zone_manager
+            .add_txt_record(
+                zone_name, &spec.name, &spec.text, spec.ttl, server, key_data,
+            )
+            .await
+    }
+}
+
+impl ReconcilableRecord for CNAMERecord {
+    async fn add_to_bind9(
+        &self,
+        zone_manager: &Bind9Manager,
+        zone_name: &str,
+        server: &str,
+        key_data: &RndcKeyData,
+    ) -> Result<()> {
+        let spec = &self.spec;
+        zone_manager
+            .add_cname_record(
+                zone_name,
+                &spec.name,
+                &spec.target,
+                spec.ttl,
                 server,
                 key_data,
             )
@@ -346,198 +250,22 @@ impl RecordOperation for AAAARecordOp {
     }
 }
 
-/// Implement `ReconcilableRecord` for `AAAARecord`.
-impl ReconcilableRecord for AAAARecord {
-    type Spec = crate::crd::AAAARecordSpec;
-    type Operation = AAAARecordOp;
-
-    fn get_spec(&self) -> &Self::Spec {
-        &self.spec
-    }
-
-    fn get_status(&self) -> Option<&crate::crd::RecordStatus> {
-        self.status.as_ref()
-    }
-
-    fn record_type_name() -> &'static str {
-        "AAAA"
-    }
-
-    fn record_type_hickory() -> hickory_proto::rr::RecordType {
-        hickory_proto::rr::RecordType::AAAA
-    }
-
-    fn create_operation(spec: &Self::Spec) -> Self::Operation {
-        AAAARecordOp {
-            ipv6_addresses: spec.ipv6_addresses.clone(),
-        }
-    }
-
-    fn get_record_name(spec: &Self::Spec) -> &str {
-        &spec.name
-    }
-
-    fn get_ttl(spec: &Self::Spec) -> Option<i32> {
-        spec.ttl
-    }
-
-    fn get_display_addresses(spec: &Self::Spec) -> Option<String> {
-        Some(spec.ipv6_addresses.join(","))
-    }
-}
-
-/// CNAME record operation wrapper.
-#[derive(Clone)]
-pub struct CNAMERecordOp {
-    target: String,
-}
-
-impl RecordOperation for CNAMERecordOp {
-    fn record_type_name(&self) -> &'static str {
-        "CNAME"
-    }
-
+impl ReconcilableRecord for MXRecord {
     async fn add_to_bind9(
         &self,
-        zone_manager: &crate::bind9::Bind9Manager,
+        zone_manager: &Bind9Manager,
         zone_name: &str,
-        record_name: &str,
-        ttl: Option<i32>,
         server: &str,
-        key_data: &crate::bind9::RndcKeyData,
+        key_data: &RndcKeyData,
     ) -> Result<()> {
-        zone_manager
-            .add_cname_record(zone_name, record_name, &self.target, ttl, server, key_data)
-            .await
-    }
-}
-
-/// Implement `ReconcilableRecord` for `CNAMERecord`.
-impl ReconcilableRecord for CNAMERecord {
-    type Spec = crate::crd::CNAMERecordSpec;
-    type Operation = CNAMERecordOp;
-
-    fn get_spec(&self) -> &Self::Spec {
-        &self.spec
-    }
-
-    fn get_status(&self) -> Option<&crate::crd::RecordStatus> {
-        self.status.as_ref()
-    }
-
-    fn record_type_name() -> &'static str {
-        "CNAME"
-    }
-
-    fn record_type_hickory() -> hickory_proto::rr::RecordType {
-        hickory_proto::rr::RecordType::CNAME
-    }
-
-    fn create_operation(spec: &Self::Spec) -> Self::Operation {
-        CNAMERecordOp {
-            target: spec.target.clone(),
-        }
-    }
-
-    fn get_record_name(spec: &Self::Spec) -> &str {
-        &spec.name
-    }
-
-    fn get_ttl(spec: &Self::Spec) -> Option<i32> {
-        spec.ttl
-    }
-}
-
-/// TXT record operation wrapper.
-#[derive(Clone)]
-pub struct TXTRecordOp {
-    texts: Vec<String>,
-}
-
-impl RecordOperation for TXTRecordOp {
-    fn record_type_name(&self) -> &'static str {
-        "TXT"
-    }
-
-    async fn add_to_bind9(
-        &self,
-        zone_manager: &crate::bind9::Bind9Manager,
-        zone_name: &str,
-        record_name: &str,
-        ttl: Option<i32>,
-        server: &str,
-        key_data: &crate::bind9::RndcKeyData,
-    ) -> Result<()> {
-        zone_manager
-            .add_txt_record(zone_name, record_name, &self.texts, ttl, server, key_data)
-            .await
-    }
-}
-
-/// Implement `ReconcilableRecord` for `TXTRecord`.
-impl ReconcilableRecord for TXTRecord {
-    type Spec = crate::crd::TXTRecordSpec;
-    type Operation = TXTRecordOp;
-
-    fn get_spec(&self) -> &Self::Spec {
-        &self.spec
-    }
-
-    fn get_status(&self) -> Option<&crate::crd::RecordStatus> {
-        self.status.as_ref()
-    }
-
-    fn record_type_name() -> &'static str {
-        "TXT"
-    }
-
-    fn record_type_hickory() -> hickory_proto::rr::RecordType {
-        hickory_proto::rr::RecordType::TXT
-    }
-
-    fn create_operation(spec: &Self::Spec) -> Self::Operation {
-        TXTRecordOp {
-            texts: spec.text.clone(),
-        }
-    }
-
-    fn get_record_name(spec: &Self::Spec) -> &str {
-        &spec.name
-    }
-
-    fn get_ttl(spec: &Self::Spec) -> Option<i32> {
-        spec.ttl
-    }
-}
-
-/// MX record operation wrapper.
-#[derive(Clone)]
-pub struct MXRecordOp {
-    priority: i32,
-    mail_server: String,
-}
-
-impl RecordOperation for MXRecordOp {
-    fn record_type_name(&self) -> &'static str {
-        "MX"
-    }
-
-    async fn add_to_bind9(
-        &self,
-        zone_manager: &crate::bind9::Bind9Manager,
-        zone_name: &str,
-        record_name: &str,
-        ttl: Option<i32>,
-        server: &str,
-        key_data: &crate::bind9::RndcKeyData,
-    ) -> Result<()> {
+        let spec = &self.spec;
         zone_manager
             .add_mx_record(
                 zone_name,
-                record_name,
-                self.priority,
-                &self.mail_server,
-                ttl,
+                &spec.name,
+                spec.priority,
+                &spec.mail_server,
+                spec.ttl,
                 server,
                 key_data,
             )
@@ -545,69 +273,21 @@ impl RecordOperation for MXRecordOp {
     }
 }
 
-/// Implement `ReconcilableRecord` for `MXRecord`.
-impl ReconcilableRecord for MXRecord {
-    type Spec = crate::crd::MXRecordSpec;
-    type Operation = MXRecordOp;
-
-    fn get_spec(&self) -> &Self::Spec {
-        &self.spec
-    }
-
-    fn get_status(&self) -> Option<&crate::crd::RecordStatus> {
-        self.status.as_ref()
-    }
-
-    fn record_type_name() -> &'static str {
-        "MX"
-    }
-
-    fn record_type_hickory() -> hickory_proto::rr::RecordType {
-        hickory_proto::rr::RecordType::MX
-    }
-
-    fn create_operation(spec: &Self::Spec) -> Self::Operation {
-        MXRecordOp {
-            priority: spec.priority,
-            mail_server: spec.mail_server.clone(),
-        }
-    }
-
-    fn get_record_name(spec: &Self::Spec) -> &str {
-        &spec.name
-    }
-
-    fn get_ttl(spec: &Self::Spec) -> Option<i32> {
-        spec.ttl
-    }
-}
-
-/// NS record operation wrapper.
-#[derive(Clone)]
-pub struct NSRecordOp {
-    nameserver: String,
-}
-
-impl RecordOperation for NSRecordOp {
-    fn record_type_name(&self) -> &'static str {
-        "NS"
-    }
-
+impl ReconcilableRecord for NSRecord {
     async fn add_to_bind9(
         &self,
-        zone_manager: &crate::bind9::Bind9Manager,
+        zone_manager: &Bind9Manager,
         zone_name: &str,
-        record_name: &str,
-        ttl: Option<i32>,
         server: &str,
-        key_data: &crate::bind9::RndcKeyData,
+        key_data: &RndcKeyData,
     ) -> Result<()> {
+        let spec = &self.spec;
         zone_manager
             .add_ns_record(
                 zone_name,
-                record_name,
-                &self.nameserver,
-                ttl,
+                &spec.name,
+                &spec.nameserver,
+                spec.ttl,
                 server,
                 key_data,
             )
@@ -615,147 +295,45 @@ impl RecordOperation for NSRecordOp {
     }
 }
 
-/// Implement `ReconcilableRecord` for `NSRecord`.
-impl ReconcilableRecord for NSRecord {
-    type Spec = crate::crd::NSRecordSpec;
-    type Operation = NSRecordOp;
-
-    fn get_spec(&self) -> &Self::Spec {
-        &self.spec
-    }
-
-    fn get_status(&self) -> Option<&crate::crd::RecordStatus> {
-        self.status.as_ref()
-    }
-
-    fn record_type_name() -> &'static str {
-        "NS"
-    }
-
-    fn record_type_hickory() -> hickory_proto::rr::RecordType {
-        hickory_proto::rr::RecordType::NS
-    }
-
-    fn create_operation(spec: &Self::Spec) -> Self::Operation {
-        NSRecordOp {
-            nameserver: spec.nameserver.clone(),
-        }
-    }
-
-    fn get_record_name(spec: &Self::Spec) -> &str {
-        &spec.name
-    }
-
-    fn get_ttl(spec: &Self::Spec) -> Option<i32> {
-        spec.ttl
-    }
-}
-
-/// SRV record operation wrapper.
-#[derive(Clone)]
-pub struct SRVRecordOp {
-    priority: i32,
-    weight: i32,
-    port: i32,
-    target: String,
-}
-
-impl RecordOperation for SRVRecordOp {
-    fn record_type_name(&self) -> &'static str {
-        "SRV"
-    }
-
+impl ReconcilableRecord for SRVRecord {
     async fn add_to_bind9(
         &self,
-        zone_manager: &crate::bind9::Bind9Manager,
+        zone_manager: &Bind9Manager,
         zone_name: &str,
-        record_name: &str,
-        ttl: Option<i32>,
         server: &str,
-        key_data: &crate::bind9::RndcKeyData,
+        key_data: &RndcKeyData,
     ) -> Result<()> {
-        let srv_data = crate::bind9::SRVRecordData {
-            priority: self.priority,
-            weight: self.weight,
-            port: self.port,
-            target: self.target.clone(),
-            ttl,
-        };
-        zone_manager
-            .add_srv_record(zone_name, record_name, &srv_data, server, key_data)
-            .await
-    }
-}
-
-/// Implement `ReconcilableRecord` for `SRVRecord`.
-impl ReconcilableRecord for SRVRecord {
-    type Spec = crate::crd::SRVRecordSpec;
-    type Operation = SRVRecordOp;
-
-    fn get_spec(&self) -> &Self::Spec {
-        &self.spec
-    }
-
-    fn get_status(&self) -> Option<&crate::crd::RecordStatus> {
-        self.status.as_ref()
-    }
-
-    fn record_type_name() -> &'static str {
-        "SRV"
-    }
-
-    fn record_type_hickory() -> hickory_proto::rr::RecordType {
-        hickory_proto::rr::RecordType::SRV
-    }
-
-    fn create_operation(spec: &Self::Spec) -> Self::Operation {
-        SRVRecordOp {
+        let spec = &self.spec;
+        let srv_data = SRVRecordData {
             priority: spec.priority,
             weight: spec.weight,
             port: spec.port,
             target: spec.target.clone(),
-        }
-    }
-
-    fn get_record_name(spec: &Self::Spec) -> &str {
-        &spec.name
-    }
-
-    fn get_ttl(spec: &Self::Spec) -> Option<i32> {
-        spec.ttl
+            ttl: spec.ttl,
+        };
+        zone_manager
+            .add_srv_record(zone_name, &spec.name, &srv_data, server, key_data)
+            .await
     }
 }
 
-/// CAA record operation wrapper.
-#[derive(Clone)]
-pub struct CAARecordOp {
-    flags: i32,
-    tag: String,
-    value: String,
-}
-
-impl RecordOperation for CAARecordOp {
-    fn record_type_name(&self) -> &'static str {
-        "CAA"
-    }
-
+impl ReconcilableRecord for CAARecord {
     async fn add_to_bind9(
         &self,
-        zone_manager: &crate::bind9::Bind9Manager,
+        zone_manager: &Bind9Manager,
         zone_name: &str,
-        record_name: &str,
-        ttl: Option<i32>,
         server: &str,
-        key_data: &crate::bind9::RndcKeyData,
+        key_data: &RndcKeyData,
     ) -> Result<()> {
+        let spec = &self.spec;
         zone_manager
             .add_caa_record(
                 zone_name,
-                record_name,
-                self.flags,
-                &self.tag,
-                &self.value,
-                ttl,
+                &spec.name,
+                spec.flags,
+                &spec.tag,
+                &spec.value,
+                spec.ttl,
                 server,
                 key_data,
             )
@@ -763,107 +341,22 @@ impl RecordOperation for CAARecordOp {
     }
 }
 
-/// Implement `ReconcilableRecord` for `CAARecord`.
-impl ReconcilableRecord for CAARecord {
-    type Spec = crate::crd::CAARecordSpec;
-    type Operation = CAARecordOp;
-
-    fn get_spec(&self) -> &Self::Spec {
-        &self.spec
-    }
-
-    fn get_status(&self) -> Option<&crate::crd::RecordStatus> {
-        self.status.as_ref()
-    }
-
-    fn record_type_name() -> &'static str {
-        "CAA"
-    }
-
-    fn record_type_hickory() -> hickory_proto::rr::RecordType {
-        hickory_proto::rr::RecordType::CAA
-    }
-
-    fn create_operation(spec: &Self::Spec) -> Self::Operation {
-        CAARecordOp {
-            flags: spec.flags,
-            tag: spec.tag.clone(),
-            value: spec.value.clone(),
-        }
-    }
-
-    fn get_record_name(spec: &Self::Spec) -> &str {
-        &spec.name
-    }
-
-    fn get_ttl(spec: &Self::Spec) -> Option<i32> {
-        spec.ttl
-    }
-}
-
-/// PTR record operation wrapper.
-#[derive(Clone)]
-pub struct PTRRecordOp {
-    target: String,
-}
-
-impl RecordOperation for PTRRecordOp {
-    fn record_type_name(&self) -> &'static str {
-        "PTR"
-    }
-
+impl ReconcilableRecord for PTRRecord {
     async fn add_to_bind9(
         &self,
-        zone_manager: &crate::bind9::Bind9Manager,
+        zone_manager: &Bind9Manager,
         zone_name: &str,
-        record_name: &str,
-        ttl: Option<i32>,
         server: &str,
-        key_data: &crate::bind9::RndcKeyData,
+        key_data: &RndcKeyData,
     ) -> Result<()> {
-        let ptr_data = crate::bind9::PTRRecordData {
-            target: self.target.clone(),
-            ttl,
+        let spec = &self.spec;
+        let ptr_data = PTRRecordData {
+            target: spec.target.clone(),
+            ttl: spec.ttl,
         };
         zone_manager
-            .add_ptr_record(zone_name, record_name, &ptr_data, server, key_data)
+            .add_ptr_record(zone_name, &spec.name, &ptr_data, server, key_data)
             .await
-    }
-}
-
-/// Implement `ReconcilableRecord` for `PTRRecord`.
-impl ReconcilableRecord for PTRRecord {
-    type Spec = crate::crd::PTRRecordSpec;
-    type Operation = PTRRecordOp;
-
-    fn get_spec(&self) -> &Self::Spec {
-        &self.spec
-    }
-
-    fn get_status(&self) -> Option<&crate::crd::RecordStatus> {
-        self.status.as_ref()
-    }
-
-    fn record_type_name() -> &'static str {
-        "PTR"
-    }
-
-    fn record_type_hickory() -> hickory_proto::rr::RecordType {
-        hickory_proto::rr::RecordType::PTR
-    }
-
-    fn create_operation(spec: &Self::Spec) -> Self::Operation {
-        PTRRecordOp {
-            target: spec.target.clone(),
-        }
-    }
-
-    fn get_record_name(spec: &Self::Spec) -> &str {
-        &spec.name
-    }
-
-    fn get_ttl(spec: &Self::Spec) -> Option<i32> {
-        spec.ttl
     }
 }
 
@@ -1124,11 +617,11 @@ where
     let Some(record) = api
         .get_opt(name)
         .await
-        .with_context(|| format!("Failed to get {} {namespace}/{name}", T::record_type_name()))?
+        .with_context(|| format!("Failed to get {} {namespace}/{name}", record_type::<T>()))?
     else {
         debug!(
             "Not replaying {} {namespace}/{name}: it no longer exists",
-            T::record_type_name()
+            record_type::<T>()
         );
         return Ok(ReplayAction::Skipped);
     };
@@ -1136,24 +629,13 @@ where
     if !should_replay(record.meta()) {
         debug!(
             "Not replaying {} {namespace}/{name}: it is being deleted",
-            T::record_type_name()
+            record_type::<T>()
         );
         return Ok(ReplayAction::Skipped);
     }
 
-    let spec = record.get_spec();
-
-    add_record_to_instances_generic(
-        client,
-        stores,
-        resolver,
-        primary_refs,
-        zone_name,
-        T::get_record_name(spec),
-        T::get_ttl(spec),
-        T::create_operation(spec),
-    )
-    .await?;
+    add_record_to_instances_generic(client, stores, resolver, primary_refs, zone_name, &record)
+        .await?;
     Ok(ReplayAction::Pushed)
 }
 
@@ -1328,34 +810,11 @@ async fn replay_dispatch(
 
     let kind = DNSRecordKind::try_from(kind).ok()?;
 
-    macro_rules! replay {
-        ($record_type:ty) => {
-            Some(
-                replay_single_record::<$record_type>(
-                    client,
-                    stores,
-                    resolver,
-                    zone_name,
-                    namespace,
-                    name,
-                    primary_refs,
-                )
-                .await,
-            )
-        };
-    }
-
-    match kind {
-        DNSRecordKind::A => replay!(ARecord),
-        DNSRecordKind::AAAA => replay!(AAAARecord),
-        DNSRecordKind::TXT => replay!(TXTRecord),
-        DNSRecordKind::CNAME => replay!(CNAMERecord),
-        DNSRecordKind::MX => replay!(MXRecord),
-        DNSRecordKind::NS => replay!(NSRecord),
-        DNSRecordKind::SRV => replay!(SRVRecord),
-        DNSRecordKind::CAA => replay!(CAARecord),
-        DNSRecordKind::PTR => replay!(PTRRecord),
-    }
+    // One arm per row of the record-kind table (ADR-0020).
+    Some(bindy_api::match_record_kind!(kind, K => {
+        replay_single_record::<K>(client, stores, resolver, zone_name, namespace, name, primary_refs)
+            .await
+    }))
 }
 
 #[cfg(test)]

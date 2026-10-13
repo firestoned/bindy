@@ -6,6 +6,7 @@
 #[cfg(test)]
 mod tests {
     use super::super::*;
+    use crate::bind9::records::needs_update;
     use crate::bind9::RndcKeyData;
     use hickory_proto::rr::{Name, RData, Record};
     use std::net::{Ipv4Addr, Ipv6Addr};
@@ -24,92 +25,107 @@ mod tests {
         Record::from_rdata(name, ttl, RData::AAAA(ip.into()))
     }
 
-    // ========== compare_ip_rrset (A records) ==========
+    fn s(v: &[&str]) -> Vec<String> {
+        v.iter().map(ToString::to_string).collect()
+    }
+
+    // ========== a_rdata / aaaa_rdata (ADR-0021 conversion) ==========
 
     #[test]
-    fn test_compare_ip_rrset_matches_same_ips_and_ttl() {
+    fn test_a_rdata_converts_every_address_in_order() {
+        let rdata = a_rdata(&s(&["192.0.2.1", "192.0.2.2"])).expect("valid list");
+        assert_eq!(
+            rdata,
+            vec![
+                RData::A(Ipv4Addr::new(192, 0, 2, 1).into()),
+                RData::A(Ipv4Addr::new(192, 0, 2, 2).into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_a_rdata_rejects_a_bad_entry() {
+        let err = a_rdata(&s(&["192.0.2.1", "bogus"])).expect_err("bad IPv4");
+        assert!(format!("{err:#}").contains("bogus"), "{err:#}");
+    }
+
+    #[test]
+    fn test_aaaa_rdata_converts_every_address() {
+        let rdata = aaaa_rdata(&s(&["2001:db8::1"])).expect("valid list");
+        assert_eq!(
+            rdata,
+            vec![RData::AAAA(
+                Ipv6Addr::from_str("2001:db8::1")
+                    .expect("valid test IP")
+                    .into()
+            )]
+        );
+    }
+
+    #[test]
+    fn test_aaaa_rdata_rejects_an_ipv4_entry() {
+        assert!(aaaa_rdata(&s(&["192.0.2.1"])).is_err());
+    }
+
+    // ========== value comparison through needs_update ==========
+
+    #[test]
+    fn test_a_same_ips_and_ttl_need_no_update() {
         let existing = vec![make_a_record(Ipv4Addr::new(192, 0, 2, 1), TEST_TTL)];
-        let desired = vec!["192.0.2.1".to_string()];
-        assert!(compare_ip_rrset(&existing, &desired, TEST_TTL));
+        let desired = a_rdata(&s(&["192.0.2.1"])).expect("valid");
+        assert!(!needs_update(&existing, &desired, TEST_TTL));
     }
 
     #[test]
-    fn test_compare_ip_rrset_detects_ip_mismatch() {
+    fn test_a_changed_ip_needs_update() {
         let existing = vec![make_a_record(Ipv4Addr::new(192, 0, 2, 1), TEST_TTL)];
-        let desired = vec!["192.0.2.2".to_string()];
-        assert!(!compare_ip_rrset(&existing, &desired, TEST_TTL));
+        let desired = a_rdata(&s(&["192.0.2.2"])).expect("valid");
+        assert!(needs_update(&existing, &desired, TEST_TTL));
     }
 
     #[test]
-    fn test_compare_ip_rrset_ttl_only_change_triggers_update() {
-        // Same addresses, different TTL: must be reported as a mismatch.
+    fn test_a_ttl_only_change_needs_update() {
         let existing = vec![make_a_record(Ipv4Addr::new(192, 0, 2, 1), TEST_TTL)];
-        let desired = vec!["192.0.2.1".to_string()];
-        assert!(!compare_ip_rrset(&existing, &desired, OTHER_TTL));
+        let desired = a_rdata(&s(&["192.0.2.1"])).expect("valid");
+        assert!(needs_update(&existing, &desired, OTHER_TTL));
     }
 
-    // ========== compare_ipv6_rrset (AAAA records) ==========
-
     #[test]
-    fn test_compare_ipv6_rrset_matches_canonical_form() {
+    fn test_aaaa_equivalent_textual_forms_need_no_update() {
+        // `2001:DB8::1` and the uncompressed form are the same address and
+        // must NOT churn.
         let existing = vec![make_aaaa_record(
             Ipv6Addr::from_str("2001:db8::1").expect("valid test IP"),
             TEST_TTL,
         )];
-        let desired = vec!["2001:db8::1".to_string()];
-        assert!(compare_ipv6_rrset(&existing, &desired, TEST_TTL));
+        for spec in [
+            "2001:db8::1",
+            "2001:DB8::1",
+            "2001:0db8:0000:0000:0000:0000:0000:0001",
+        ] {
+            let desired = aaaa_rdata(&s(&[spec])).expect("valid");
+            assert!(!needs_update(&existing, &desired, TEST_TTL), "{spec}");
+        }
     }
 
     #[test]
-    fn test_compare_ipv6_rrset_matches_uppercase_spec() {
-        // `2001:DB8::1` is the same address as `2001:db8::1` and must NOT churn.
+    fn test_aaaa_changed_address_needs_update() {
         let existing = vec![make_aaaa_record(
             Ipv6Addr::from_str("2001:db8::1").expect("valid test IP"),
             TEST_TTL,
         )];
-        let desired = vec!["2001:DB8::1".to_string()];
-        assert!(compare_ipv6_rrset(&existing, &desired, TEST_TTL));
+        let desired = aaaa_rdata(&s(&["2001:db8::2"])).expect("valid");
+        assert!(needs_update(&existing, &desired, TEST_TTL));
     }
 
     #[test]
-    fn test_compare_ipv6_rrset_matches_uncompressed_spec() {
+    fn test_aaaa_ttl_only_change_needs_update() {
         let existing = vec![make_aaaa_record(
             Ipv6Addr::from_str("2001:db8::1").expect("valid test IP"),
             TEST_TTL,
         )];
-        let desired = vec!["2001:0db8:0000:0000:0000:0000:0000:0001".to_string()];
-        assert!(compare_ipv6_rrset(&existing, &desired, TEST_TTL));
-    }
-
-    #[test]
-    fn test_compare_ipv6_rrset_detects_address_mismatch() {
-        let existing = vec![make_aaaa_record(
-            Ipv6Addr::from_str("2001:db8::1").expect("valid test IP"),
-            TEST_TTL,
-        )];
-        let desired = vec!["2001:db8::2".to_string()];
-        assert!(!compare_ipv6_rrset(&existing, &desired, TEST_TTL));
-    }
-
-    #[test]
-    fn test_compare_ipv6_rrset_unparseable_desired_is_mismatch() {
-        // Invalid spec address must be treated as a mismatch, not a panic.
-        let existing = vec![make_aaaa_record(
-            Ipv6Addr::from_str("2001:db8::1").expect("valid test IP"),
-            TEST_TTL,
-        )];
-        let desired = vec!["not-an-ipv6-address".to_string()];
-        assert!(!compare_ipv6_rrset(&existing, &desired, TEST_TTL));
-    }
-
-    #[test]
-    fn test_compare_ipv6_rrset_ttl_only_change_triggers_update() {
-        let existing = vec![make_aaaa_record(
-            Ipv6Addr::from_str("2001:db8::1").expect("valid test IP"),
-            TEST_TTL,
-        )];
-        let desired = vec!["2001:db8::1".to_string()];
-        assert!(!compare_ipv6_rrset(&existing, &desired, OTHER_TTL));
+        let desired = aaaa_rdata(&s(&["2001:db8::1"])).expect("valid");
+        assert!(needs_update(&existing, &desired, OTHER_TTL));
     }
 
     // ========== parse_ipv4_addresses / parse_ipv6_addresses ==========

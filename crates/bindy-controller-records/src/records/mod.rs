@@ -24,14 +24,14 @@ use status_helpers::{update_record_status, RecordStatusUpdate};
 // 2026-10-05), so the zone controller can replay and delete records without
 // depending on this crate. Re-exported under the old paths.
 pub use bindy_bind9::record_push::{
-    add_record_to_instances_generic, delete_record_from_primaries, ReconcilableRecord,
-    RecordOperation,
+    add_record_to_instances_generic, delete_record_from_primaries, record_type, ReconcilableRecord,
 };
 
+use crate::context::RecordKind;
 use crate::crd::DNSZone;
 use anyhow::{Context, Result};
 
-use kube::{client::Client, Api, Resource, ResourceExt};
+use kube::{client::Client, Api, ResourceExt};
 use std::future::Future;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
@@ -142,9 +142,8 @@ enum Prepared {
 ///
 /// * `client` - Kubernetes API client
 /// * `stores` - The shared reflector stores
-/// * `record` - The DNS record resource, as the reconcile received it
-/// * `record_type` - Human-readable record type name (e.g., "A", "TXT", "AAAA")
-/// * `spec_hashable` - The record spec to hash for change detection
+/// * `record` - The DNS record resource, as the reconcile received it; its
+///   spec is hashed for change detection
 ///
 /// # Returns
 ///
@@ -156,22 +155,12 @@ enum Prepared {
 ///
 /// Returns an error if a status update fails.
 #[allow(clippy::too_many_lines)]
-async fn prepare_record_reconciliation<T, S>(
+async fn prepare_record_reconciliation<T: RecordKind>(
     client: &Client,
     stores: &crate::context::Stores,
     record: &T,
-    record_type: &str,
-    spec_hashable: &S,
-) -> Result<Prepared>
-where
-    T: Resource<DynamicType = (), Scope = k8s_openapi::NamespaceResourceScope>
-        + ResourceExt
-        + Clone
-        + std::fmt::Debug
-        + serde::Serialize
-        + for<'de> serde::Deserialize<'de>,
-    S: serde::Serialize,
-{
+) -> Result<Prepared> {
+    let record_type = record_type::<T>();
     let namespace = record.namespace().unwrap_or_default();
     let name = record.name_any();
     let current_generation = record.meta().generation;
@@ -201,7 +190,7 @@ where
     };
 
     // Calculate hash of current spec to detect actual data changes
-    let current_hash = crate::ddns::calculate_record_hash(spec_hashable);
+    let current_hash = crate::ddns::calculate_record_hash(record.spec());
 
     // Get the DNSZone via zoneRef, from the store (ADR-0016)
     let dnszone = match get_zone_from_ref(client, stores, &zone_ref).await {
@@ -380,26 +369,15 @@ where
     let namespace = record.namespace().unwrap_or_default();
     let name = record.name_any();
 
-    debug!(
-        "Reconciling {}Record: {}/{}",
-        T::record_type_name(),
-        namespace,
-        name
-    );
+    let record_type = record_type::<T>();
+    let record_name = record.spec_name();
 
-    let spec = record.get_spec();
+    debug!("Reconciling {}: {}/{}", T::KIND, namespace, name);
+
     let current_generation = record.meta().generation;
 
     // Use generic helper to get zone and instances
-    let rec_ctx = match prepare_record_reconciliation(
-        &client,
-        &ctx.stores,
-        &record,
-        T::record_type_name(),
-        spec,
-    )
-    .await?
-    {
+    let rec_ctx = match prepare_record_reconciliation(&client, &ctx.stores, &record).await? {
         Prepared::Write(rec_ctx) => rec_ctx,
         Prepared::Stop(outcome) => return Ok(outcome),
     };
@@ -411,15 +389,10 @@ where
     // Handle renames: if the record was previously published under a different
     // DNS name (status.publishedName), delete the old FQDN from the zone first.
     // Otherwise the old name would remain orphaned in BIND9 forever.
-    if let Some(old_name) = detect_renamed_record(record.get_status(), T::get_record_name(spec)) {
+    if let Some(old_name) = detect_renamed_record(record.record_status(), record_name) {
         info!(
             "{} record {}/{} renamed from '{}' to '{}' - deleting old name from zone {}",
-            T::record_type_name(),
-            namespace,
-            name,
-            old_name,
-            T::get_record_name(spec),
-            rec_ctx.zone_ref.zone_name
+            record_type, namespace, name, old_name, record_name, rec_ctx.zone_ref.zone_name
         );
 
         if let Err(e) = delete_record_from_primaries(
@@ -429,17 +402,14 @@ where
             &rec_ctx.primary_refs,
             &rec_ctx.zone_ref.zone_name,
             &old_name,
-            T::record_type_hickory(),
+            record_type,
             true, // fail_on_error: do not publish the new name until the old one is gone
         )
         .await
         {
             warn!(
                 "Failed to delete renamed {} record '{}' from zone {}: {}",
-                T::record_type_name(),
-                old_name,
-                rec_ctx.zone_ref.zone_name,
-                e
+                record_type, old_name, rec_ctx.zone_ref.zone_name, e
             );
             // published_name stays as it is, so the deletion is retried
             update_record_status(
@@ -462,23 +432,20 @@ where
     // record, say) drives a sustained delete/add storm against named. With no
     // periodic resync the retry is scheduled for when the cooldown ends
     // (ADR-0016). See `REJECTED_WRITE_COOLDOWN`.
-    let write_key = format!("{}Record/{namespace}/{name}", T::record_type_name());
+    let write_key = rejected_write_key(&record);
     if let Some(remaining) =
         bindy_controller_sdk::retry::write_cooldown_remaining(&write_key, &rec_ctx.current_hash)
     {
         debug!(
             "Skipping {} record {}.{}: the identical spec was rejected less than {:?} ago, retrying in {:?}",
-            T::record_type_name(),
-            T::get_record_name(spec),
+            record_type,
+            record_name,
             rec_ctx.zone_ref.zone_name,
             bindy_controller_sdk::retry::REJECTED_WRITE_COOLDOWN,
             remaining
         );
         return Ok(RecordOutcome::CoolingDown { remaining });
     }
-
-    // Create type-specific operation from spec
-    let record_op = T::create_operation(spec);
 
     // Add record to BIND9 primaries using generic helper
     match add_record_to_instances_generic(
@@ -487,9 +454,7 @@ where
         &resolver,
         &rec_ctx.primary_refs,
         &rec_ctx.zone_ref.zone_name,
-        T::get_record_name(spec),
-        T::get_ttl(spec),
-        record_op,
+        &record,
     )
     .await
     {
@@ -497,8 +462,8 @@ where
             bindy_controller_sdk::retry::clear_rejected_write(&write_key);
             debug!(
                 "Successfully added {} record {}.{} via {} primary instance(s)",
-                T::record_type_name(),
-                T::get_record_name(spec),
+                record_type,
+                record_name,
                 rec_ctx.zone_ref.zone_name,
                 rec_ctx.primary_refs.len()
             );
@@ -512,8 +477,7 @@ where
             // publishedName are only set after a successful, selected reconcile.
             let message = format!(
                 "{} record added to zone {}",
-                T::record_type_name(),
-                rec_ctx.zone_ref.zone_name
+                record_type, rec_ctx.zone_ref.zone_name
             );
             update_record_status(
                 &client,
@@ -525,8 +489,8 @@ where
                     observed_generation: current_generation,
                     record_hash: Some(rec_ctx.current_hash),
                     last_updated: Some(chrono::Utc::now().to_rfc3339()),
-                    addresses: T::get_display_addresses(spec),
-                    published_name: Some(T::get_record_name(spec).to_string()),
+                    addresses: record.display_addresses(),
+                    published_name: Some(record_name.to_string()),
                 },
             )
             .await?;
@@ -536,9 +500,7 @@ where
             bindy_controller_sdk::retry::note_rejected_write(&write_key, &rec_ctx.current_hash);
             warn!(
                 "Failed to add {} record {}.{}: {e:#}",
-                T::record_type_name(),
-                T::get_record_name(spec),
-                rec_ctx.zone_ref.zone_name
+                record_type, record_name, rec_ctx.zone_ref.zone_name
             );
             update_record_status(
                 &client,
@@ -553,6 +515,28 @@ where
             Ok(RecordOutcome::WriteRejected)
         }
     }
+}
+
+/// The rejection-cooldown key of `record`: `<Kind>/<namespace>/<name>`.
+///
+/// The one place it is built, for the reconcile that notes a rejected write
+/// and the finalizer that clears it (ADR-0020).
+///
+/// # Arguments
+///
+/// * `record` - The record whose writes the cooldown tracks
+///
+/// # Returns
+///
+/// The key, e.g. `ARecord/team/web`.
+#[must_use]
+pub(crate) fn rejected_write_key<T: RecordKind>(record: &T) -> String {
+    format!(
+        "{}/{}/{}",
+        T::KIND,
+        record.namespace().unwrap_or_default(),
+        record.name_any()
+    )
 }
 
 /// Detects whether a record was renamed since it was last published to BIND9.
@@ -660,8 +644,6 @@ pub(crate) fn primaries_step<I>(filtered: Result<Vec<I>>) -> DeleteStep<Vec<I>> 
 ///
 /// * `client` - Kubernetes API client
 /// * `record` - The DNS record resource being deleted
-/// * `record_type` - Human-readable record type (e.g., "A", "TXT")
-/// * `record_type_hickory` - hickory-client `RecordType` enum value
 /// * `stores` - Reflector stores containing `DNSZones` and instances
 ///
 /// # Returns
@@ -680,35 +662,19 @@ pub(crate) fn primaries_step<I>(filtered: Result<Vec<I>>) -> DeleteStep<Vec<I>> 
 ///
 /// Panics if RNDC key is not found for an instance (should never happen in production).
 #[allow(clippy::too_many_lines)]
-pub async fn delete_record<T>(
+pub async fn delete_record<T: RecordKind>(
     client: &Client,
     record: &T,
-    record_type: &str,
-    record_type_hickory: hickory_proto::rr::RecordType,
     stores: &crate::context::Stores,
-) -> Result<()>
-where
-    T: Resource<DynamicType = (), Scope = k8s_openapi::NamespaceResourceScope>
-        + ResourceExt
-        + Clone
-        + std::fmt::Debug
-        + serde::Serialize
-        + for<'de> serde::Deserialize<'de>,
-{
+) -> Result<()> {
+    let record_type = record_type::<T>();
     let namespace = record.namespace().unwrap_or_default();
     let name = record.name_any();
 
     debug!("Deleting {} record: {}/{}", record_type, namespace, name);
 
-    // Extract status fields generically
-    let record_json = serde_json::to_value(record).ok();
-    let status = record_json.as_ref().and_then(|v| v.get("status").cloned());
-
-    let zone_ref = status
-        .as_ref()
-        .and_then(|s| s.get("zoneRef"))
-        .cloned()
-        .and_then(|z| serde_json::from_value::<crate::crd::ZoneReference>(z).ok());
+    let status = record.record_status();
+    let zone_ref = status.and_then(|s| s.zone_ref.clone());
 
     // If no zone ref, record was never added to DNS (or already cleaned up)
     let Some(zone_ref) = zone_ref else {
@@ -796,22 +762,10 @@ where
     };
 
     // Determine the DNS name actually published to BIND9. Prefer
-    // status.publishedName (handles renames), then spec.name, then the
-    // resource name as a last resort.
+    // status.publishedName (handles renames), then spec.name.
     let record_name_str = status
-        .as_ref()
-        .and_then(|s| s.get("publishedName"))
-        .and_then(|p| p.as_str())
-        .map(ToString::to_string)
-        .or_else(|| {
-            record_json
-                .as_ref()
-                .and_then(|v| v.get("spec"))
-                .and_then(|s| s.get("name"))
-                .and_then(|n| n.as_str())
-                .map(ToString::to_string)
-        })
-        .unwrap_or_else(|| name.clone());
+        .and_then(|s| s.published_name.as_deref())
+        .unwrap_or_else(|| record.spec_name());
 
     // Delete record from all primaries. An instance whose data is gone does
     // not block the finalizer; a pod that still holds the zone but cannot be
@@ -825,8 +779,8 @@ where
         &resolver,
         &primary_refs,
         &zone_ref.zone_name,
-        &record_name_str,
-        record_type_hickory,
+        record_name_str,
+        record_type,
         false, // fail_on_error: tolerate endpoints whose pod no longer holds the zone
     )
     .await?;

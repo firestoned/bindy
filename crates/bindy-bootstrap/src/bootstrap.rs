@@ -77,10 +77,7 @@ use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::time::Duration;
 
-use crate::crd::{
-    AAAARecord, ARecord, Bind9Cluster, Bind9Instance, CAARecord, CNAMERecord, ClusterBind9Provider,
-    DNSZone, MXRecord, NSRecord, PTRRecord, SRVRecord, TXTRecord,
-};
+use crate::crd::{Bind9Cluster, Bind9Instance, ClusterBind9Provider, DNSZone};
 
 /// Default namespace for the bindy operator deployment.
 pub const DEFAULT_NAMESPACE: &str = "bindy-system";
@@ -997,23 +994,16 @@ pub(crate) fn mark_storage_version(
     Ok(crd)
 }
 
-/// Build all 13 CRDs in the same order as `crdgen`.
+/// Build every CRD in the same order as `crdgen`: each record kind of the
+/// record-kind table (ADR-0020), then the zone and infrastructure CRDs.
 pub(crate) fn build_all_crds() -> Result<Vec<CustomResourceDefinition>> {
-    Ok(vec![
-        build_crd::<ARecord>()?,
-        build_crd::<AAAARecord>()?,
-        build_crd::<CNAMERecord>()?,
-        build_crd::<MXRecord>()?,
-        build_crd::<NSRecord>()?,
-        build_crd::<TXTRecord>()?,
-        build_crd::<SRVRecord>()?,
-        build_crd::<CAARecord>()?,
-        build_crd::<PTRRecord>()?,
-        build_crd::<DNSZone>()?,
-        build_crd::<Bind9Cluster>()?,
-        build_crd::<ClusterBind9Provider>()?,
-        build_crd::<Bind9Instance>()?,
-    ])
+    let mut crds = Vec::new();
+    bindy_api::each_record_kind!(K => crds.push(build_crd::<K>()?));
+    crds.push(build_crd::<DNSZone>()?);
+    crds.push(build_crd::<Bind9Cluster>()?);
+    crds.push(build_crd::<ClusterBind9Provider>()?);
+    crds.push(build_crd::<Bind9Instance>()?);
+    Ok(crds)
 }
 
 // ---------------------------------------------------------------------------
