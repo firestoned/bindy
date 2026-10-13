@@ -58,6 +58,7 @@
 
 use anyhow::{anyhow, Context as _, Result};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use bindy_controller_sdk::resources::delete_if_present;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{Namespace, Secret, ServiceAccount};
 use k8s_openapi::api::rbac::v1::{
@@ -65,16 +66,17 @@ use k8s_openapi::api::rbac::v1::{
 };
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
-use k8s_openapi::ByteString;
+use k8s_openapi::{ByteString, NamespaceResourceScope};
 use kube::{
-    api::{DeleteParams, Patch, PatchParams},
+    api::{Patch, PatchParams},
     config::Kubeconfig,
-    Api, Client, CustomResourceExt,
+    Api, Client, CustomResourceExt, Resource,
 };
+use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
+use std::fmt::Debug;
 use std::time::Duration;
 
-use crate::constants::HTTP_NOT_FOUND;
 use crate::crd::{
     AAAARecord, ARecord, Bind9Cluster, Bind9Instance, CAARecord, CNAMERecord, ClusterBind9Provider,
     DNSZone, MXRecord, NSRecord, PTRRecord, SRVRecord, TXTRecord,
@@ -2152,77 +2154,55 @@ pub async fn run_revoke_multi_cluster(namespace: &str, service_account: &str) ->
         .context("Failed to connect to Kubernetes cluster — is KUBECONFIG set?")?;
 
     // Revoke in reverse creation order: bindings → roles → secrets → SA
-    delete_mc_role_binding(&client, namespace, service_account).await?;
-    delete_mc_role(&client, namespace, service_account).await?;
+    delete_mc_resource::<RoleBinding>(&client, namespace, service_account).await?;
+    delete_mc_resource::<Role>(&client, namespace, service_account).await?;
 
     let kubeconfig_secret = format!("{service_account}{REMOTE_KUBECONFIG_SECRET_SUFFIX}");
-    delete_mc_secret(&client, namespace, &kubeconfig_secret).await?;
+    delete_mc_resource::<Secret>(&client, namespace, &kubeconfig_secret).await?;
 
     let token_secret = format!("{service_account}{SA_TOKEN_SECRET_SUFFIX}");
-    delete_mc_secret(&client, namespace, &token_secret).await?;
+    delete_mc_resource::<Secret>(&client, namespace, &token_secret).await?;
 
-    delete_mc_service_account(&client, namespace, service_account).await?;
+    delete_mc_resource::<ServiceAccount>(&client, namespace, service_account).await?;
 
     eprintln!("\n✓ Revoked multi-cluster access for: {service_account} (namespace: {namespace})");
     Ok(())
 }
 
-async fn delete_mc_role_binding(client: &Client, namespace: &str, sa_name: &str) -> Result<()> {
-    let api: Api<RoleBinding> = Api::namespaced(client.clone(), namespace);
-    match api.delete(sa_name, &DeleteParams::default()).await {
-        Ok(_) => eprintln!("✓ Deleted RoleBinding: {sa_name} (namespace: {namespace})"),
-        Err(kube::Error::Api(ref s)) if s.code == HTTP_NOT_FOUND => {
-            eprintln!("  RoleBinding/{sa_name} not found, skipping");
-        }
-        Err(e) => {
-            return Err(anyhow::Error::from(e))
-                .with_context(|| format!("Failed to delete RoleBinding/{sa_name}"));
-        }
+/// Delete one namespaced object that `bootstrap mc` created, for revoke.
+///
+/// Reports the outcome on stderr: `✓ Deleted <Kind>: <name> (namespace: <ns>)`
+/// when the delete was accepted, `  <Kind>/<name> not found, skipping` when the
+/// object is already gone (HTTP 404).
+///
+/// # Arguments
+/// * `client` - Client for the queen-ship cluster
+/// * `namespace` - Namespace the object lives in
+/// * `name` - The object's name
+///
+/// # Errors
+/// Returns `Failed to delete <Kind>/<name>` for any API failure other than
+/// 404; the `kube::Error` stays in the chain.
+pub(crate) async fn delete_mc_resource<K>(
+    client: &Client,
+    namespace: &str,
+    name: &str,
+) -> Result<()>
+where
+    K: Resource<DynamicType = (), Scope = NamespaceResourceScope>
+        + Clone
+        + Debug
+        + DeserializeOwned,
+{
+    let kind = K::kind(&());
+    let api: Api<K> = Api::namespaced(client.clone(), namespace);
+    let deleted = delete_if_present(&api, name)
+        .await
+        .with_context(|| format!("Failed to delete {kind}/{name}"))?;
+    if !deleted {
+        eprintln!("  {kind}/{name} not found, skipping");
+        return Ok(());
     }
-    Ok(())
-}
-
-async fn delete_mc_role(client: &Client, namespace: &str, sa_name: &str) -> Result<()> {
-    let api: Api<Role> = Api::namespaced(client.clone(), namespace);
-    match api.delete(sa_name, &DeleteParams::default()).await {
-        Ok(_) => eprintln!("✓ Deleted Role: {sa_name} (namespace: {namespace})"),
-        Err(kube::Error::Api(ref s)) if s.code == HTTP_NOT_FOUND => {
-            eprintln!("  Role/{sa_name} not found, skipping");
-        }
-        Err(e) => {
-            return Err(anyhow::Error::from(e))
-                .with_context(|| format!("Failed to delete Role/{sa_name}"));
-        }
-    }
-    Ok(())
-}
-
-async fn delete_mc_secret(client: &Client, namespace: &str, secret_name: &str) -> Result<()> {
-    let api: Api<Secret> = Api::namespaced(client.clone(), namespace);
-    match api.delete(secret_name, &DeleteParams::default()).await {
-        Ok(_) => eprintln!("✓ Deleted Secret: {secret_name} (namespace: {namespace})"),
-        Err(kube::Error::Api(ref s)) if s.code == HTTP_NOT_FOUND => {
-            eprintln!("  Secret/{secret_name} not found, skipping");
-        }
-        Err(e) => {
-            return Err(anyhow::Error::from(e))
-                .with_context(|| format!("Failed to delete Secret/{secret_name}"));
-        }
-    }
-    Ok(())
-}
-
-async fn delete_mc_service_account(client: &Client, namespace: &str, sa_name: &str) -> Result<()> {
-    let api: Api<ServiceAccount> = Api::namespaced(client.clone(), namespace);
-    match api.delete(sa_name, &DeleteParams::default()).await {
-        Ok(_) => eprintln!("✓ Deleted ServiceAccount: {sa_name} (namespace: {namespace})"),
-        Err(kube::Error::Api(ref s)) if s.code == HTTP_NOT_FOUND => {
-            eprintln!("  ServiceAccount/{sa_name} not found, skipping");
-        }
-        Err(e) => {
-            return Err(anyhow::Error::from(e))
-                .with_context(|| format!("Failed to delete ServiceAccount/{sa_name}"));
-        }
-    }
+    eprintln!("✓ Deleted {kind}: {name} (namespace: {namespace})");
     Ok(())
 }

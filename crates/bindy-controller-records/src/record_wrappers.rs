@@ -7,17 +7,10 @@
 //! wrapper functions for all DNS record types, eliminating ~900 lines of duplicate code.
 
 use crate::crd::RecordStatus;
+pub use bindy_api::constants::CONDITION_STATUS_TRUE;
+pub use bindy_api::status_reasons::{CONDITION_TYPE_READY, REASON_ZONE_NOT_FOUND};
 use kube::runtime::controller::Action;
 use std::time::Duration;
-
-/// Condition type for resource readiness
-pub const CONDITION_TYPE_READY: &str = "Ready";
-
-/// Condition status indicating ready state
-pub const CONDITION_STATUS_TRUE: &str = "True";
-
-/// Error type label for reconciliation errors
-pub const ERROR_TYPE_RECONCILE: &str = "reconcile_error";
 
 /// Stand-in for a condition that omits its optional `reason` or `message`.
 pub const UNKNOWN_CONDITION_FIELD: &str = "<none>";
@@ -89,9 +82,6 @@ pub fn ready_state(status: &Option<RecordStatus>) -> ReadyState<'_> {
 
 /// Status reason: no `DNSZone` selects the record (no `status.zoneRef`).
 pub const REASON_NOT_SELECTED: &str = "NotSelected";
-
-/// Status reason: the zone named by `status.zoneRef` does not exist.
-pub const REASON_ZONE_NOT_FOUND: &str = "ZoneNotFound";
 
 /// Status reason: the zone selects no `Bind9Instance`.
 pub const REASON_ZONE_NOT_CONFIGURED: &str = "ZoneNotConfigured";

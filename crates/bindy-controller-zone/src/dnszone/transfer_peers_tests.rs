@@ -76,6 +76,67 @@ mod tests {
         );
     }
 
+    /// CI, PR #546: a zone configured before its secondary's Service existed
+    /// reported Ready while NOTIFY had nowhere to go. A secondary without a
+    /// NOTIFY target must keep the zone not Ready, rechecked like a pending
+    /// transfer.
+    #[test]
+    fn a_secondary_without_a_notify_target_makes_the_zone_degraded() {
+        let zone = zone();
+        let mut updater = DNSZoneStatusUpdater::new(&zone);
+
+        mark_notify_targets_pending(
+            &mut updater,
+            "example.com",
+            &["dns/secondary-0".to_string()],
+        );
+        finalize(&mut updater);
+
+        let conditions = updater.conditions();
+        let degraded = condition(conditions, "Degraded");
+        assert_eq!(degraded.status, "True");
+        assert_eq!(
+            degraded.reason.as_deref(),
+            Some(REASON_NOTIFY_TARGET_PENDING)
+        );
+        assert!(
+            degraded
+                .message
+                .as_deref()
+                .is_some_and(|m| m.contains("dns/secondary-0")),
+            "the message must name the instance: {degraded:?}"
+        );
+        assert_eq!(condition(conditions, "Ready").status, "False");
+    }
+
+    #[test]
+    fn every_secondary_with_a_notify_target_leaves_the_zone_alone() {
+        let zone = zone();
+        let mut updater = DNSZoneStatusUpdater::new(&zone);
+
+        mark_notify_targets_pending(&mut updater, "example.com", &[]);
+        finalize(&mut updater);
+
+        assert_eq!(condition(updater.conditions(), "Ready").status, "True");
+    }
+
+    #[test]
+    fn a_pending_notify_target_is_rechecked_like_a_pending_transfer() {
+        let outcome = crate::dnszone::status_helpers::zone_outcome(
+            Some(REASON_NOTIFY_TARGET_PENDING),
+            false,
+            None,
+            k8s_openapi::jiff::Timestamp::now(),
+        );
+
+        assert_eq!(
+            outcome,
+            crate::dnszone::types::ZoneOutcome::Retry {
+                reason: crate::dnszone::types::REASON_TRANSFER_PENDING,
+            }
+        );
+    }
+
     #[test]
     fn secondary_not_loaded_makes_the_zone_degraded_naming_the_instance() {
         // rc.7: the zone said Ready=True "configured on 2 primary and 1

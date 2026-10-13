@@ -4,15 +4,17 @@
 //! Generic finalizer management for Kubernetes resources.
 //!
 //! This module provides reusable functions for adding, removing, and handling
-//! finalizers on Kubernetes custom resources. It eliminates duplicate finalizer
-//! management code across reconcilers.
+//! finalizers on Kubernetes custom resources. One set of functions serves
+//! both namespaced and cluster-scoped kinds: the caller passes the `Api` the
+//! resource lives behind (`Api::namespaced` or `Api::all`), and that is the
+//! only thing that differs between the two scopes.
 //!
 //! # Example
 //!
 //! ```rust,no_run
 //! use bindy_controller_sdk::finalizers::{ensure_finalizer, handle_deletion};
 //! use bindy_api::crd::Bind9Cluster;
-//! use kube::Client;
+//! use kube::{Api, Client, ResourceExt};
 //! use anyhow::Result;
 //!
 //! const FINALIZER: &str = "bind9cluster.dns.firestoned.io/finalizer";
@@ -23,16 +25,19 @@
 //! }
 //!
 //! async fn reconcile(client: Client, cluster: Bind9Cluster) -> Result<()> {
+//!     let api: Api<Bind9Cluster> =
+//!         Api::namespaced(client.clone(), &cluster.namespace().unwrap_or_default());
+//!
 //!     // Handle deletion if resource is being deleted
 //!     if cluster.metadata.deletion_timestamp.is_some() {
-//!         return handle_deletion(&client, &cluster, FINALIZER, || {
+//!         return handle_deletion(&api, &cluster, FINALIZER, || {
 //!             delete_children(&client, &cluster)
 //!         })
 //!         .await;
 //!     }
 //!
 //!     // Ensure finalizer is present
-//!     ensure_finalizer(&client, &cluster, FINALIZER).await?;
+//!     ensure_finalizer(&api, &cluster, FINALIZER).await?;
 //!
 //!     // Normal reconciliation logic...
 //!     Ok(())
@@ -45,9 +50,10 @@
 
 use anyhow::{anyhow, Context as AnyhowContext, Result};
 use kube::api::{Patch, PatchParams};
-use kube::core::{ClusterResourceScope, NamespaceResourceScope};
-use kube::{Api, Client, Resource, ResourceExt};
+use kube::{Api, Resource, ResourceExt};
+use serde::de::DeserializeOwned;
 use serde_json::json;
+use std::fmt::Debug;
 use std::future::Future;
 use tracing::info;
 
@@ -138,15 +144,48 @@ pub(crate) fn build_remove_finalizer_patch(
         .context("failed to build remove-finalizer JSON Patch")
 }
 
+/// The object's name for logs and errors: `namespace/name` for a namespaced
+/// object, `name` for a cluster-scoped one.
+fn display_name<K: Resource>(resource: &K) -> String {
+    let name = resource.name_any();
+    match resource.namespace() {
+        Some(namespace) => format!("{namespace}/{name}"),
+        None => name,
+    }
+}
+
+/// Whether `resource` carries `finalizer`.
+///
+/// # Arguments
+///
+/// * `resource` - The resource to inspect
+/// * `finalizer` - The finalizer string to look for (exact match)
+///
+/// # Returns
+///
+/// `true` when `metadata.finalizers` contains `finalizer`; `false` when it
+/// does not, is empty, or is absent.
+#[must_use]
+pub fn has_finalizer<K: Resource>(resource: &K, finalizer: &str) -> bool {
+    resource
+        .meta()
+        .finalizers
+        .as_ref()
+        .is_some_and(|f| f.iter().any(|existing| existing == finalizer))
+}
+
 /// Add a finalizer to a resource if not already present.
 ///
 /// This function checks if the specified finalizer is present on the resource,
 /// and adds it if missing. The operation is idempotent - calling it multiple
 /// times has no effect if the finalizer is already present.
 ///
+/// Works for both scopes: pass `Api::namespaced(client, namespace)` for a
+/// namespaced kind and `Api::all(client)` for a cluster-scoped one.
+///
 /// # Arguments
 ///
-/// * `client` - Kubernetes client for accessing the API
+/// * `api` - The API the resource lives behind
 /// * `resource` - The resource to add the finalizer to
 /// * `finalizer` - The finalizer string to add
 ///
@@ -164,7 +203,8 @@ pub(crate) fn build_remove_finalizer_patch(
 /// # Errors
 ///
 /// Returns an error if:
-/// - The resource has no namespace (for namespaced resources)
+/// - The resource has other finalizers but no `resourceVersion` (no safe
+///   guarded patch can be built)
 /// - The API patch operation fails, including when a concurrent writer
 ///   modified `metadata.finalizers` and the guarded patch was rejected
 ///
@@ -172,64 +212,48 @@ pub(crate) fn build_remove_finalizer_patch(
 ///
 /// ```rust,no_run
 /// # use bindy_controller_sdk::finalizers::ensure_finalizer;
-/// # use bindy_api::crd::Bind9Cluster;
-/// # use kube::Client;
-/// # async fn example(client: Client, cluster: Bind9Cluster) {
-/// const FINALIZER: &str = "bind9cluster.dns.firestoned.io/finalizer";
-/// ensure_finalizer(&client, &cluster, FINALIZER).await.unwrap();
+/// # use bindy_api::crd::ClusterBind9Provider;
+/// # use kube::{Api, Client};
+/// # async fn example(client: Client, provider: ClusterBind9Provider) {
+/// const FINALIZER: &str = "bind9globalcluster.dns.firestoned.io/finalizer";
+/// let api: Api<ClusterBind9Provider> = Api::all(client);
+/// ensure_finalizer(&api, &provider, FINALIZER).await.unwrap();
 /// # }
 /// ```
-pub async fn ensure_finalizer<T>(client: &Client, resource: &T, finalizer: &str) -> Result<()>
+pub async fn ensure_finalizer<K>(api: &Api<K>, resource: &K, finalizer: &str) -> Result<()>
 where
-    T: Resource<DynamicType = (), Scope = NamespaceResourceScope>
-        + ResourceExt
-        + Clone
-        + std::fmt::Debug
-        + serde::Serialize
-        + for<'de> serde::Deserialize<'de>,
+    K: Resource<DynamicType = ()> + Clone + Debug + DeserializeOwned,
 {
-    let namespace = resource.namespace().unwrap_or_default();
-    let name = resource.name_any();
-
-    let finalizers = resource.meta().finalizers.clone().unwrap_or_default();
-
     // Early return: finalizer already present
-    if finalizers.iter().any(|f| f == finalizer) {
+    if has_finalizer(resource, finalizer) {
         return Ok(());
     }
 
-    info!(
-        "Adding finalizer {} to {}/{} {}",
-        finalizer,
-        namespace,
-        name,
-        T::kind(&())
-    );
+    let kind = K::kind(&());
+    let object = display_name(resource);
+    info!("Adding finalizer {finalizer} to {kind} {object}");
 
+    let finalizers = resource.meta().finalizers.clone().unwrap_or_default();
     let patch = build_add_finalizer_patch(
         &finalizers,
         resource.meta().resource_version.as_deref(),
         finalizer,
     )?;
 
-    let api: Api<T> = Api::namespaced(client.clone(), &namespace);
-    api.patch(&name, &PatchParams::default(), &Patch::Json::<()>(patch))
-        .await
-        .with_context(|| {
-            format!(
-                "failed to add finalizer {finalizer} to {namespace}/{name} \
-                 (possibly a concurrent finalizer edit; will retry on next reconciliation)"
-            )
-        })?;
+    api.patch(
+        &resource.name_any(),
+        &PatchParams::default(),
+        &Patch::Json::<()>(patch),
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "failed to add finalizer {finalizer} to {object} \
+             (possibly a concurrent finalizer edit; will retry on next reconciliation)"
+        )
+    })?;
 
-    info!(
-        "Successfully added finalizer {} to {}/{} {}",
-        finalizer,
-        namespace,
-        name,
-        T::kind(&())
-    );
-
+    info!("Successfully added finalizer {finalizer} to {kind} {object}");
     Ok(())
 }
 
@@ -239,12 +263,12 @@ where
 /// The operation is idempotent - calling it multiple times has no effect if
 /// the finalizer is already absent.
 ///
-/// **Note:** Typically you should use `handle_deletion()` instead of calling
+/// **Note:** Typically you should use [`handle_deletion`] instead of calling
 /// this function directly, as it performs cleanup before removing the finalizer.
 ///
 /// # Arguments
 ///
-/// * `client` - Kubernetes client for accessing the API
+/// * `api` - The API the resource lives behind (`Api::namespaced` or `Api::all`)
 /// * `resource` - The resource to remove the finalizer from
 /// * `finalizer` - The finalizer string to remove
 ///
@@ -262,22 +286,13 @@ where
 ///
 /// # Errors
 ///
-/// Returns an error if:
-/// - The resource has no namespace (for namespaced resources)
-/// - The API patch operation fails, including when a concurrent writer
-///   modified `metadata.finalizers` and the guarded patch was rejected
-pub async fn remove_finalizer<T>(client: &Client, resource: &T, finalizer: &str) -> Result<()>
+/// Returns an error if the API patch operation fails, including when a
+/// concurrent writer modified `metadata.finalizers` and the guarded patch was
+/// rejected.
+pub async fn remove_finalizer<K>(api: &Api<K>, resource: &K, finalizer: &str) -> Result<()>
 where
-    T: Resource<DynamicType = (), Scope = NamespaceResourceScope>
-        + ResourceExt
-        + Clone
-        + std::fmt::Debug
-        + serde::Serialize
-        + for<'de> serde::Deserialize<'de>,
+    K: Resource<DynamicType = ()> + Clone + Debug + DeserializeOwned,
 {
-    let namespace = resource.namespace().unwrap_or_default();
-    let name = resource.name_any();
-
     let finalizers = resource.meta().finalizers.clone().unwrap_or_default();
 
     // Early return: finalizer already absent
@@ -285,32 +300,24 @@ where
         return Ok(());
     };
 
-    info!(
-        "Removing finalizer {} from {}/{} {}",
-        finalizer,
-        namespace,
-        name,
-        T::kind(&())
-    );
+    let kind = K::kind(&());
+    let object = display_name(resource);
+    info!("Removing finalizer {finalizer} from {kind} {object}");
 
-    let api: Api<T> = Api::namespaced(client.clone(), &namespace);
-    api.patch(&name, &PatchParams::default(), &Patch::Json::<()>(patch))
-        .await
-        .with_context(|| {
-            format!(
-                "failed to remove finalizer {finalizer} from {namespace}/{name} \
-                 (possibly a concurrent finalizer edit; will retry on next reconciliation)"
-            )
-        })?;
+    api.patch(
+        &resource.name_any(),
+        &PatchParams::default(),
+        &Patch::Json::<()>(patch),
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "failed to remove finalizer {finalizer} from {object} \
+             (possibly a concurrent finalizer edit; will retry on next reconciliation)"
+        )
+    })?;
 
-    info!(
-        "Successfully removed finalizer {} from {}/{} {}",
-        finalizer,
-        namespace,
-        name,
-        T::kind(&())
-    );
-
+    info!("Successfully removed finalizer {finalizer} from {kind} {object}");
     Ok(())
 }
 
@@ -318,15 +325,15 @@ where
 ///
 /// This function orchestrates the complete deletion process:
 /// 1. Logs that the resource is being deleted
-/// 2. Runs the `cleanup` closure
+/// 2. Runs the `cleanup` closure, only when the finalizer is present
 /// 3. Removes the finalizer to allow Kubernetes to delete the resource
 ///
-/// This function should be called when a resource has a deletion timestamp
-/// and the finalizer is still present.
+/// This function should be called when a resource has a deletion timestamp.
+/// It works for both scopes, through the `Api` the caller passes.
 ///
 /// # Arguments
 ///
-/// * `client` - Kubernetes client for accessing the API
+/// * `api` - The API the resource lives behind (`Api::namespaced` or `Api::all`)
 /// * `resource` - The resource being deleted
 /// * `finalizer` - The finalizer string to check and remove
 /// * `cleanup` - Async closure that removes what the resource owns; runs only
@@ -334,7 +341,8 @@ where
 ///
 /// # Returns
 ///
-/// Returns `Ok(())` if cleanup and finalizer removal succeeded.
+/// Returns `Ok(())` if cleanup and finalizer removal succeeded, or if the
+/// finalizer was not present (nothing to do).
 ///
 /// # Errors
 ///
@@ -349,327 +357,49 @@ where
 ///
 /// ```text
 /// use bindy_controller_sdk::finalizers::handle_deletion;
-/// use bindy_api::crd::Bind9Cluster;
-/// use kube::Client;
-/// use anyhow::Result;
-///
-/// const FINALIZER: &str = "bind9cluster.dns.firestoned.io/finalizer";
-///
-/// async fn reconcile(client: Client, cluster: Bind9Cluster) -> Result<()> {
-///     if cluster.metadata.deletion_timestamp.is_some() {
-///         return handle_deletion(&client, &cluster, FINALIZER, || async { Ok(()) }).await;
-///     }
-///     // Normal reconciliation...
-///     Ok(())
-/// }
-/// ```
-pub async fn handle_deletion<T, F, Fut>(
-    client: &Client,
-    resource: &T,
-    finalizer: &str,
-    cleanup: F,
-) -> Result<()>
-where
-    F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<()>>,
-    T: Resource<DynamicType = (), Scope = NamespaceResourceScope>
-        + ResourceExt
-        + Clone
-        + std::fmt::Debug
-        + serde::Serialize
-        + for<'de> serde::Deserialize<'de>,
-{
-    let namespace = resource.namespace().unwrap_or_default();
-    let name = resource.name_any();
-
-    info!("{} {}/{} is being deleted", T::kind(&()), namespace, name);
-
-    // Only proceed if the finalizer is present
-    if resource
-        .meta()
-        .finalizers
-        .as_ref()
-        .is_some_and(|f| f.contains(&finalizer.to_string()))
-    {
-        info!(
-            "Running cleanup for {} {}/{}",
-            T::kind(&()),
-            namespace,
-            name
-        );
-
-        // Perform cleanup operations
-        cleanup().await?;
-
-        // Remove the finalizer
-        remove_finalizer(client, resource, finalizer).await?;
-    }
-
-    Ok(())
-}
-
-/// Add a finalizer to a cluster-scoped resource if not already present.
-///
-/// This function is similar to `ensure_finalizer()` but works with cluster-scoped
-/// resources that don't have a namespace. It checks if the specified finalizer is
-/// present on the resource, and adds it if missing.
-///
-/// # Arguments
-///
-/// * `client` - Kubernetes client for accessing the API
-/// * `resource` - The cluster-scoped resource to add the finalizer to
-/// * `finalizer` - The finalizer string to add
-///
-/// # Returns
-///
-/// Returns `Ok(())` if the finalizer was added or already present.
-///
-/// # Concurrency
-///
-/// The patch is a JSON Patch guarded by a `test` operation (mirroring
-/// kube-runtime's finalizer helper), so a racing writer's finalizer edits are
-/// never clobbered. On a conflict the API call fails and the returned error
-/// triggers a requeue; the next reconciliation retries with fresh state.
-///
-/// # Errors
-///
-/// Returns an error if the API patch operation fails, including when a
-/// concurrent writer modified `metadata.finalizers` and the guarded patch
-/// was rejected.
-///
-/// # Example
-///
-/// ```rust,no_run
-/// # use bindy_controller_sdk::finalizers::ensure_cluster_finalizer;
-/// # use bindy_api::crd::ClusterBind9Provider;
-/// # use kube::Client;
-/// # async fn example(client: Client, cluster: ClusterBind9Provider) {
-/// const FINALIZER: &str = "bind9globalcluster.dns.firestoned.io/finalizer";
-/// ensure_cluster_finalizer(&client, &cluster, FINALIZER).await.unwrap();
-/// # }
-/// ```
-pub async fn ensure_cluster_finalizer<T>(
-    client: &Client,
-    resource: &T,
-    finalizer: &str,
-) -> Result<()>
-where
-    T: Resource<DynamicType = (), Scope = ClusterResourceScope>
-        + ResourceExt
-        + Clone
-        + std::fmt::Debug
-        + serde::Serialize
-        + for<'de> serde::Deserialize<'de>,
-{
-    let name = resource.name_any();
-
-    let finalizers = resource.meta().finalizers.clone().unwrap_or_default();
-
-    // Early return: finalizer already present
-    if finalizers.iter().any(|f| f == finalizer) {
-        return Ok(());
-    }
-
-    info!(
-        "Adding finalizer {} to {} {}",
-        finalizer,
-        T::kind(&()),
-        name
-    );
-
-    let patch = build_add_finalizer_patch(
-        &finalizers,
-        resource.meta().resource_version.as_deref(),
-        finalizer,
-    )?;
-
-    let api: Api<T> = Api::all(client.clone());
-    api.patch(&name, &PatchParams::default(), &Patch::Json::<()>(patch))
-        .await
-        .with_context(|| {
-            format!(
-                "failed to add finalizer {finalizer} to {name} \
-                 (possibly a concurrent finalizer edit; will retry on next reconciliation)"
-            )
-        })?;
-
-    info!(
-        "Successfully added finalizer {} to {} {}",
-        finalizer,
-        T::kind(&()),
-        name
-    );
-
-    Ok(())
-}
-
-/// Remove a finalizer from a cluster-scoped resource.
-///
-/// This function removes the specified finalizer from the cluster-scoped resource
-/// if present. The operation is idempotent - calling it multiple times has no effect
-/// if the finalizer is already absent.
-///
-/// **Note:** Typically you should use `handle_cluster_deletion()` instead of calling
-/// this function directly, as it performs cleanup before removing the finalizer.
-///
-/// # Arguments
-///
-/// * `client` - Kubernetes client for accessing the API
-/// * `resource` - The cluster-scoped resource to remove the finalizer from
-/// * `finalizer` - The finalizer string to remove
-///
-/// # Returns
-///
-/// Returns `Ok(())` if the finalizer was removed or already absent.
-///
-/// # Concurrency
-///
-/// The patch is a JSON Patch that `test`s the exact array index before
-/// removing it (mirroring kube-runtime's finalizer helper), so a racing
-/// writer's finalizer edits are never clobbered. On a conflict the API call
-/// fails and the returned error triggers a requeue; the next reconciliation
-/// retries with fresh state.
-///
-/// # Errors
-///
-/// Returns an error if the API patch operation fails, including when a
-/// concurrent writer modified `metadata.finalizers` and the guarded patch
-/// was rejected.
-pub async fn remove_cluster_finalizer<T>(
-    client: &Client,
-    resource: &T,
-    finalizer: &str,
-) -> Result<()>
-where
-    T: Resource<DynamicType = (), Scope = ClusterResourceScope>
-        + ResourceExt
-        + Clone
-        + std::fmt::Debug
-        + serde::Serialize
-        + for<'de> serde::Deserialize<'de>,
-{
-    let name = resource.name_any();
-
-    let finalizers = resource.meta().finalizers.clone().unwrap_or_default();
-
-    // Early return: finalizer already absent
-    let Some(patch) = build_remove_finalizer_patch(&finalizers, finalizer)? else {
-        return Ok(());
-    };
-
-    info!(
-        "Removing finalizer {} from {} {}",
-        finalizer,
-        T::kind(&()),
-        name
-    );
-
-    let api: Api<T> = Api::all(client.clone());
-    api.patch(&name, &PatchParams::default(), &Patch::Json::<()>(patch))
-        .await
-        .with_context(|| {
-            format!(
-                "failed to remove finalizer {finalizer} from {name} \
-                 (possibly a concurrent finalizer edit; will retry on next reconciliation)"
-            )
-        })?;
-
-    info!(
-        "Successfully removed finalizer {} from {} {}",
-        finalizer,
-        T::kind(&()),
-        name
-    );
-
-    Ok(())
-}
-
-/// Handle cluster-scoped resource deletion with cleanup and finalizer removal.
-///
-/// This function orchestrates the complete deletion process for cluster-scoped resources:
-/// 1. Logs that the resource is being deleted
-/// 2. Runs the `cleanup` closure
-/// 3. Removes the finalizer to allow Kubernetes to delete the resource
-///
-/// This function should be called when a cluster-scoped resource has a deletion
-/// timestamp and the finalizer is still present.
-///
-/// # Arguments
-///
-/// * `client` - Kubernetes client for accessing the API
-/// * `resource` - The cluster-scoped resource being deleted
-/// * `finalizer` - The finalizer string to check and remove
-/// * `cleanup` - Async closure that removes what the resource owns; runs only
-///   when the finalizer is present, and the finalizer is removed only if it succeeds
-///
-/// # Returns
-///
-/// Returns `Ok(())` if cleanup and finalizer removal succeeded.
-///
-/// # Errors
-///
-/// Returns an error if:
-/// - The cleanup operation fails
-/// - The finalizer removal fails
-///
-/// If an error occurs, the finalizer will remain on the resource and deletion
-/// will be blocked until the operation succeeds on a subsequent reconciliation.
-///
-/// # Example
-///
-/// ```text
-/// use bindy_controller_sdk::finalizers::handle_cluster_deletion;
 /// use bindy_api::crd::ClusterBind9Provider;
-/// use kube::Client;
+/// use kube::{Api, Client};
 /// use anyhow::Result;
 ///
 /// const FINALIZER: &str = "bind9globalcluster.dns.firestoned.io/finalizer";
 ///
-/// async fn reconcile(client: Client, cluster: ClusterBind9Provider) -> Result<()> {
-///     if cluster.metadata.deletion_timestamp.is_some() {
-///         return handle_cluster_deletion(&client, &cluster, FINALIZER, || async { Ok(()) }).await;
+/// async fn reconcile(client: Client, provider: ClusterBind9Provider) -> Result<()> {
+///     let api: Api<ClusterBind9Provider> = Api::all(client);
+///     if provider.metadata.deletion_timestamp.is_some() {
+///         return handle_deletion(&api, &provider, FINALIZER, || async { Ok(()) }).await;
 ///     }
 ///     // Normal reconciliation...
 ///     Ok(())
 /// }
 /// ```
-pub async fn handle_cluster_deletion<T, F, Fut>(
-    client: &Client,
-    resource: &T,
+pub async fn handle_deletion<K, F, Fut>(
+    api: &Api<K>,
+    resource: &K,
     finalizer: &str,
     cleanup: F,
 ) -> Result<()>
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<()>>,
-    T: Resource<DynamicType = (), Scope = ClusterResourceScope>
-        + ResourceExt
-        + Clone
-        + std::fmt::Debug
-        + serde::Serialize
-        + for<'de> serde::Deserialize<'de>,
+    K: Resource<DynamicType = ()> + Clone + Debug + DeserializeOwned,
 {
-    let name = resource.name_any();
+    let kind = K::kind(&());
+    let object = display_name(resource);
 
-    info!("{} {} is being deleted", T::kind(&()), name);
+    info!("{kind} {object} is being deleted");
 
-    // Only proceed if the finalizer is present
-    if resource
-        .meta()
-        .finalizers
-        .as_ref()
-        .is_some_and(|f| f.contains(&finalizer.to_string()))
-    {
-        info!("Running cleanup for {} {}", T::kind(&()), name);
-
-        // Perform cleanup operations
-        cleanup().await?;
-
-        // Remove the finalizer
-        remove_cluster_finalizer(client, resource, finalizer).await?;
+    // Early return: without our finalizer there is nothing to clean up
+    if !has_finalizer(resource, finalizer) {
+        return Ok(());
     }
 
-    Ok(())
+    info!("Running cleanup for {kind} {object}");
+
+    // Perform cleanup operations
+    cleanup().await?;
+
+    // Remove the finalizer
+    remove_finalizer(api, resource, finalizer).await
 }
 
 #[cfg(test)]

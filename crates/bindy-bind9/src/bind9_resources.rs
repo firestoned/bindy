@@ -46,7 +46,7 @@ use k8s_openapi::apimachinery::pkg::{
     apis::meta::v1::{LabelSelector, ObjectMeta, OwnerReference},
     util::intstr::IntOrString,
 };
-use kube::{Resource, ResourceExt};
+use kube::ResourceExt;
 use std::collections::BTreeMap;
 use std::net::{IpAddr, Ipv4Addr};
 use tracing::{debug, warn};
@@ -930,45 +930,11 @@ pub fn build_pod_labels_from_instance(
     labels
 }
 
-/// Builds the controller owner reference that makes `owner` garbage-collect
-/// the object carrying it.
-///
-/// Uses kube's [`Resource::controller_owner_ref`], so `apiVersion`, `kind`
-/// and `name` come from the owner itself, and keeps the shape every bindy
-/// child has always carried: `controller: true` and
-/// `blockOwnerDeletion: true`.
-///
-/// # Arguments
-///
-/// * `owner` - The owning object, as read from the API server
-///
-/// # Returns
-///
-/// The owner reference pointing to `owner`.
-///
-/// # Errors
-///
-/// Returns an error when `owner` has no name or no (or an empty) UID. The API
-/// server rejects or mis-resolves such a reference, so nothing is written
-/// with one: an object that has not been read from the API server cannot own
-/// anything.
-pub fn controller_owner_reference<K>(owner: &K) -> anyhow::Result<OwnerReference>
-where
-    K: Resource<DynamicType = ()>,
-{
-    let mut owner_ref = owner
-        .controller_owner_ref(&())
-        .filter(|r| !r.uid.is_empty())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "cannot build an owner reference to {} {:?}: it has no name or UID",
-                K::kind(&()),
-                owner.meta().name
-            )
-        })?;
-    owner_ref.block_owner_deletion = Some(true);
-    Ok(owner_ref)
-}
+/// The controller owner reference every bindy child carries
+/// (`controller: true`, `blockOwnerDeletion: true`; errors on a missing or
+/// empty UID). Defined in the controller SDK and re-exported here so the
+/// builders below and existing callers keep their path.
+pub use bindy_controller_sdk::resources::controller_owner_reference;
 
 /// Builds owner references for a resource owned by a `Bind9Instance`
 ///

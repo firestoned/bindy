@@ -12,21 +12,17 @@
 //! - Instances can be created in any namespace and reference the global cluster
 //! - The reconciler must list instances across all namespaces
 
-use crate::constants::{API_GROUP_VERSION, KIND_BIND9_CLUSTER};
+use crate::bind9cluster::status_helpers::{INSTANCES_NOUN, INSTANCES_READY_WORDING};
 use crate::context::Context;
-use crate::crd::{
-    Bind9Cluster, Bind9ClusterStatus, Bind9Instance, ClusterBind9Provider, Condition,
-};
+use crate::crd::{Bind9Cluster, Bind9ClusterStatus, Bind9Instance, ClusterBind9Provider};
 use crate::labels::FINALIZER_BIND9_CLUSTER;
 use bindy_controller_sdk::pagination::list_all_paginated;
 
-use crate::status_reasons::{
-    CONDITION_TYPE_READY, REASON_ALL_READY, REASON_NOT_READY, REASON_NO_CHILDREN,
-    REASON_PARTIALLY_READY,
-};
+use crate::FIELD_MANAGER;
 use anyhow::Result;
-use bindy_controller_sdk::finalizers::{ensure_cluster_finalizer, handle_cluster_deletion};
-use chrono::Utc;
+use bindy_controller_sdk::finalizers::{ensure_finalizer, handle_deletion};
+use bindy_controller_sdk::resources::{create_or_force_apply, delete_if_present};
+use bindy_controller_sdk::status::{conditions_changed, is_ready, ready_condition_from_counts};
 use kube::{
     api::{ListParams, Patch, PatchParams},
     client::Client,
@@ -34,7 +30,7 @@ use kube::{
 };
 use serde_json::json;
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 /// Implement finalizer cleanup for `ClusterBind9Provider`.
 ///
@@ -48,8 +44,6 @@ async fn cleanup_clusterbind9provider(
     use crate::labels::{
         BINDY_CLUSTER_LABEL, BINDY_MANAGED_BY_LABEL, MANAGED_BY_CLUSTER_BIND9_PROVIDER,
     };
-    use kube::api::DeleteParams;
-
     let name = resource.name_any();
 
     // Step 1: Delete all managed Bind9Cluster resources
@@ -90,28 +84,16 @@ async fn cleanup_clusterbind9provider(
             );
 
             let api: Api<Bind9Cluster> = Api::namespaced(client.clone(), &cluster_namespace);
-            match api.delete(&cluster_name, &DeleteParams::default()).await {
-                Ok(_) => {
-                    info!(
-                        "Successfully deleted Bind9Cluster {}/{}",
-                        cluster_namespace, cluster_name
-                    );
-                }
-                Err(e) => {
-                    // If already deleted or not found, that's fine
-                    if e.to_string().contains("NotFound") {
-                        debug!(
-                            "Bind9Cluster {}/{} already deleted",
-                            cluster_namespace, cluster_name
-                        );
-                    } else {
-                        error!(
-                            "Failed to delete Bind9Cluster {}/{}: {}",
-                            cluster_namespace, cluster_name, e
-                        );
-                        return Err(e.into());
-                    }
-                }
+            if delete_if_present(&api, &cluster_name).await? {
+                info!(
+                    "Successfully deleted Bind9Cluster {}/{}",
+                    cluster_namespace, cluster_name
+                );
+            } else {
+                debug!(
+                    "Bind9Cluster {}/{} already deleted",
+                    cluster_namespace, cluster_name
+                );
             }
         }
     }
@@ -174,15 +156,16 @@ pub async fn reconcile_clusterbind9provider(
     );
 
     // Handle deletion if cluster is being deleted
+    let api: Api<ClusterBind9Provider> = Api::all(client.clone());
     if cluster.metadata.deletion_timestamp.is_some() {
-        return handle_cluster_deletion(&client, &cluster, FINALIZER_BIND9_CLUSTER, || {
+        return handle_deletion(&api, &cluster, FINALIZER_BIND9_CLUSTER, || {
             cleanup_clusterbind9provider(&cluster, &client)
         })
         .await;
     }
 
     // Ensure finalizer is present
-    ensure_cluster_finalizer(&client, &cluster, FINALIZER_BIND9_CLUSTER).await?;
+    ensure_finalizer(&api, &cluster, FINALIZER_BIND9_CLUSTER).await?;
 
     // Check if spec has changed using the standard generation check
     let current_generation = cluster.metadata.generation;
@@ -321,7 +304,6 @@ async fn reconcile_namespace_clusters(
     use crate::labels::{
         BINDY_CLUSTER_LABEL, BINDY_MANAGED_BY_LABEL, MANAGED_BY_CLUSTER_BIND9_PROVIDER,
     };
-    use kube::api::PostParams;
     use std::collections::BTreeMap;
 
     let cluster_provider_name = cluster_provider.name_any();
@@ -386,66 +368,16 @@ async fn reconcile_namespace_clusters(
 
         let api: Api<Bind9Cluster> = Api::namespaced(client.clone(), &namespace);
 
-        // Try to create the Bind9Cluster
-        match api.create(&PostParams::default(), &cluster).await {
-            Ok(_) => {
-                info!(
-                    "Successfully created Bind9Cluster {}/{}",
-                    namespace, cluster_name
+        // POST, and on AlreadyExists force-apply the spec, labels and owner
+        // reference so an existing managed cluster converges on the provider.
+        create_or_force_apply(&api, &cluster, FIELD_MANAGER)
+            .await
+            .inspect_err(|e| {
+                warn!(
+                    "Failed to create or apply Bind9Cluster {}/{}: {:#}",
+                    namespace, cluster_name, e
                 );
-            }
-            Err(e) => {
-                // If already exists, PATCH it to ensure spec is up to date
-                if e.to_string().contains("AlreadyExists") {
-                    debug!(
-                        "Bind9Cluster {}/{} already exists, patching with updated spec",
-                        namespace, cluster_name
-                    );
-
-                    // Build a complete patch object for server-side apply
-                    let patch = serde_json::json!({
-                        "apiVersion": API_GROUP_VERSION,
-                        "kind": KIND_BIND9_CLUSTER,
-                        "metadata": {
-                            "name": cluster_name,
-                            "namespace": namespace,
-                            "ownerReferences": cluster.metadata.owner_references,
-                        },
-                        "spec": cluster.spec,
-                    });
-
-                    // Apply the patch to update the spec
-                    match api
-                        .patch(
-                            &cluster_name,
-                            &PatchParams::apply("bindy-controller").force(),
-                            &Patch::Apply(&patch),
-                        )
-                        .await
-                    {
-                        Ok(_) => {
-                            info!(
-                                "Successfully patched Bind9Cluster {}/{} with updated spec",
-                                namespace, cluster_name
-                            );
-                        }
-                        Err(patch_err) => {
-                            warn!(
-                                "Failed to patch Bind9Cluster {}/{}: {}",
-                                namespace, cluster_name, patch_err
-                            );
-                            return Err(patch_err.into());
-                        }
-                    }
-                } else {
-                    warn!(
-                        "Failed to create Bind9Cluster {}/{}: {}",
-                        namespace, cluster_name, e
-                    );
-                    return Err(e.into());
-                }
-            }
-        }
+            })?;
     }
 
     Ok(())
@@ -511,7 +443,8 @@ async fn update_cluster_status(client: &Client, cluster: &ClusterBind9Provider) 
 /// - `instance_count` or `ready_instances`
 /// - `observed_generation` (so spec edits that don't change counts/conditions
 ///   still advance `observedGeneration` and stop perpetual re-reconciliation)
-/// - The first (encompassing) condition's type, status, or message
+/// - The set of condition types, or any condition's status, reason, or
+///   message (conditions are matched by type, so their order does not matter)
 ///
 /// # Arguments
 ///
@@ -546,64 +479,8 @@ pub fn cluster_status_needs_update(
         return true;
     }
 
-    // Check if the encompassing condition changed
-    let Some(current_condition) = current_status.conditions.first() else {
-        // Current status has no condition but new status might
-        return !new_status.conditions.is_empty();
-    };
-
-    match new_status.conditions.first() {
-        Some(new_cond) => {
-            current_condition.r#type != new_cond.r#type
-                || current_condition.status != new_cond.status
-                || current_condition.message != new_cond.message
-        }
-        None => true, // New status has no condition, definitely changed
-    }
-}
-
-/// Determine the encompassing `Ready` condition for a cluster from its
-/// instance counts.
-///
-/// # Arguments
-///
-/// * `ready_instances` - Number of instances whose `Ready` condition is `True`
-/// * `total_instances` - Total number of instances referencing the cluster
-///
-/// # Returns
-///
-/// The `(status, reason, message)` triple for the condition, using the
-/// standard reasons from [`crate::status_reasons`].
-fn cluster_ready_condition(
-    ready_instances: usize,
-    total_instances: usize,
-) -> (&'static str, &'static str, String) {
-    if total_instances == 0 {
-        return (
-            "False",
-            REASON_NO_CHILDREN,
-            "No instances found for this cluster".to_string(),
-        );
-    }
-    if ready_instances == total_instances {
-        return (
-            "True",
-            REASON_ALL_READY,
-            format!("All {total_instances} instances are ready"),
-        );
-    }
-    if ready_instances > 0 {
-        return (
-            "False",
-            REASON_PARTIALLY_READY,
-            format!("{ready_instances}/{total_instances} instances are ready"),
-        );
-    }
-    (
-        "False",
-        REASON_NOT_READY,
-        "No instances are ready".to_string(),
-    )
+    // Check if any condition changed, matched by type
+    conditions_changed(&current_status.conditions, &new_status.conditions)
 }
 
 /// Calculates the cluster status based on instance states.
@@ -621,23 +498,25 @@ pub fn calculate_cluster_status(
     instances: &[Bind9Instance],
     generation: Option<i64>,
 ) -> Bind9ClusterStatus {
-    let now = Utc::now();
-
     // Count ready instances
     let ready_instances = instances
         .iter()
         .filter(|inst| {
             inst.status
                 .as_ref()
-                .and_then(|s| s.conditions.iter().find(|c| c.r#type == "Ready"))
-                .is_some_and(|c| c.status == "True")
+                .is_some_and(|s| is_ready(&s.conditions))
         })
         .count();
 
     let total_instances = instances.len();
 
     // Determine cluster ready condition using standard reasons
-    let (status, reason, message) = cluster_ready_condition(ready_instances, total_instances);
+    let ready_condition = ready_condition_from_counts(
+        ready_instances,
+        total_instances,
+        INSTANCES_NOUN,
+        &INSTANCES_READY_WORDING,
+    );
 
     // Collect instance names (with namespace for global clusters)
     let instance_names: Vec<String> = instances
@@ -650,13 +529,7 @@ pub fn calculate_cluster_status(
         .collect();
 
     Bind9ClusterStatus {
-        conditions: vec![Condition {
-            r#type: CONDITION_TYPE_READY.to_string(),
-            status: status.to_string(),
-            reason: Some(reason.to_string()),
-            message: Some(message.clone()),
-            last_transition_time: Some(now.to_rfc3339()),
-        }],
+        conditions: vec![ready_condition],
         instances: instance_names,
         observed_generation: generation,
         #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]

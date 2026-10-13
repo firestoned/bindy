@@ -4630,8 +4630,8 @@ mod tests {
 mod shared_names_tests {
     use crate::bind9_resources::{
         build_deployment, build_owner_references, build_pod_disruption_budget, build_service,
-        controller_owner_reference, default_rndc_secret_name, instance_configmap_name,
-        resolve_bindcar_config, rndc_secret_name, rndc_secret_name_from_deployment,
+        default_rndc_secret_name, instance_configmap_name, resolve_bindcar_config,
+        rndc_secret_name, rndc_secret_name_from_deployment,
     };
     use crate::crd::{Bind9Cluster, Bind9Instance, RndcKeyConfig, ServerRole};
     use k8s_openapi::api::apps::v1::Deployment;
@@ -4833,18 +4833,6 @@ mod shared_names_tests {
         assert_eq!(owner.api_version, "bindy.firestoned.io/v1beta1");
         assert_eq!(owner.controller, Some(true));
         assert_eq!(owner.block_owner_deletion, Some(true));
-    }
-
-    #[test]
-    fn test_controller_owner_reference_for_cluster() {
-        let cluster = cluster_with(serde_json::json!({}), Some("cluster-uid"));
-        let owner = controller_owner_reference(&cluster).expect("owner ref");
-        assert_eq!(owner.kind, "Bind9Cluster");
-        assert_eq!(owner.uid, "cluster-uid");
-        assert_eq!(owner.controller, Some(true));
-        assert_eq!(owner.block_owner_deletion, Some(true));
-        let no_uid = cluster_with(serde_json::json!({}), None);
-        assert!(controller_owner_reference(&no_uid).is_err());
     }
 
     #[test]

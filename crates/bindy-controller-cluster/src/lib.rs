@@ -16,6 +16,8 @@ use std::sync::Arc;
 pub(crate) use bindy_api::{constants, crd, labels, status_reasons};
 pub(crate) use bindy_bind9::{bind9_resources, context};
 
+pub(crate) use bindy_api::constants::CONTROLLER_FIELD_MANAGER as FIELD_MANAGER;
+
 mod bind9cluster;
 mod clusterbind9provider;
 mod watch;

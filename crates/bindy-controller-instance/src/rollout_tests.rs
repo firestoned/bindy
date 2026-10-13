@@ -7,10 +7,10 @@
 #[cfg(test)]
 mod tests {
     use super::super::{
-        conflict_set, decide_rollout, deployment_rollout_key, peer_rollout, peer_states,
-        pod_rollout_key, rollout_condition, rollout_queued, waiters_to_wake, InstanceId,
-        PatchOutcome, PeerRollout, RolloutDecision, RolloutQueue, RolloutStatus, TemplateStart,
-        WaitReason,
+        conflict_set, decide_rollout, deployment_rollout_key, owned_deployment_key, peer_rollout,
+        peer_states, pod_rollout_key, rollout_condition, rollout_queued, waiters_to_wake,
+        InstanceId, PatchOutcome, PeerRollout, RolloutDecision, RolloutQueue, RolloutStatus,
+        TemplateStart, WaitReason,
     };
     use crate::crd::{Bind9Instance, DNSZone};
     use crate::status_reasons::{
@@ -725,6 +725,39 @@ mod tests {
         let mut b = a.clone();
         b.metadata.annotations = Some(BTreeMap::from([("x".to_string(), "y".to_string())]));
         assert_eq!(deployment_rollout_key(&a), deployment_rollout_key(&b));
+    }
+
+    /// Kubernetes 1.33+ rewrites a Deployment's status after its old pods
+    /// finish terminating (`terminatingReplicas`, condition timestamps).
+    /// Nothing the instance reconcile reads changes, so the owned-Deployment
+    /// stream must not wake the instance for it.
+    #[test]
+    fn the_owned_deployment_filter_drops_status_only_noise() {
+        let a = settled("b");
+        let mut b = a.clone();
+        b.metadata.resource_version = Some("999".to_string());
+        if let Some(conditions) = b.status.as_mut().and_then(|s| s.conditions.as_mut()) {
+            for condition in conditions.iter_mut() {
+                condition.last_update_time = Some(Time(k8s_openapi::jiff::Timestamp::now()));
+            }
+        }
+        assert_eq!(owned_deployment_key(&a), owned_deployment_key(&b));
+    }
+
+    #[test]
+    fn the_owned_deployment_filter_passes_what_the_reconcile_reads() {
+        let done = settled("b");
+        let mut respec = done.clone();
+        respec.metadata.generation = Some(GENERATION + 1);
+        let mut deleting = done.clone();
+        deleting.metadata.deletion_timestamp = Some(Time(k8s_openapi::jiff::Timestamp::now()));
+
+        assert_ne!(
+            owned_deployment_key(&done),
+            owned_deployment_key(&rolling("b"))
+        );
+        assert_ne!(owned_deployment_key(&done), owned_deployment_key(&respec));
+        assert_ne!(owned_deployment_key(&done), owned_deployment_key(&deleting));
     }
 
     #[test]

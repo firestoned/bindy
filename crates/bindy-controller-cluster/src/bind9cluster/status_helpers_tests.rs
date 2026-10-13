@@ -261,4 +261,54 @@ mod tests {
             Some(2)
         ));
     }
+
+    // ========================================================================
+    // Per-instance readiness and order-insensitive comparison
+    // ========================================================================
+
+    fn condition(type_: &str, status: &str) -> Condition {
+        Condition {
+            r#type: type_.to_string(),
+            status: status.to_string(),
+            reason: Some("Reason".to_string()),
+            message: Some(format!("{type_} is {status}")),
+            last_transition_time: None,
+        }
+    }
+
+    #[test]
+    fn test_calculate_cluster_status_counts_ready_condition_not_first() {
+        // THE BUG: an instance counted as ready only when its FIRST condition
+        // was Ready=True. Readiness is looked up by type.
+        let mut instance = create_test_instance("instance-0", "default", true);
+        if let Some(status) = instance.status.as_mut() {
+            status.conditions.insert(0, condition("Pod-0", "True"));
+        }
+
+        let (count, ready, _names, conditions) =
+            calculate_cluster_status(&[instance], "default", "test-cluster");
+
+        assert_eq!(count, 1);
+        assert_eq!(ready, 1, "Ready=True in second place still counts");
+        assert_eq!(conditions[0].status, "True");
+        assert_eq!(conditions[1].status, "True", "per-instance condition");
+    }
+
+    #[test]
+    fn test_cluster_status_changed_ignores_condition_order() {
+        // Behaviour change: conditions are matched by type, so the same set
+        // in another order is no change.
+        let mut current = build_current_status(Some(2));
+        current.conditions = vec![condition("Ready", "True"), condition("Degraded", "False")];
+        let reordered = vec![condition("Degraded", "False"), condition("Ready", "True")];
+
+        assert!(!cluster_status_changed(
+            Some(&current),
+            &reordered,
+            current.instance_count.unwrap_or_default(),
+            current.ready_instances.unwrap_or_default(),
+            &current.instances.clone(),
+            Some(2)
+        ));
+    }
 }

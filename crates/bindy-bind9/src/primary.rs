@@ -12,7 +12,7 @@ use anyhow::Result;
 use kube::{Api, Client};
 use tracing::{debug, warn};
 
-use crate::constants::HTTP_NOT_FOUND;
+use bindy_controller_sdk::kube_errors::is_not_found;
 
 /// Turn the result of a `Bind9Instance` GET into that instance's role.
 ///
@@ -39,7 +39,7 @@ pub fn role_from_get_result(
 ) -> Result<Option<crate::crd::ServerRole>> {
     match result {
         Ok(instance) => Ok(Some(instance.spec.role)),
-        Err(kube::Error::Api(status)) if status.code == HTTP_NOT_FOUND => {
+        Err(e) if is_not_found(&e) => {
             warn!(
                 "Instance {}/{} not found (deleted). Skipping.",
                 instance_ref.namespace, instance_ref.name

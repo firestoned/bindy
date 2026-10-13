@@ -24,7 +24,7 @@ use crate::rollout::{
     TemplateStart,
 };
 use anyhow::Context as _;
-use bindy_controller_sdk::resources::create_or_apply;
+use bindy_controller_sdk::resources::{create_or_apply, delete_if_present};
 
 /// Resolve RNDC configuration from instance and cluster levels.
 ///
@@ -261,7 +261,13 @@ pub(super) async fn create_or_update_resources(
 /// Create or update the `ServiceAccount` for BIND9 pods
 async fn create_or_update_service_account(client: &Client, namespace: &str) -> Result<()> {
     let service_account = build_service_account(namespace);
-    create_or_apply(client, namespace, &service_account, "bindy-controller").await
+    create_or_apply(
+        client,
+        namespace,
+        &service_account,
+        crate::constants::CONTROLLER_FIELD_MANAGER,
+    )
+    .await
 }
 
 /// Data keys every operator-managed RNDC `Secret` must contain.
@@ -1667,37 +1673,27 @@ async fn create_or_update_service(
     Ok(())
 }
 
-/// Classify the result of one cleanup DELETE (finalizer path).
+/// Delete one child of an instance (finalizer path), treating "already
+/// gone" as done.
 ///
 /// A child that is already gone (HTTP 404) is what cleanup wants, so it
 /// counts as success; any other error (403, 409, 429, 5xx, a transport
 /// failure) is returned, so the finalizer stays and the deletion is retried
 /// instead of orphaning the child.
 ///
-/// # Returns
-///
-/// `Ok(true)` when the child was deleted, `Ok(false)` when it was already
-/// absent.
-///
 /// # Errors
 ///
-/// Returns every error other than not found.
-pub(super) fn deleted_or_absent<T>(result: std::result::Result<T, kube::Error>) -> Result<bool> {
-    match result {
-        Ok(_) => Ok(true),
-        Err(kube::Error::Api(status)) if status.code == crate::constants::HTTP_NOT_FOUND => {
-            Ok(false)
-        }
-        Err(e) => Err(e.into()),
-    }
-}
-
-/// Delete one child of an instance, treating "already gone" as done.
-async fn delete_child<K>(api: &Api<K>, kind: &str, namespace: &str, name: &str) -> Result<()>
+/// Returns every error other than not found, naming the child.
+async fn delete_child<K>(api: &Api<K>, namespace: &str, name: &str) -> Result<()>
 where
-    K: Clone + k8s_openapi::serde::de::DeserializeOwned + std::fmt::Debug,
+    K: kube::Resource<DynamicType = ()>
+        + Clone
+        + k8s_openapi::serde::de::DeserializeOwned
+        + std::fmt::Debug,
 {
-    let deleted = deleted_or_absent(api.delete(name, &kube::api::DeleteParams::default()).await)
+    let kind = K::kind(&());
+    let deleted = delete_if_present(api, name)
+        .await
         .with_context(|| format!("Failed to delete {kind} {namespace}/{name}"))?;
     if deleted {
         info!("Deleted {} {}/{}", kind, namespace, name);
@@ -1744,7 +1740,7 @@ pub(super) fn generated_rndc_secret(
 ///
 /// Runs before the instance's finalizer is removed. A child that is already
 /// gone counts as deleted; any other API error fails the cleanup so the
-/// finalizer stays and the deletion is retried ([`deleted_or_absent`]).
+/// finalizer stays and the deletion is retried ([`delete_child`]).
 ///
 /// # Errors
 ///
@@ -1759,7 +1755,7 @@ pub(super) async fn delete_resources(client: &Client, instance: &Bind9Instance) 
 
     // 1. Service
     let svc_api: Api<Service> = Api::namespaced(client.clone(), namespace);
-    delete_child(&svc_api, "Service", namespace, name).await?;
+    delete_child(&svc_api, namespace, name).await?;
 
     // 2. Deployment, read first: its rndc-key volume names the Secret the
     // pods mount, which decides whether step 4 deletes anything.
@@ -1770,7 +1766,7 @@ pub(super) async fn delete_resources(client: &Client, instance: &Bind9Instance) 
         .with_context(|| format!("Failed to get Deployment {namespace}/{name}"))?
         .as_ref()
         .and_then(crate::bind9_resources::rndc_secret_name_from_deployment);
-    delete_child(&deploy_api, "Deployment", namespace, name).await?;
+    delete_child(&deploy_api, namespace, name).await?;
 
     // 3. ConfigMap: a standalone instance's own. This path runs only for
     // instances no cluster manages; a cluster's shared ConfigMap is the
@@ -1778,7 +1774,7 @@ pub(super) async fn delete_resources(client: &Client, instance: &Bind9Instance) 
     // no `{name}-config` (a 404 here).
     let cm_api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
     let cm_name = format!("{name}-config");
-    delete_child(&cm_api, "ConfigMap", namespace, &cm_name).await?;
+    delete_child(&cm_api, namespace, &cm_name).await?;
 
     // 4. The RNDC Secret, only when the operator generated it
     // ([`generated_rndc_secret`]).
@@ -1787,7 +1783,7 @@ pub(super) async fn delete_resources(client: &Client, instance: &Bind9Instance) 
         generated_rndc_secret(name, mounted_secret.as_deref(), &instance_rndc)
     {
         let secret_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
-        delete_child(&secret_api, "Secret", namespace, &secret_name).await?;
+        delete_child(&secret_api, namespace, &secret_name).await?;
     }
 
     // 5. ServiceAccount, only when this instance owns it
@@ -1816,7 +1812,7 @@ pub(super) async fn delete_resources(client: &Client, instance: &Bind9Instance) 
         );
         return Ok(());
     }
-    delete_child(&sa_api, "ServiceAccount", namespace, sa_name).await
+    delete_child(&sa_api, namespace, sa_name).await
 }
 
 /// Test-only re-exports of the private placement-convergence helpers.

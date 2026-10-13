@@ -22,6 +22,10 @@ use tracing::{debug, info, warn};
 /// data (its transfer is pending or denied).
 pub const REASON_SECONDARY_NOT_LOADED: &str = "SecondaryNotLoaded";
 
+/// `Degraded` reason: a secondary has no NOTIFY target yet (its Service does
+/// not exist, has no ClusterIP, or cannot be read).
+pub const REASON_NOTIFY_TARGET_PENDING: &str = "NotifyTargetPending";
+
 /// `Degraded` reason: a primary's `allow-transfer` / `also-notify` could not
 /// be rewritten to the zone's current secondaries.
 pub const REASON_PEERS_NOT_UPDATED: &str = "TransferPeersNotUpdated";
@@ -73,13 +77,37 @@ pub fn mark_secondaries_not_loaded(
     if not_loaded.is_empty() {
         return;
     }
-    status_updater.set_condition(
-        "Degraded",
-        "True",
+    status_updater.set_degraded(
         REASON_SECONDARY_NOT_LOADED,
         &format!(
             "Zone {zone_name} is configured but not loaded on secondary {}: its transfer from the primaries is pending or denied",
             not_loaded.join(", ")
+        ),
+    );
+}
+
+/// Set `Degraded` (`NotifyTargetPending`) when a secondary has no NOTIFY
+/// target yet (in-memory only). The zone is then rechecked like a pending
+/// transfer, so it picks the target up as soon as the Service has one.
+///
+/// # Arguments
+/// * `status_updater` - The zone's status updater
+/// * `zone_name` - The zone's DNS name
+/// * `missing` - One entry per secondary instance without a target; nothing
+///   is set when empty
+pub fn mark_notify_targets_pending(
+    status_updater: &mut bindy_controller_sdk::status::DNSZoneStatusUpdater,
+    zone_name: &str,
+    missing: &[String],
+) {
+    if missing.is_empty() {
+        return;
+    }
+    status_updater.set_degraded(
+        REASON_NOTIFY_TARGET_PENDING,
+        &format!(
+            "Zone {zone_name} has no NOTIFY target for secondary {}: its Service has no ClusterIP yet",
+            missing.join(", ")
         ),
     );
 }
@@ -99,9 +127,7 @@ pub fn mark_peer_refresh_failed(
     if failures.is_empty() {
         return;
     }
-    status_updater.set_condition(
-        "Degraded",
-        "True",
+    status_updater.set_degraded(
         REASON_PEERS_NOT_UPDATED,
         &format!(
             "Zone {zone_name}: allow-transfer/also-notify not updated on {}",
@@ -120,9 +146,7 @@ pub fn mark_no_transfer_source(
     status_updater: &mut bindy_controller_sdk::status::DNSZoneStatusUpdater,
     zone_name: &str,
 ) {
-    status_updater.set_condition(
-        "Degraded",
-        "True",
+    status_updater.set_degraded(
         REASON_NO_TRANSFER_SOURCE,
         &format!(
             "Zone {zone_name} has secondaries but no primary pod with its zones loaded to transfer from yet"
@@ -138,32 +162,52 @@ pub fn mark_no_transfer_source(
 /// # Arguments
 /// * `client` - Kubernetes client (one GET per secondary instance)
 /// * `secondary_refs` - The zone's secondary instances
+///
+/// # Returns
+/// `(targets, missing)`: the ClusterIPs found, and one `namespace/name` per
+/// secondary instance without one.
 pub async fn secondary_notify_targets(
     client: &Client,
     secondary_refs: &[InstanceReference],
-) -> Vec<String> {
+) -> (Vec<String>, Vec<String>) {
     let mut targets = Vec::with_capacity(secondary_refs.len());
+    let mut missing = Vec::new();
     for instance in secondary_refs {
         let api: Api<Service> = Api::namespaced(client.clone(), &instance.namespace);
+        let id = format!("{}/{}", instance.namespace, instance.name);
         match api.get_opt(&instance.name).await {
             Ok(Some(service)) => match service_cluster_ip(&service) {
                 Some(ip) => targets.push(ip),
-                None => warn!(
-                    "Service {}/{} has no ClusterIP; its secondaries get no NOTIFY",
-                    instance.namespace, instance.name
-                ),
+                None => {
+                    warn!("Service {id} has no ClusterIP; its secondaries get no NOTIFY yet");
+                    missing.push(id);
+                }
             },
-            Ok(None) => debug!(
-                "Service {}/{} does not exist (yet); no NOTIFY target for it",
-                instance.namespace, instance.name
-            ),
-            Err(e) => warn!(
-                "Cannot read Service {}/{} for its NOTIFY target: {e}",
-                instance.namespace, instance.name
-            ),
+            Ok(None) => {
+                debug!("Service {id} does not exist (yet); no NOTIFY target for it");
+                missing.push(id);
+            }
+            Err(e) => {
+                warn!("Cannot read Service {id} for its NOTIFY target: {e}");
+                missing.push(id);
+            }
         }
     }
-    targets
+    (targets, missing)
+}
+
+/// A zone's instances by role, the peers it should carry now, and the
+/// secondaries that have no NOTIFY target yet.
+#[derive(Debug, Clone)]
+pub struct ZonePeers {
+    /// The zone's primary instances
+    pub primary_refs: Vec<InstanceReference>,
+    /// The zone's secondary instances
+    pub secondary_refs: Vec<InstanceReference>,
+    /// The peers to carry ([`desired_transfer_peers`])
+    pub peers: ZoneTransferPeers,
+    /// Secondary instances without a NOTIFY target ([`secondary_notify_targets`])
+    pub notify_missing: Vec<String>,
 }
 
 /// The zone's primary and secondary instances and the peers it should carry
@@ -174,18 +218,14 @@ pub async fn secondary_notify_targets(
 /// * `instance_refs` - Every instance the zone selects
 ///
 /// # Returns
-/// `(primary_refs, secondary_refs, peers)`.
+/// The zone's [`ZonePeers`].
 ///
 /// # Errors
 /// Returns an error if an instance's role cannot be read.
 pub async fn zone_transfer_peers(
     ctx: &crate::context::Context,
     instance_refs: &[InstanceReference],
-) -> Result<(
-    Vec<InstanceReference>,
-    Vec<InstanceReference>,
-    ZoneTransferPeers,
-)> {
+) -> Result<ZonePeers> {
     let primary_refs = bindy_bind9::primary::filter_primary_instances_cached(
         &ctx.client,
         &ctx.stores.bind9_instances,
@@ -198,14 +238,19 @@ pub async fn zone_transfer_peers(
         instance_refs,
     )
     .await?;
-    let notify = secondary_notify_targets(&ctx.client, &secondary_refs).await;
+    let (notify, notify_missing) = secondary_notify_targets(&ctx.client, &secondary_refs).await;
     let peers = desired_transfer_peers(
         &ctx.stores.bind9_pods.state(),
         &primary_refs,
         &secondary_refs,
         notify,
     );
-    Ok((primary_refs, secondary_refs, peers))
+    Ok(ZonePeers {
+        primary_refs,
+        secondary_refs,
+        peers,
+        notify_missing,
+    })
 }
 
 /// Rewrite `allow-transfer` / `also-notify` on every primary endpoint that

@@ -9,11 +9,14 @@
 mod tests {
     use crate::crd::DNSZone;
     use crate::scout::{
+        add_scout_finalizer, kind_served, remove_scout_finalizer, HTTPRoute, TLSRoute,
+    };
+    use crate::scout::{
         arecord_cr_name, arecord_label_selector, authorizing_zone, build_service_arecord,
         build_tcproute_arecord, check_zone_authorization, cleanup_grace_expired,
         derive_record_name, gateway_addresses_as_ips, gateway_parent_refs,
-        get_record_name_annotation, get_zone_annotation, has_finalizer, is_arecord_enabled,
-        is_being_deleted, is_loadbalancer_service, is_scout_opted_in, is_valid_zone_label_value,
+        get_record_name_annotation, get_zone_annotation, is_arecord_enabled, is_being_deleted,
+        is_loadbalancer_service, is_scout_opted_in, is_valid_zone_label_value,
         log_unscoped_stale_cluster_arecord_candidates, parse_gateway_service_entry,
         parse_gateway_services, resolve_ip_from_service_lb_status, resolve_ips,
         resolve_ips_from_annotation, resolve_record_name, resolve_usable_zone, resolve_zone,
@@ -26,7 +29,6 @@ mod tests {
         LABEL_MANAGED_BY, LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER, LABEL_SOURCE_NAME,
         LABEL_SOURCE_NAMESPACE, LABEL_ZONE, REMOTE_CLEANUP_GRACE_SECS,
     };
-    use crate::scout::{kind_served, HTTPRoute, TLSRoute};
     use k8s_openapi::jiff::{SignedDuration, Timestamp};
     use kube::Api;
     use std::sync::Arc;
@@ -975,62 +977,6 @@ mod tests {
             resolve_ips(&annotations, &defaults, &ingress),
             Some(defaults.clone())
         );
-    }
-
-    // =========================================================================
-    // has_finalizer
-    // =========================================================================
-
-    #[test]
-    fn test_has_finalizer_present() {
-        let ingress = Ingress {
-            metadata: kube::api::ObjectMeta {
-                finalizers: Some(vec![FINALIZER_SCOUT.to_string()]),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        assert!(has_finalizer(&ingress));
-    }
-
-    #[test]
-    fn test_has_finalizer_absent() {
-        let ingress = Ingress {
-            metadata: kube::api::ObjectMeta {
-                finalizers: Some(vec!["other.io/finalizer".to_string()]),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        assert!(!has_finalizer(&ingress));
-    }
-
-    #[test]
-    fn test_has_finalizer_none() {
-        let ingress = Ingress {
-            metadata: kube::api::ObjectMeta {
-                finalizers: None,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        assert!(!has_finalizer(&ingress));
-    }
-
-    #[test]
-    fn test_has_finalizer_among_others() {
-        let ingress = Ingress {
-            metadata: kube::api::ObjectMeta {
-                finalizers: Some(vec![
-                    "other.io/finalizer".to_string(),
-                    FINALIZER_SCOUT.to_string(),
-                    "another.io/finalizer".to_string(),
-                ]),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        assert!(has_finalizer(&ingress));
     }
 
     // =========================================================================
@@ -3697,5 +3643,221 @@ mod tests {
         .await;
 
         assert!(result.is_ok(), "got {result:?}");
+    }
+
+    // =========================================================================
+    // Scout finalizer patches are guarded (no clobbering a racing writer)
+    //
+    // The old helpers sent an unguarded merge patch of the whole
+    // `metadata.finalizers` list, which overwrote any finalizer another
+    // controller added or removed between Scout's read and its write. The
+    // finalizer now goes through the SDK's JSON Patch, which `test`s the
+    // state it read before changing it, so a concurrent edit makes the
+    // server reject the patch instead of losing the other writer's change.
+    // =========================================================================
+
+    /// Path of one Ingress in the mock API server.
+    const INGRESS_ITEM_PATH: &str = "/apis/networking.k8s.io/v1/namespaces/team-a/ingresses/web";
+
+    /// Path of one HTTPRoute in the mock API server.
+    const HTTPROUTE_ITEM_PATH: &str =
+        "/apis/gateway.networking.k8s.io/v1/namespaces/team-a/httproutes/web";
+
+    /// A finalizer some other controller owns.
+    const FOREIGN_FINALIZER: &str = "other.example.io/finalizer";
+
+    /// The `resourceVersion` Scout read the object at.
+    const READ_RESOURCE_VERSION: &str = "42";
+
+    /// The content type kube sends for a `Patch::Json`.
+    const JSON_PATCH_CONTENT_TYPE: &str = "application/json-patch+json";
+
+    /// An Ingress `team-a/web` carrying `finalizers` at `READ_RESOURCE_VERSION`.
+    fn ingress_with_finalizers(finalizers: Option<Vec<String>>) -> Ingress {
+        Ingress {
+            metadata: kube::api::ObjectMeta {
+                name: Some("web".to_string()),
+                namespace: Some("team-a".to_string()),
+                resource_version: Some(READ_RESOURCE_VERSION.to_string()),
+                finalizers,
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    /// An HTTPRoute `team-a/web` carrying `finalizers`.
+    fn httproute_with_finalizers(finalizers: Option<Vec<String>>) -> HTTPRoute {
+        HTTPRoute {
+            api_version: "gateway.networking.k8s.io/v1".to_string(),
+            kind: "HTTPRoute".to_string(),
+            metadata: kube::api::ObjectMeta {
+                name: Some("web".to_string()),
+                namespace: Some("team-a".to_string()),
+                finalizers,
+                ..Default::default()
+            },
+            spec: None,
+        }
+    }
+
+    /// The API server's answer to a successful patch of Ingress `team-a/web`.
+    fn patched_ingress_body() -> serde_json::Value {
+        serde_json::json!({
+            "apiVersion": "networking.k8s.io/v1",
+            "kind": "Ingress",
+            "metadata": { "name": "web", "namespace": "team-a" },
+        })
+    }
+
+    #[tokio::test]
+    async fn adding_the_scout_finalizer_tests_the_resource_version_it_read() {
+        // Another controller's finalizer is already there: JSON Patch cannot
+        // test for "the list is unchanged", so the patch pins the
+        // resourceVersion Scout read and appends, never rewriting the list.
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path(INGRESS_ITEM_PATH))
+            .and(wiremock::matchers::header(
+                "content-type",
+                JSON_PATCH_CONTENT_TYPE,
+            ))
+            .and(wiremock::matchers::body_json(serde_json::json!([
+                { "op": "test", "path": "/metadata/resourceVersion", "value": READ_RESOURCE_VERSION },
+                { "op": "add", "path": "/metadata/finalizers/-", "value": FINALIZER_SCOUT },
+            ])))
+            .respond_with(ResponseTemplate::new(200).set_body_json(patched_ingress_body()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let ingress = ingress_with_finalizers(Some(vec![FOREIGN_FINALIZER.to_string()]));
+        let result = add_scout_finalizer(&client_for(&server), &ingress).await;
+
+        assert!(result.is_ok(), "got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn adding_the_first_finalizer_tests_that_there_are_none() {
+        // No finalizers yet: the patch tests the list is still absent, so a
+        // writer that created it first is not overwritten.
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path(INGRESS_ITEM_PATH))
+            .and(wiremock::matchers::body_json(serde_json::json!([
+                { "op": "test", "path": "/metadata/finalizers", "value": null },
+                { "op": "add", "path": "/metadata/finalizers", "value": [FINALIZER_SCOUT] },
+            ])))
+            .respond_with(ResponseTemplate::new(200).set_body_json(patched_ingress_body()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let ingress = ingress_with_finalizers(None);
+        let result = add_scout_finalizer(&client_for(&server), &ingress).await;
+
+        assert!(result.is_ok(), "got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn adding_the_scout_finalizer_when_present_sends_nothing() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(patched_ingress_body()))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let ingress = ingress_with_finalizers(Some(vec![FINALIZER_SCOUT.to_string()]));
+        let result = add_scout_finalizer(&client_for(&server), &ingress).await;
+
+        assert!(result.is_ok(), "got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn removing_the_scout_finalizer_from_a_route_tests_the_index_it_removes() {
+        // The local Gateway API types go through the same SDK path: the patch
+        // removes Scout's entry by index only if that index still holds it,
+        // so a foreign finalizer that shifted the list is never dropped.
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path(HTTPROUTE_ITEM_PATH))
+            .and(wiremock::matchers::body_json(serde_json::json!([
+                { "op": "test", "path": "/metadata/finalizers/1", "value": FINALIZER_SCOUT },
+                { "op": "remove", "path": "/metadata/finalizers/1" },
+            ])))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "apiVersion": "gateway.networking.k8s.io/v1",
+                "kind": "HTTPRoute",
+                "metadata": { "name": "web", "namespace": "team-a" },
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let route = httproute_with_finalizers(Some(vec![
+            FOREIGN_FINALIZER.to_string(),
+            FINALIZER_SCOUT.to_string(),
+        ]));
+        let result = remove_scout_finalizer(&client_for(&server), &route).await;
+
+        assert!(result.is_ok(), "got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn removing_an_absent_scout_finalizer_sends_nothing() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(patched_ingress_body()))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let route = httproute_with_finalizers(Some(vec![FOREIGN_FINALIZER.to_string()]));
+        let result = remove_scout_finalizer(&client_for(&server), &route).await;
+
+        assert!(result.is_ok(), "got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn a_rejected_finalizer_patch_is_an_error_the_reconcile_returns() {
+        // A concurrent edit makes the server reject the guarded patch. That
+        // must surface as an error (so the reconcile fails and its error
+        // policy requeues with fresh state), carrying the API status so it
+        // can still be classified.
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path(INGRESS_ITEM_PATH))
+            .respond_with(ResponseTemplate::new(409).set_body_json(serde_json::json!({
+                "kind": "Status",
+                "apiVersion": "v1",
+                "metadata": {},
+                "status": "Failure",
+                "message": "the object has been modified",
+                "reason": "Conflict",
+                "code": 409,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let ingress = ingress_with_finalizers(Some(vec![FOREIGN_FINALIZER.to_string()]));
+        let err = add_scout_finalizer(&client_for(&server), &ingress)
+            .await
+            .expect_err("a rejected patch must be an error");
+
+        assert!(
+            bindy_controller_sdk::kube_errors::is_conflict_anyhow(&err),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn is_being_deleted_works_for_any_kind() {
+        let mut route = httproute_with_finalizers(None);
+        assert!(!is_being_deleted(&route));
+
+        route.metadata.deletion_timestamp = Some(Time(Timestamp::now()));
+        assert!(is_being_deleted(&route));
     }
 }

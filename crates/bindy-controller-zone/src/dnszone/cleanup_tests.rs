@@ -36,7 +36,7 @@ mod tests {
     // 404-aware existence checks (existence_from_get_result)
     // ========================================================================
 
-    const HTTP_NOT_FOUND: u16 = 404;
+    use crate::constants::HTTP_NOT_FOUND;
 
     fn kube_api_error(code: u16) -> kube::Error {
         kube::Error::Api(

@@ -10,6 +10,7 @@
 use super::types::*;
 
 use crate::constants::API_GROUP_VERSION;
+use bindy_controller_sdk::kube_errors::is_not_found_anyhow;
 use bindy_controller_sdk::retry::retry_api_call;
 
 /// Classify the result of reading an instance's parent cluster or provider.
@@ -28,20 +29,11 @@ use bindy_controller_sdk::retry::retry_api_call;
 ///
 /// Returns every error other than not found.
 pub(super) fn parent_or_none<T>(result: anyhow::Result<T>) -> anyhow::Result<Option<T>> {
-    let err = match result {
-        Ok(parent) => return Ok(Some(parent)),
-        Err(err) => err,
-    };
-    let not_found = err.chain().any(|cause| {
-        matches!(
-            cause.downcast_ref::<kube::Error>(),
-            Some(kube::Error::Api(status)) if status.code == crate::constants::HTTP_NOT_FOUND
-        )
-    });
-    if not_found {
-        return Ok(None);
+    match result {
+        Ok(parent) => Ok(Some(parent)),
+        Err(err) if is_not_found_anyhow(&err) => Ok(None),
+        Err(err) => Err(err),
     }
-    Err(err)
 }
 
 /// Read the parent `Bind9Cluster` or `ClusterBind9Provider` of an instance.

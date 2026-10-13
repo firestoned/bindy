@@ -24,6 +24,8 @@ use tracing::{info, warn};
 
 use bindy_controller_sdk::error::error_policy;
 pub use bindy_controller_sdk::error::ReconcileError;
+use bindy_controller_sdk::namespace_scope::{owned_targets, run_per_target, target_label};
+use bindy_controller_sdk::reconcile::{finalizer_error, instrumented_action};
 
 /// Trait for DNS record types that can be reconciled with a generic operator.
 ///
@@ -81,7 +83,9 @@ pub trait DnsRecordType:
 ///
 /// # Errors
 ///
-/// Returns an error if the operator fails to start or encounters a fatal error.
+/// Returns an error when a namespace target's controller exits before the
+/// shutdown signal fired (see [`run_per_target`]), so the caller's
+/// `try_join!` stops at the first one.
 pub async fn run_generic_record_operator<T>(context: Arc<Context>) -> Result<()>
 where
     T: DnsRecordType,
@@ -90,27 +94,30 @@ where
 
     // Record kinds are namespaced: one controller per watched namespace, all sharing
     // the reconciler and context. Cluster-wide mode yields exactly one.
-    let targets = bindy_controller_sdk::namespace_scope::owned_targets(&context.namespace_scope);
-    futures::future::join_all(
-        targets
-            .into_iter()
-            .map(|target| run_generic_record_controller::<T>(context.clone(), target)),
-    )
-    .await;
-
-    Ok(())
+    let targets = owned_targets(&context.namespace_scope);
+    run_per_target(targets, &context.shutdown, |target| {
+        run_generic_record_controller::<T>(context.clone(), target)
+    })
+    .await
 }
 
 /// Run the record controller for one record kind in a single namespace target.
 ///
 /// `target` is `None` for cluster-wide, or `Some(namespace)`.
-async fn run_generic_record_controller<T>(context: Arc<Context>, target: Option<String>)
+///
+/// # Errors
+///
+/// Never fails on its own: the controller stream only ends on shutdown.
+async fn run_generic_record_controller<T>(
+    context: Arc<Context>,
+    target: Option<String>,
+) -> Result<()>
 where
     T: DnsRecordType,
 {
     tracing::debug!(
         kind = T::KIND,
-        namespace = target.as_deref().unwrap_or("<all>"),
+        namespace = target_label(target.as_deref()),
         "Starting record controller"
     );
 
@@ -147,6 +154,7 @@ where
         .run(reconcile_wrapper::<T>, error_policy, context.clone())
         .for_each(|_| futures::future::ready(()))
         .await;
+    Ok(())
 }
 
 /// The records of kind `T` a change of `zone` must wake.
@@ -233,8 +241,6 @@ async fn reconcile_wrapper<T>(
 where
     T: DnsRecordType,
 {
-    let start = std::time::Instant::now();
-
     let client = context.client.clone();
     let namespace = record
         .metadata()
@@ -244,7 +250,7 @@ where
     let api: Api<T> = Api::namespaced(client.clone(), namespace);
 
     // Handle deletion with finalizer
-    let result = finalizer(&api, T::FINALIZER, record.clone(), |event| async {
+    let reconcile = finalizer(&api, T::FINALIZER, record.clone(), |event| async {
         match event {
             finalizer::Event::Apply(rec) => {
                 // Create or update the record. The outcome is returned, not
@@ -297,16 +303,9 @@ where
                 Ok(Action::await_change())
             }
         }
-    })
-    .await;
+    });
 
-    let duration = start.elapsed();
-    if result.is_ok() {
-        crate::metrics::record_reconciliation_success(T::KIND, duration);
-    } else {
-        crate::metrics::record_reconciliation_error(T::KIND, duration);
-        crate::metrics::record_error(T::KIND, crate::record_wrappers::ERROR_TYPE_RECONCILE);
-    }
-
-    result.map_err(|e| bindy_controller_sdk::reconcile::finalizer_error(T::KIND, e))
+    instrumented_action(T::KIND, reconcile)
+        .await
+        .map_err(|e| finalizer_error(T::KIND, e))
 }

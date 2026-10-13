@@ -166,11 +166,6 @@ mod tests {
         assert_eq!(CONDITION_STATUS_TRUE, "True");
     }
 
-    #[test]
-    fn test_error_type_reconcile_constant() {
-        assert_eq!(ERROR_TYPE_RECONCILE, "reconcile_error");
-    }
-
     // ========== Tests for ready_state() ==========
 
     #[test]

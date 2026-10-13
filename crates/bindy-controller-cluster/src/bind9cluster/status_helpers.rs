@@ -8,6 +8,30 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::types::*;
+use crate::constants::{CONDITION_STATUS_FALSE, CONDITION_STATUS_TRUE};
+use bindy_controller_sdk::status::{
+    conditions_changed, is_ready, ready_condition_from_counts, ReadyCountWording,
+};
+
+/// What the children of a cluster are called in its `Ready` message.
+pub(crate) const INSTANCES_NOUN: &str = "instances";
+
+/// How the encompassing `Ready` condition of a `Bind9Cluster` or a
+/// `ClusterBind9Provider` words the cases with no ready instance.
+pub(crate) const INSTANCES_READY_WORDING: ReadyCountWording<'static> = ReadyCountWording {
+    empty_reason: REASON_NO_CHILDREN,
+    empty_message: "No instances found for this cluster",
+    none_ready_message: "No instances are ready",
+};
+
+/// Whether an instance reports `Ready=True`, wherever that condition sits in
+/// its list.
+fn instance_is_ready(instance: &Bind9Instance) -> bool {
+    instance
+        .status
+        .as_ref()
+        .is_some_and(|status| is_ready(&status.conditions))
+}
 
 /// Calculate cluster status from instance health.
 ///
@@ -35,19 +59,12 @@ pub fn calculate_cluster_status(
     name: &str,
 ) -> (i32, i32, Vec<String>, Vec<Condition>) {
     // Count total instances and ready instances
-    let instance_count = instances.len() as i32;
+    let total = instances.len();
+    let ready = instances.iter().filter(|i| instance_is_ready(i)).count();
+    let instance_count = total as i32;
     let instance_names: Vec<String> = instances.iter().map(ResourceExt::name_any).collect();
 
-    let ready_instances = instances
-        .iter()
-        .filter(|instance| {
-            instance
-                .status
-                .as_ref()
-                .and_then(|status| status.conditions.first())
-                .is_some_and(|condition| condition.r#type == "Ready" && condition.status == "True")
-        })
-        .count() as i32;
+    let ready_instances = ready as i32;
 
     info!(
         "Bind9Cluster {}/{} has {} instances, {} ready",
@@ -58,21 +75,16 @@ pub fn calculate_cluster_status(
     let mut instance_conditions = Vec::new();
     for (index, instance) in instances.iter().enumerate() {
         let instance_name = instance.name_any();
-        let is_instance_ready = instance
-            .status
-            .as_ref()
-            .and_then(|status| status.conditions.first())
-            .is_some_and(|condition| condition.r#type == "Ready" && condition.status == "True");
 
-        let (status, reason, message) = if is_instance_ready {
+        let (status, reason, message) = if instance_is_ready(instance) {
             (
-                "True",
+                CONDITION_STATUS_TRUE,
                 REASON_READY,
                 format!("Instance {instance_name} is ready"),
             )
         } else {
             (
-                "False",
+                CONDITION_STATUS_FALSE,
                 REASON_NOT_READY,
                 format!("Instance {instance_name} is not ready"),
             )
@@ -88,43 +100,10 @@ pub fn calculate_cluster_status(
     }
 
     // Create encompassing Ready condition
-    let (encompassing_status, encompassing_reason, encompassing_message) = if instance_count == 0 {
-        debug!("No instances found for cluster");
-        (
-            "False",
-            REASON_NO_CHILDREN,
-            "No instances found for this cluster".to_string(),
-        )
-    } else if ready_instances == instance_count {
-        debug!("All instances ready");
-        (
-            "True",
-            REASON_ALL_READY,
-            format!("All {instance_count} instances are ready"),
-        )
-    } else if ready_instances > 0 {
-        debug!(ready_instances, instance_count, "Cluster progressing");
-        (
-            "False",
-            REASON_PARTIALLY_READY,
-            format!("{ready_instances}/{instance_count} instances are ready"),
-        )
-    } else {
-        debug!("Waiting for instances to become ready");
-        (
-            "False",
-            REASON_NOT_READY,
-            "No instances are ready".to_string(),
-        )
-    };
-
-    let encompassing_condition = Condition {
-        r#type: CONDITION_TYPE_READY.to_string(),
-        status: encompassing_status.to_string(),
-        reason: Some(encompassing_reason.to_string()),
-        message: Some(encompassing_message.clone()),
-        last_transition_time: Some(Utc::now().to_rfc3339()),
-    };
+    let encompassing_condition =
+        ready_condition_from_counts(ready, total, INSTANCES_NOUN, &INSTANCES_READY_WORDING);
+    let encompassing_status = encompassing_condition.status.clone();
+    let encompassing_message = encompassing_condition.message.clone().unwrap_or_default();
 
     // Combine encompassing condition + instance-level conditions
     let mut all_conditions = vec![encompassing_condition];
@@ -152,7 +131,8 @@ pub fn calculate_cluster_status(
 /// - `instance_count`, `ready_instances`, or the instance name list
 /// - `observed_generation` (so spec edits that don't change counts/conditions
 ///   still advance `observedGeneration` and stop perpetual re-reconciliation)
-/// - Any condition's type, status, reason, or message
+/// - The set of condition types, or any condition's status, reason, or
+///   message (conditions are matched by type, so their order does not matter)
 ///
 /// # Arguments
 ///
@@ -196,21 +176,8 @@ pub fn cluster_status_changed(
         return true;
     }
 
-    // Check if any condition changed
-    if current.conditions.len() != conditions.len() {
-        return true;
-    }
-
-    current
-        .conditions
-        .iter()
-        .zip(conditions.iter())
-        .any(|(current_cond, new_cond)| {
-            current_cond.r#type != new_cond.r#type
-                || current_cond.status != new_cond.status
-                || current_cond.message != new_cond.message
-                || current_cond.reason != new_cond.reason
-        })
+    // Check if any condition changed, matched by type
+    conditions_changed(&current.conditions, conditions)
 }
 
 /// Update the status of a `Bind9Cluster` with multiple conditions.
@@ -293,7 +260,7 @@ pub(super) async fn update_status(
     let patch = json!({ "status": new_status });
     api.patch_status(
         &cluster.name_any(),
-        &PatchParams::apply("bindy-controller"),
+        &PatchParams::apply(crate::FIELD_MANAGER),
         &Patch::Merge(&patch),
     )
     .await?;

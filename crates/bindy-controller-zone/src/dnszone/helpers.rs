@@ -13,5 +13,4 @@
 // re-exported here.
 pub use bindy_bind9::instances::{
     for_each_instance_endpoint, for_each_instance_endpoint_with_policy, EndpointFailurePolicy,
-    HTTP_STATUS_NOT_FOUND,
 };

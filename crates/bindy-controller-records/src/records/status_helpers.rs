@@ -5,6 +5,8 @@
 
 #[allow(clippy::wildcard_imports)]
 use super::types::*;
+use bindy_api::constants::{CONDITION_STATUS_FALSE, CONDITION_STATUS_TRUE};
+use bindy_api::status_reasons::CONDITION_TYPE_READY;
 
 pub(super) async fn create_event<T>(
     client: &Client,
@@ -92,7 +94,7 @@ impl<'a> RecordStatusUpdate<'a> {
         observed_generation: Option<i64>,
     ) -> Self {
         Self {
-            status: CONDITION_FALSE,
+            status: CONDITION_STATUS_FALSE,
             reason,
             message,
             observed_generation,
@@ -103,15 +105,6 @@ impl<'a> RecordStatusUpdate<'a> {
         }
     }
 }
-
-/// The record's `Ready` condition type.
-const CONDITION_TYPE_READY: &str = "Ready";
-
-/// Condition status for a satisfied condition.
-const CONDITION_TRUE: &str = "True";
-
-/// Condition status for an unsatisfied condition.
-const CONDITION_FALSE: &str = "False";
 
 /// Event type for a record that reached `Ready=True`.
 const EVENT_TYPE_NORMAL: &str = "Normal";
@@ -268,7 +261,7 @@ where
         namespace, name, CONDITION_TYPE_READY, update.status
     );
 
-    let event_type = if update.status == CONDITION_TRUE {
+    let event_type = if update.status == CONDITION_STATUS_TRUE {
         EVENT_TYPE_NORMAL
     } else {
         EVENT_TYPE_WARNING

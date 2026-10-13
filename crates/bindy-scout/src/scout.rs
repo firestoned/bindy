@@ -21,18 +21,18 @@
 //! The local client still handles Ingress watching and finalizer management.
 //! The remote client handles ARecord creation/deletion and DNSZone validation.
 
-use crate::constants::{
-    ALLOW_ZONE_NAMESPACES_WILDCARD, ANNOTATION_ALLOW_ZONE_NAMESPACES, HTTP_NOT_FOUND,
-};
+use crate::constants::{ALLOW_ZONE_NAMESPACES_WILDCARD, ANNOTATION_ALLOW_ZONE_NAMESPACES};
 use crate::crd::{ARecord, ARecordSpec, DNSZone};
 use anyhow::{anyhow, Context, Result};
+use bindy_controller_sdk::finalizers;
+use bindy_controller_sdk::kube_errors;
 use bindy_controller_sdk::namespace_scope::NamespaceScope;
 use bindy_controller_sdk::pagination::list_all_paginated;
 use bindy_controller_sdk::watch::WatchSet;
 use k8s_openapi::api::core::v1::{Namespace, Secret, Service};
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use k8s_openapi::jiff::Timestamp;
-use kube::api::{DeleteParams, ListParams, Patch, PatchParams};
+use kube::api::{DeleteParams, ListParams};
 use kube::config::{KubeConfigOptions, Kubeconfig};
 
 /// Reconcile error type — wraps `anyhow::Error` so that it satisfies the
@@ -42,9 +42,10 @@ use kube::config::{KubeConfigOptions, Kubeconfig};
 pub(crate) struct ScoutError(#[from] anyhow::Error);
 use futures::StreamExt;
 use k8s_openapi::api::networking::v1::Ingress;
+use k8s_openapi::NamespaceResourceScope;
 use kube::{
     runtime::{controller::Action, reflector, Controller},
-    Api, Client, ResourceExt,
+    Api, Client, Resource, ResourceExt,
 };
 use serde::de::DeserializeOwned;
 use std::fmt::Debug;
@@ -1256,19 +1257,10 @@ fn sanitize_k8s_name(s: &str) -> String {
     trimmed.trim_start_matches('-').to_string()
 }
 
-/// Returns `true` if the Scout finalizer is present on the Ingress.
-pub(crate) fn has_finalizer(ingress: &Ingress) -> bool {
-    ingress
-        .metadata
-        .finalizers
-        .as_ref()
-        .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
-        .unwrap_or(false)
-}
-
-/// Returns `true` if the Ingress has been marked for deletion.
-pub(crate) fn is_being_deleted(ingress: &Ingress) -> bool {
-    ingress.metadata.deletion_timestamp.is_some()
+/// Returns `true` if `obj` has been marked for deletion (it carries a
+/// `deletionTimestamp`), whatever its kind.
+pub(crate) fn is_being_deleted<K: Resource>(obj: &K) -> bool {
+    obj.meta().deletion_timestamp.is_some()
 }
 
 /// Builds a Kubernetes label selector string matching all ARecords created
@@ -2146,202 +2138,64 @@ pub(crate) fn build_tcproute_arecord(params: TCPRouteARecordParams<'_>) -> AReco
 }
 
 // ============================================================================
-// Finalizer helpers (async — require Kubernetes API access)
+// Finalizer helpers (async: require Kubernetes API access)
 // ============================================================================
 
-/// Adds the Scout finalizer to an Ingress.
+/// Adds the Scout finalizer to a namespaced source object (Ingress, Service,
+/// HTTPRoute, TLSRoute or TCPRoute) if it is not already there.
 ///
-/// Merges the finalizer into the existing list so any other finalizers
-/// already present are preserved.
-async fn add_finalizer(client: &Client, ingress: &Ingress) -> Result<()> {
-    let namespace = ingress.namespace().unwrap_or_default();
-    let name = ingress.name_any();
-    let api: Api<Ingress> = Api::namespaced(client.clone(), &namespace);
-
-    let mut finalizers = ingress.metadata.finalizers.clone().unwrap_or_default();
-    if !finalizers.contains(&FINALIZER_SCOUT.to_string()) {
-        finalizers.push(FINALIZER_SCOUT.to_string());
-    }
-
-    let patch = serde_json::json!({ "metadata": { "finalizers": finalizers } });
-    api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
-        .await?;
-    Ok(())
-}
-
-/// Removes the Scout finalizer from an Ingress.
+/// Delegates to the SDK's [`finalizers::ensure_finalizer`], which sends a
+/// JSON Patch guarded by a `test` operation: on the object's
+/// `resourceVersion` when other finalizers exist, or on the list being
+/// absent when there are none. A finalizer another controller added or
+/// removed since Scout read the object is therefore never overwritten.
 ///
-/// Preserves any other finalizers that may be present.
-async fn remove_finalizer(client: &Client, ingress: &Ingress) -> Result<()> {
-    let namespace = ingress.namespace().unwrap_or_default();
-    let name = ingress.name_any();
-    let api: Api<Ingress> = Api::namespaced(client.clone(), &namespace);
-
-    let finalizers: Vec<String> = ingress
-        .metadata
-        .finalizers
-        .clone()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|f| f != FINALIZER_SCOUT)
-        .collect();
-
-    let patch = serde_json::json!({ "metadata": { "finalizers": finalizers } });
-    api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
-        .await?;
-    Ok(())
+/// # Arguments
+/// * `client` - Client for the local (source) cluster
+/// * `obj` - The source object, as Scout last read it
+///
+/// # Errors
+/// Returns an error if the patch fails, including when the API server
+/// rejects it because the object changed concurrently. The reconcilers
+/// propagate it, so the controller's error policy requeues and the next
+/// reconcile retries against fresh state.
+pub(crate) async fn add_scout_finalizer<K>(client: &Client, obj: &K) -> Result<()>
+where
+    K: Resource<DynamicType = (), Scope = NamespaceResourceScope>
+        + Clone
+        + Debug
+        + DeserializeOwned,
+{
+    let api: Api<K> = Api::namespaced(client.clone(), &obj.namespace().unwrap_or_default());
+    finalizers::ensure_finalizer(&api, obj, FINALIZER_SCOUT).await
 }
 
-/// Adds the Scout finalizer to a Service.
-async fn add_finalizer_to_service(client: &Client, svc: &Service) -> Result<()> {
-    let namespace = svc.namespace().unwrap_or_default();
-    let name = svc.name_any();
-    let api: Api<Service> = Api::namespaced(client.clone(), &namespace);
-
-    let mut finalizers = svc.metadata.finalizers.clone().unwrap_or_default();
-    if !finalizers.contains(&FINALIZER_SCOUT.to_string()) {
-        finalizers.push(FINALIZER_SCOUT.to_string());
-    }
-
-    let patch = serde_json::json!({ "metadata": { "finalizers": finalizers } });
-    api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
-        .await?;
-    Ok(())
-}
-
-/// Removes the Scout finalizer from a Service.
-async fn remove_finalizer_from_service(client: &Client, svc: &Service) -> Result<()> {
-    let namespace = svc.namespace().unwrap_or_default();
-    let name = svc.name_any();
-    let api: Api<Service> = Api::namespaced(client.clone(), &namespace);
-
-    let finalizers: Vec<String> = svc
-        .metadata
-        .finalizers
-        .clone()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|f| f != FINALIZER_SCOUT)
-        .collect();
-
-    let patch = serde_json::json!({ "metadata": { "finalizers": finalizers } });
-    api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
-        .await?;
-    Ok(())
-}
-
-/// Adds the Scout finalizer to an HTTPRoute.
-async fn add_finalizer_to_httproute(client: &Client, route: &HTTPRoute) -> Result<()> {
-    let namespace = route.namespace().unwrap_or_default();
-    let name = route.name_any();
-    let api: Api<HTTPRoute> = Api::namespaced(client.clone(), &namespace);
-
-    let mut finalizers = route.metadata.finalizers.clone().unwrap_or_default();
-    if !finalizers.contains(&FINALIZER_SCOUT.to_string()) {
-        finalizers.push(FINALIZER_SCOUT.to_string());
-    }
-
-    let patch = serde_json::json!({ "metadata": { "finalizers": finalizers } });
-    api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
-        .await?;
-    Ok(())
-}
-
-/// Removes the Scout finalizer from an HTTPRoute.
-async fn remove_finalizer_from_httproute(client: &Client, route: &HTTPRoute) -> Result<()> {
-    let namespace = route.namespace().unwrap_or_default();
-    let name = route.name_any();
-    let api: Api<HTTPRoute> = Api::namespaced(client.clone(), &namespace);
-
-    let finalizers: Vec<String> = route
-        .metadata
-        .finalizers
-        .clone()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|f| f != FINALIZER_SCOUT)
-        .collect();
-
-    let patch = serde_json::json!({ "metadata": { "finalizers": finalizers } });
-    api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
-        .await?;
-    Ok(())
-}
-
-/// Adds the Scout finalizer to a TLSRoute.
-async fn add_finalizer_to_tlsroute(client: &Client, route: &TLSRoute) -> Result<()> {
-    let namespace = route.namespace().unwrap_or_default();
-    let name = route.name_any();
-    let api: Api<TLSRoute> = Api::namespaced(client.clone(), &namespace);
-
-    let mut finalizers = route.metadata.finalizers.clone().unwrap_or_default();
-    if !finalizers.contains(&FINALIZER_SCOUT.to_string()) {
-        finalizers.push(FINALIZER_SCOUT.to_string());
-    }
-
-    let patch = serde_json::json!({ "metadata": { "finalizers": finalizers } });
-    api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
-        .await?;
-    Ok(())
-}
-
-/// Removes the Scout finalizer from a TLSRoute.
-async fn remove_finalizer_from_tlsroute(client: &Client, route: &TLSRoute) -> Result<()> {
-    let namespace = route.namespace().unwrap_or_default();
-    let name = route.name_any();
-    let api: Api<TLSRoute> = Api::namespaced(client.clone(), &namespace);
-
-    let finalizers: Vec<String> = route
-        .metadata
-        .finalizers
-        .clone()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|f| f != FINALIZER_SCOUT)
-        .collect();
-
-    let patch = serde_json::json!({ "metadata": { "finalizers": finalizers } });
-    api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
-        .await?;
-    Ok(())
-}
-
-/// Adds the Scout finalizer to a TCPRoute.
-async fn add_finalizer_to_tcproute(client: &Client, route: &TCPRoute) -> Result<()> {
-    let namespace = route.namespace().unwrap_or_default();
-    let name = route.name_any();
-    let api: Api<TCPRoute> = Api::namespaced(client.clone(), &namespace);
-
-    let mut finalizers = route.metadata.finalizers.clone().unwrap_or_default();
-    if !finalizers.contains(&FINALIZER_SCOUT.to_string()) {
-        finalizers.push(FINALIZER_SCOUT.to_string());
-    }
-
-    let patch = serde_json::json!({ "metadata": { "finalizers": finalizers } });
-    api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
-        .await?;
-    Ok(())
-}
-
-/// Removes the Scout finalizer from a TCPRoute.
-async fn remove_finalizer_from_tcproute(client: &Client, route: &TCPRoute) -> Result<()> {
-    let namespace = route.namespace().unwrap_or_default();
-    let name = route.name_any();
-    let api: Api<TCPRoute> = Api::namespaced(client.clone(), &namespace);
-
-    let finalizers: Vec<String> = route
-        .metadata
-        .finalizers
-        .clone()
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|f| f != FINALIZER_SCOUT)
-        .collect();
-
-    let patch = serde_json::json!({ "metadata": { "finalizers": finalizers } });
-    api.patch(&name, &PatchParams::default(), &Patch::Merge(&patch))
-        .await?;
-    Ok(())
+/// Removes the Scout finalizer from a namespaced source object (Ingress,
+/// Service, HTTPRoute, TLSRoute or TCPRoute) if it is there.
+///
+/// Delegates to the SDK's [`finalizers::remove_finalizer`], which removes
+/// Scout's entry by index in a JSON Patch that first `test`s the index still
+/// holds it, so a concurrent change to the list never drops another
+/// controller's finalizer.
+///
+/// # Arguments
+/// * `client` - Client for the local (source) cluster
+/// * `obj` - The source object, as Scout last read it
+///
+/// # Errors
+/// Returns an error if the patch fails, including when the API server
+/// rejects it because the list changed concurrently. The reconcilers
+/// propagate it, so the controller's error policy requeues; the ARecord
+/// cleanup that precedes the removal is idempotent and simply runs again.
+pub(crate) async fn remove_scout_finalizer<K>(client: &Client, obj: &K) -> Result<()>
+where
+    K: Resource<DynamicType = (), Scope = NamespaceResourceScope>
+        + Clone
+        + Debug
+        + DeserializeOwned,
+{
+    let api: Api<K> = Api::namespaced(client.clone(), &obj.namespace().unwrap_or_default());
+    finalizers::remove_finalizer(&api, obj, FINALIZER_SCOUT).await
 }
 
 /// Deletes all ARecords in `target_namespace` that were created by Scout for
@@ -2872,7 +2726,11 @@ pub(crate) async fn log_unscoped_stale_cluster_arecord_candidates(
 ///
 /// # Errors
 ///
-/// Returns an error that will be retried by the controller runtime.
+/// Returns an error that will be retried by the controller runtime. That
+/// includes a finalizer patch the API server rejected because the Ingress
+/// changed concurrently (see [`add_scout_finalizer`]): it is handled like
+/// any other error, and the requeued reconcile works from fresh state. The
+/// Service and Gateway API route reconcilers treat it the same way.
 async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Action, ScoutError> {
     let name = ingress.name_any();
     let namespace = ingress.namespace().unwrap_or_default();
@@ -2884,8 +2742,8 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
     }
 
     // Handle Ingress deletion — remove ARecords and release the finalizer
-    if is_being_deleted(&ingress) {
-        if has_finalizer(&ingress) {
+    if is_being_deleted(&*ingress) {
+        if finalizers::has_finalizer(&*ingress, FINALIZER_SCOUT) {
             info!(ingress = %name, ns = %namespace, "Ingress deleting — cleaning up ARecords");
             let deleting_annotations = ingress
                 .metadata
@@ -2942,7 +2800,7 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
                 }
                 error!(ingress = %name, ns = %namespace, error = %e, grace_secs = REMOTE_CLEANUP_GRACE_SECS, "Remote ARecord cleanup still failing after grace period — releasing finalizer to unblock Ingress deletion; remote ARecords may be orphaned and must be reconciled separately");
             }
-            remove_finalizer(&ctx.client, &ingress)
+            remove_scout_finalizer(&ctx.client, &*ingress)
                 .await
                 .map_err(ScoutError::from)?;
             info!(ingress = %name, ns = %namespace, "Finalizer removed — Ingress deletion unblocked");
@@ -2964,7 +2822,7 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
 
     if !is_scout_opted_in(annotations) || !namespace_eligible {
         // Annotation may have been removed after a finalizer was added — clean up
-        if has_finalizer(&ingress) {
+        if finalizers::has_finalizer(&*ingress, FINALIZER_SCOUT) {
             info!(ingress = %name, ns = %namespace, "Scout opt-in annotation removed — cleaning up ARecords and finalizer");
             let opt_out_zone = resolve_zone(annotations, ctx.default_zone.as_deref());
             let deleted_zones = delete_arecords_for_ingress(
@@ -3001,7 +2859,7 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
                 .await
                 .map_err(ScoutError::from)?;
             }
-            remove_finalizer(&ctx.client, &ingress)
+            remove_scout_finalizer(&ctx.client, &*ingress)
                 .await
                 .map_err(ScoutError::from)?;
         }
@@ -3012,8 +2870,8 @@ async fn reconcile(ingress: Arc<Ingress>, ctx: Arc<ScoutContext>) -> Result<Acti
     // Ensure our finalizer is present before creating any ARecords.
     // Adding the finalizer triggers a re-reconcile; return early to avoid
     // doing record creation twice.
-    if !has_finalizer(&ingress) {
-        add_finalizer(&ctx.client, &ingress)
+    if !finalizers::has_finalizer(&*ingress, FINALIZER_SCOUT) {
+        add_scout_finalizer(&ctx.client, &*ingress)
             .await
             .map_err(ScoutError::from)?;
         debug!(ingress = %name, ns = %namespace, "Finalizer added — re-queuing for record creation");
@@ -3202,14 +3060,8 @@ async fn reconcile_service(
     }
 
     // Handle Service deletion — remove ARecord and release the finalizer
-    if svc.metadata.deletion_timestamp.is_some() {
-        if svc
-            .metadata
-            .finalizers
-            .as_ref()
-            .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
-            .unwrap_or(false)
-        {
+    if is_being_deleted(&*svc) {
+        if finalizers::has_finalizer(&*svc, FINALIZER_SCOUT) {
             info!(service = %name, ns = %namespace, "Service deleting — cleaning up ARecord");
             let deleting_annotations = svc
                 .metadata
@@ -3236,7 +3088,7 @@ async fn reconcile_service(
                 }
                 error!(service = %name, ns = %namespace, error = %e, grace_secs = REMOTE_CLEANUP_GRACE_SECS, "Remote ARecord cleanup still failing after grace period — releasing finalizer to unblock Service deletion; remote ARecords may be orphaned and must be reconciled separately");
             }
-            remove_finalizer_from_service(&ctx.client, &svc)
+            remove_scout_finalizer(&ctx.client, &*svc)
                 .await
                 .map_err(ScoutError::from)?;
             info!(service = %name, ns = %namespace, "Finalizer removed — Service deletion unblocked");
@@ -3263,12 +3115,7 @@ async fn reconcile_service(
     let opted_in = is_scout_opted_in(annotations);
     let is_loadbalancer = is_loadbalancer_service(&svc);
     if !service_publishes_dns(opted_in, namespace_eligible, is_loadbalancer) {
-        let has_fin = svc
-            .metadata
-            .finalizers
-            .as_ref()
-            .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
-            .unwrap_or(false);
+        let has_fin = finalizers::has_finalizer(&*svc, FINALIZER_SCOUT);
         if has_fin {
             info!(service = %name, ns = %namespace, opted_in, namespace_eligible, is_loadbalancer, "Service no longer publishes DNS, cleaning up ARecord and finalizer");
             let release_zone = resolve_zone(annotations, ctx.default_zone.as_deref());
@@ -3280,7 +3127,7 @@ async fn reconcile_service(
             )
             .await
             .map_err(ScoutError::from)?;
-            remove_finalizer_from_service(&ctx.client, &svc)
+            remove_scout_finalizer(&ctx.client, &*svc)
                 .await
                 .map_err(ScoutError::from)?;
         }
@@ -3289,14 +3136,9 @@ async fn reconcile_service(
     }
 
     // Ensure finalizer before creating any ARecord
-    let has_fin = svc
-        .metadata
-        .finalizers
-        .as_ref()
-        .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
-        .unwrap_or(false);
+    let has_fin = finalizers::has_finalizer(&*svc, FINALIZER_SCOUT);
     if !has_fin {
-        add_finalizer_to_service(&ctx.client, &svc)
+        add_scout_finalizer(&ctx.client, &*svc)
             .await
             .map_err(ScoutError::from)?;
         debug!(service = %name, ns = %namespace, "Finalizer added — re-queuing for record creation");
@@ -3477,14 +3319,8 @@ async fn reconcile_httproute(
     }
 
     // Handle HTTPRoute deletion — remove ARecords and release the finalizer
-    if route.metadata.deletion_timestamp.is_some() {
-        if route
-            .metadata
-            .finalizers
-            .as_ref()
-            .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
-            .unwrap_or(false)
-        {
+    if is_being_deleted(&*route) {
+        if finalizers::has_finalizer(&*route, FINALIZER_SCOUT) {
             info!(httproute = %name, ns = %namespace, "HTTPRoute deleting — cleaning up ARecords");
             let deleting_annotations = route
                 .metadata
@@ -3541,7 +3377,7 @@ async fn reconcile_httproute(
                 }
                 error!(httproute = %name, ns = %namespace, error = %e, grace_secs = REMOTE_CLEANUP_GRACE_SECS, "Remote ARecord cleanup still failing after grace period — releasing finalizer to unblock HTTPRoute deletion; remote ARecords may be orphaned and must be reconciled separately");
             }
-            remove_finalizer_from_httproute(&ctx.client, &route)
+            remove_scout_finalizer(&ctx.client, &*route)
                 .await
                 .map_err(ScoutError::from)?;
             info!(httproute = %name, ns = %namespace, "Finalizer removed — HTTPRoute deletion unblocked");
@@ -3562,12 +3398,7 @@ async fn reconcile_httproute(
             .map_err(ScoutError::from)?;
 
     if !is_scout_opted_in(annotations) || !namespace_eligible {
-        let has_fin = route
-            .metadata
-            .finalizers
-            .as_ref()
-            .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
-            .unwrap_or(false);
+        let has_fin = finalizers::has_finalizer(&*route, FINALIZER_SCOUT);
         if has_fin {
             info!(httproute = %name, ns = %namespace, "Scout opt-in annotation removed — cleaning up ARecords and finalizer");
             let opt_out_zone = resolve_zone(annotations, ctx.default_zone.as_deref());
@@ -3605,7 +3436,7 @@ async fn reconcile_httproute(
                 .await
                 .map_err(ScoutError::from)?;
             }
-            remove_finalizer_from_httproute(&ctx.client, &route)
+            remove_scout_finalizer(&ctx.client, &*route)
                 .await
                 .map_err(ScoutError::from)?;
         }
@@ -3614,14 +3445,9 @@ async fn reconcile_httproute(
     }
 
     // Ensure finalizer before creating any ARecord
-    let has_fin = route
-        .metadata
-        .finalizers
-        .as_ref()
-        .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
-        .unwrap_or(false);
+    let has_fin = finalizers::has_finalizer(&*route, FINALIZER_SCOUT);
     if !has_fin {
-        add_finalizer_to_httproute(&ctx.client, &route)
+        add_scout_finalizer(&ctx.client, &*route)
             .await
             .map_err(ScoutError::from)?;
         debug!(httproute = %name, ns = %namespace, "Finalizer added — re-queuing for record creation");
@@ -3812,14 +3638,8 @@ async fn reconcile_tlsroute(
     }
 
     // Handle TLSRoute deletion — remove ARecords and release the finalizer
-    if route.metadata.deletion_timestamp.is_some() {
-        if route
-            .metadata
-            .finalizers
-            .as_ref()
-            .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
-            .unwrap_or(false)
-        {
+    if is_being_deleted(&*route) {
+        if finalizers::has_finalizer(&*route, FINALIZER_SCOUT) {
             info!(tlsroute = %name, ns = %namespace, "TLSRoute deleting — cleaning up ARecords");
             let deleting_annotations = route
                 .metadata
@@ -3876,7 +3696,7 @@ async fn reconcile_tlsroute(
                 }
                 error!(tlsroute = %name, ns = %namespace, error = %e, grace_secs = REMOTE_CLEANUP_GRACE_SECS, "Remote ARecord cleanup still failing after grace period — releasing finalizer to unblock TLSRoute deletion; remote ARecords may be orphaned and must be reconciled separately");
             }
-            remove_finalizer_from_tlsroute(&ctx.client, &route)
+            remove_scout_finalizer(&ctx.client, &*route)
                 .await
                 .map_err(ScoutError::from)?;
             info!(tlsroute = %name, ns = %namespace, "Finalizer removed — TLSRoute deletion unblocked");
@@ -3897,12 +3717,7 @@ async fn reconcile_tlsroute(
             .map_err(ScoutError::from)?;
 
     if !is_scout_opted_in(annotations) || !namespace_eligible {
-        let has_fin = route
-            .metadata
-            .finalizers
-            .as_ref()
-            .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
-            .unwrap_or(false);
+        let has_fin = finalizers::has_finalizer(&*route, FINALIZER_SCOUT);
         if has_fin {
             info!(tlsroute = %name, ns = %namespace, "Scout opt-in annotation removed — cleaning up ARecords and finalizer");
             let opt_out_zone = resolve_zone(annotations, ctx.default_zone.as_deref());
@@ -3940,7 +3755,7 @@ async fn reconcile_tlsroute(
                 .await
                 .map_err(ScoutError::from)?;
             }
-            remove_finalizer_from_tlsroute(&ctx.client, &route)
+            remove_scout_finalizer(&ctx.client, &*route)
                 .await
                 .map_err(ScoutError::from)?;
         }
@@ -3949,14 +3764,9 @@ async fn reconcile_tlsroute(
     }
 
     // Ensure finalizer before creating any ARecord
-    let has_fin = route
-        .metadata
-        .finalizers
-        .as_ref()
-        .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
-        .unwrap_or(false);
+    let has_fin = finalizers::has_finalizer(&*route, FINALIZER_SCOUT);
     if !has_fin {
-        add_finalizer_to_tlsroute(&ctx.client, &route)
+        add_scout_finalizer(&ctx.client, &*route)
             .await
             .map_err(ScoutError::from)?;
         debug!(tlsroute = %name, ns = %namespace, "Finalizer added — re-queuing for record creation");
@@ -4138,14 +3948,8 @@ async fn reconcile_tcproute(
         return Ok(Action::await_change());
     }
 
-    if route.metadata.deletion_timestamp.is_some() {
-        if route
-            .metadata
-            .finalizers
-            .as_ref()
-            .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
-            .unwrap_or(false)
-        {
+    if is_being_deleted(&*route) {
+        if finalizers::has_finalizer(&*route, FINALIZER_SCOUT) {
             info!(tcproute = %name, ns = %namespace, "TCPRoute deleting — cleaning up ARecords");
             let deleting_annotations = route
                 .metadata
@@ -4202,7 +4006,7 @@ async fn reconcile_tcproute(
                 }
                 error!(tcproute = %name, ns = %namespace, error = %e, grace_secs = REMOTE_CLEANUP_GRACE_SECS, "Remote ARecord cleanup still failing after grace period — releasing finalizer to unblock TCPRoute deletion; remote ARecords may be orphaned and must be reconciled separately");
             }
-            remove_finalizer_from_tcproute(&ctx.client, &route)
+            remove_scout_finalizer(&ctx.client, &*route)
                 .await
                 .map_err(ScoutError::from)?;
             info!(tcproute = %name, ns = %namespace, "Finalizer removed — TCPRoute deletion unblocked");
@@ -4222,12 +4026,7 @@ async fn reconcile_tcproute(
             .map_err(ScoutError::from)?;
 
     if !is_scout_opted_in(annotations) || !namespace_eligible {
-        let has_fin = route
-            .metadata
-            .finalizers
-            .as_ref()
-            .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
-            .unwrap_or(false);
+        let has_fin = finalizers::has_finalizer(&*route, FINALIZER_SCOUT);
         if has_fin {
             info!(tcproute = %name, ns = %namespace, "Scout opt-in annotation removed — cleaning up ARecords and finalizer");
             let opt_out_zone = resolve_zone(annotations, ctx.default_zone.as_deref());
@@ -4265,7 +4064,7 @@ async fn reconcile_tcproute(
                 .await
                 .map_err(ScoutError::from)?;
             }
-            remove_finalizer_from_tcproute(&ctx.client, &route)
+            remove_scout_finalizer(&ctx.client, &*route)
                 .await
                 .map_err(ScoutError::from)?;
         }
@@ -4273,14 +4072,9 @@ async fn reconcile_tcproute(
         return Ok(Action::await_change());
     }
 
-    let has_fin = route
-        .metadata
-        .finalizers
-        .as_ref()
-        .map(|fs| fs.iter().any(|f| f == FINALIZER_SCOUT))
-        .unwrap_or(false);
+    let has_fin = finalizers::has_finalizer(&*route, FINALIZER_SCOUT);
     if !has_fin {
-        add_finalizer_to_tcproute(&ctx.client, &route)
+        add_scout_finalizer(&ctx.client, &*route)
             .await
             .map_err(ScoutError::from)?;
         debug!(tcproute = %name, ns = %namespace, "Finalizer added — re-queuing for record creation");
@@ -5116,7 +4910,7 @@ where
 {
     match api.list(&ListParams::default().limit(1)).await {
         Ok(_) => true,
-        Err(kube::Error::Api(err)) if err.code == HTTP_NOT_FOUND => false,
+        Err(err) if kube_errors::is_not_found(&err) => false,
         Err(err) => {
             warn!(
                 kind = R::KIND,

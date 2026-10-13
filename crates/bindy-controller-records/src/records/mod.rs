@@ -17,6 +17,7 @@ use crate::record_wrappers::{
     REASON_RECONCILE_FAILED, REASON_RECONCILE_SUCCEEDED, REASON_ZONE_NOT_CONFIGURED,
     REASON_ZONE_NOT_FOUND,
 };
+use bindy_api::constants::CONDITION_STATUS_TRUE;
 use status_helpers::{update_record_status, RecordStatusUpdate};
 
 // The BIND9 write path moved to `bindy-bind9` (ADR-0009 §2, amended
@@ -518,7 +519,7 @@ where
                 &client,
                 &record,
                 &RecordStatusUpdate {
-                    status: "True",
+                    status: CONDITION_STATUS_TRUE,
                     reason: REASON_RECONCILE_SUCCEEDED,
                     message: &message,
                     observed_generation: current_generation,

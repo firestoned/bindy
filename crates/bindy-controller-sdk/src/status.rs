@@ -30,7 +30,12 @@
 //! ```
 
 use anyhow::Result;
+use bindy_api::constants::{CONDITION_STATUS_FALSE, CONDITION_STATUS_TRUE};
 use bindy_api::crd::{Condition, DNSZone, DNSZoneStatus, RecordReferenceWithTimestamp};
+use bindy_api::status_reasons::{
+    CONDITION_TYPE_DEGRADED, CONDITION_TYPE_PROGRESSING, CONDITION_TYPE_READY, REASON_ALL_READY,
+    REASON_NOT_READY, REASON_PARTIALLY_READY,
+};
 use chrono::Utc;
 use kube::api::Patch;
 use kube::{api::PatchParams, Api, Client, ResourceExt};
@@ -227,6 +232,121 @@ pub fn conditions_equal(current: &[Condition], new: &[Condition]) -> bool {
     true
 }
 
+/// Whether two condition lists differ in meaning.
+///
+/// The negation of [`conditions_equal`], with its semantics: order does not
+/// matter, conditions are matched by type, and type, status, reason and
+/// message are compared while `lastTransitionTime` is ignored.
+///
+/// # Arguments
+///
+/// * `old` - The conditions currently stored
+/// * `new` - The conditions about to be written
+///
+/// # Returns
+///
+/// `true` when a status write is warranted.
+#[must_use]
+pub fn conditions_changed(old: &[Condition], new: &[Condition]) -> bool {
+    !conditions_equal(old, new)
+}
+
+/// Whether the `Ready` condition in `conditions` has status `True`.
+///
+/// Looks the condition up by type, so it does not matter where in the list
+/// it sits.
+///
+/// # Arguments
+///
+/// * `conditions` - A resource's status conditions
+///
+/// # Returns
+///
+/// `true` only when a `Ready` condition exists and its status is `True`;
+/// `False`, `Unknown` and a missing `Ready` condition all return `false`.
+#[must_use]
+pub fn is_ready(conditions: &[Condition]) -> bool {
+    find_condition(conditions, CONDITION_TYPE_READY)
+        .is_some_and(|condition| condition.status == CONDITION_STATUS_TRUE)
+}
+
+/// The caller-specific words of [`ready_condition_from_counts`]: the parts
+/// the cluster and instance controllers have always phrased differently.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReadyCountWording<'a> {
+    /// Reason when there is nothing to count and nothing is ready
+    /// (the cluster controllers use `NoChildren`, the instance controller
+    /// `NotReady`)
+    pub empty_reason: &'a str,
+    /// Message when there is nothing to count and nothing is ready
+    pub empty_message: &'a str,
+    /// Message when there are children and none of them is ready (the reason
+    /// is always `NotReady`)
+    pub none_ready_message: &'a str,
+}
+
+/// The encompassing `Ready` condition of a resource from how many of its
+/// children are ready.
+///
+/// In order:
+/// - nothing ready and nothing expected: `False`, `wording.empty_reason`,
+///   `wording.empty_message`;
+/// - `ready == total`: `True`, `AllReady`, `All {total} {noun} are ready`;
+/// - some ready: `False`, `PartiallyReady`, `{ready}/{total} {noun} are ready`
+///   (also when `ready` exceeds `total`, as during a scale-down);
+/// - none ready: `False`, `NotReady`, `wording.none_ready_message`.
+///
+/// # Arguments
+///
+/// * `ready` - Children that are ready
+/// * `total` - Children expected (instances of a cluster, desired replicas
+///   of an instance)
+/// * `noun` - What the children are called in messages (`instances`, `pods`)
+/// * `wording` - The caller's reason and messages for the empty and
+///   none-ready cases
+///
+/// # Returns
+///
+/// A `Ready` condition stamped with the current time.
+#[must_use]
+pub fn ready_condition_from_counts(
+    ready: usize,
+    total: usize,
+    noun: &str,
+    wording: &ReadyCountWording<'_>,
+) -> Condition {
+    let ready_condition = |status: &str, reason: &str, message: &str| {
+        create_condition(CONDITION_TYPE_READY, status, reason, message)
+    };
+
+    if ready == 0 && total == 0 {
+        return ready_condition(
+            CONDITION_STATUS_FALSE,
+            wording.empty_reason,
+            wording.empty_message,
+        );
+    }
+    if ready == total {
+        return ready_condition(
+            CONDITION_STATUS_TRUE,
+            REASON_ALL_READY,
+            &format!("All {total} {noun} are ready"),
+        );
+    }
+    if ready > 0 {
+        return ready_condition(
+            CONDITION_STATUS_FALSE,
+            REASON_PARTIALLY_READY,
+            &format!("{ready}/{total} {noun} are ready"),
+        );
+    }
+    ready_condition(
+        CONDITION_STATUS_FALSE,
+        REASON_NOT_READY,
+        wording.none_ready_message,
+    )
+}
+
 /// Centralized status updater for `DNSZone` resources.
 ///
 /// This struct collects all status changes during reconciliation and applies them
@@ -303,6 +423,58 @@ impl DNSZoneStatusUpdater {
             message,
         );
         self.has_changes = true;
+    }
+
+    /// Set `Degraded=True` with `reason` and `message` (in-memory only).
+    ///
+    /// Same as `set_condition("Degraded", "True", reason, message)`, including
+    /// counting towards [`Self::has_degraded_condition`].
+    ///
+    /// # Arguments
+    ///
+    /// * `reason` - Programmatic reason in `CamelCase`
+    /// * `message` - Human-readable explanation
+    pub fn set_degraded(&mut self, reason: &str, message: &str) {
+        self.set_condition(
+            CONDITION_TYPE_DEGRADED,
+            CONDITION_STATUS_TRUE,
+            reason,
+            message,
+        );
+    }
+
+    /// Set `Progressing=True` with `reason` and `message` (in-memory only).
+    ///
+    /// Same as `set_condition("Progressing", "True", reason, message)`.
+    ///
+    /// # Arguments
+    ///
+    /// * `reason` - Programmatic reason in `CamelCase`
+    /// * `message` - Human-readable explanation
+    pub fn set_progressing(&mut self, reason: &str, message: &str) {
+        self.set_condition(
+            CONDITION_TYPE_PROGRESSING,
+            CONDITION_STATUS_TRUE,
+            reason,
+            message,
+        );
+    }
+
+    /// Set `Ready=False` with `reason` and `message` (in-memory only).
+    ///
+    /// Same as `set_condition("Ready", "False", reason, message)`.
+    ///
+    /// # Arguments
+    ///
+    /// * `reason` - Programmatic reason in `CamelCase`
+    /// * `message` - Human-readable explanation
+    pub fn set_not_ready(&mut self, reason: &str, message: &str) {
+        self.set_condition(
+            CONDITION_TYPE_READY,
+            CONDITION_STATUS_FALSE,
+            reason,
+            message,
+        );
     }
 
     /// Set the discovered DNS records list (in-memory only, no API call).
@@ -661,3 +833,7 @@ pub fn should_reconcile(current_generation: Option<i64>, observed_generation: Op
 #[cfg(test)]
 #[path = "status_generation_tests.rs"]
 mod status_generation_tests;
+
+#[cfg(test)]
+#[path = "status_conditions_tests.rs"]
+mod status_conditions_tests;

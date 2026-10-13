@@ -607,6 +607,10 @@ pub async fn reconcile_dnszone(
     ))
 }
 
+/// `Degraded` reason while a recreated zone's records are not all replayed
+/// into BIND9 yet.
+const REASON_RECORDS_RESYNC_PENDING: &str = "RecordsResyncPending";
+
 /// Replay all of a zone's records into BIND9 when the zone was (re)created.
 ///
 /// # Why
@@ -721,7 +725,7 @@ async fn replay_records_if_zone_was_recreated(
             record_refs.len()
         );
         warn!("DNSZone {}/{}: {}", namespace, name, message);
-        status_updater.set_condition("Degraded", "True", "RecordsResyncPending", &message);
+        status_updater.set_degraded(REASON_RECORDS_RESYNC_PENDING, &message);
         return Ok(());
     }
 
@@ -750,7 +754,7 @@ async fn replay_records_if_zone_was_recreated(
         "Record resync incomplete for DNSZone {}/{}: {} - zone stays Degraded and will be retried",
         namespace, name, message
     );
-    status_updater.set_condition("Degraded", "True", "RecordsResyncPending", &message);
+    status_updater.set_degraded(REASON_RECORDS_RESYNC_PENDING, &message);
 
     Ok(())
 }

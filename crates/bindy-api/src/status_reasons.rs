@@ -121,6 +121,14 @@ pub const REASON_ZONE_NOT_FOUND: &str = "ZoneNotFound";
 /// Primary condition type indicating overall resource readiness.
 pub const CONDITION_TYPE_READY: &str = "Ready";
 
+/// Condition type reporting that the resource works but not fully: some part
+/// of the desired state could not be reached.
+pub const CONDITION_TYPE_DEGRADED: &str = "Degraded";
+
+/// Condition type reporting that a reconciliation is moving the resource
+/// towards its desired state.
+pub const CONDITION_TYPE_PROGRESSING: &str = "Progressing";
+
 /// Condition type prefix for tracking individual `Bind9Instance` children.
 ///
 /// Format: `Bind9Instance-{index}` (e.g., "Bind9Instance-0", "Bind9Instance-1")

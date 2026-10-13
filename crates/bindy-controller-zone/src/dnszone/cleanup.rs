@@ -9,8 +9,8 @@ use anyhow::Result;
 use kube::{Api, Client};
 use tracing::{debug, info, warn};
 
-use super::helpers::HTTP_STATUS_NOT_FOUND;
 use crate::crd::DNSZone;
+use bindy_controller_sdk::kube_errors::is_not_found;
 
 /// Converts a Kubernetes `get` result into an existence check.
 ///
@@ -38,7 +38,7 @@ pub(super) fn existence_from_get_result<K>(
 ) -> Result<bool> {
     match result {
         Ok(_) => Ok(true),
-        Err(kube::Error::Api(ae)) if ae.code == HTTP_STATUS_NOT_FOUND => Ok(false),
+        Err(e) if is_not_found(&e) => Ok(false),
         Err(e) => Err(e.into()),
     }
 }

@@ -108,7 +108,9 @@ status:
 - `Ready=True` requires every secondary to have the zone **loaded**, not only
   configured. `Degraded` reasons from zone transfers: `SecondaryNotLoaded`
   (a secondary has the zone configured but no data; the message names the
-  instance and endpoint), `TransferPeersNotUpdated` (a primary's
+  instance and endpoint), `NotifyTargetPending` (a secondary instance's
+  Service has no ClusterIP yet, so NOTIFY has nowhere to go; rechecked every
+  3 s), `TransferPeersNotUpdated` (a primary's
   `allow-transfer` / `also-notify` could not be rewritten) and
   `NoTransferSource` (no primary pod has its zones loaded yet). Records:
   `RecordDeletionPending` (a deleted or unselected record's data is not yet

@@ -118,6 +118,7 @@ configured. Otherwise the zone is `Degraded` with one of these reasons:
 | Reason | Meaning | Usually resolves when |
 |---|---|---|
 | `SecondaryNotLoaded` | A secondary has the zone configured but no data (the message names the instance and endpoint) | Its transfer completes; the operator rechecks every 3 s while it waits, since a finished transfer raises no Kubernetes event |
+| `NotifyTargetPending` | A secondary instance's Service has no ClusterIP yet (or cannot be read), so its secondaries have no NOTIFY target (the message names the instance) | The Service gets its ClusterIP; the operator rechecks every 3 s and then writes the target into the primaries' `also-notify` in place |
 | `TransferPeersNotUpdated` | A primary's `allow-transfer` / `also-notify` could not be rewritten | The primary's bindcar is reachable again |
 | `NoTransferSource` | No primary pod has its zones loaded yet | A primary pod is admitted |
 | `RecordDeletionPending` | A deleted or unselected record is not yet confirmed gone from every pod | The pod holding it is reachable again |

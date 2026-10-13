@@ -1,3 +1,51 @@
+## [2026-10-12 20:00] - Shared SDK helpers; every controller moved onto them
+
+**Author:** Erick Bourgeois
+
+### Added (`crates/bindy-controller-sdk`)
+- `kube_errors::{is_not_found, is_conflict, is_not_found_anyhow, is_conflict_anyhow}` classify a Kubernetes error by its API status code and walk the anyhow chain. No caller matches on error text any more.
+- `resources::{delete_if_present, create_or_force_apply, force_apply_body, controller_owner_reference}`. The owner-reference builder moved here from bindy-bind9, which re-exports it.
+- `finalizers::has_finalizer`. `ensure_finalizer`, `remove_finalizer` and `handle_deletion` are now generic over an `Api<K>`, so one set serves namespaced and cluster-scoped kinds; the `*_cluster_*` copies are gone.
+- `status::{is_ready, conditions_changed, ready_condition_from_counts, ReadyCountWording}`, and `DNSZoneStatusUpdater::{set_degraded, set_progressing, set_not_ready}`.
+- `namespace_scope::{run_per_target, target_label, ALL_NAMESPACES_LABEL}` and `reconcile::instrumented_action`.
+- `bindy-api`: `CONDITION_TYPE_DEGRADED`, `CONDITION_TYPE_PROGRESSING`, `CONDITION_STATUS_UNKNOWN`, `HTTP_CONFLICT` and `CONTROLLER_FIELD_MANAGER`.
+
+### Changed
+- Every controller crate, plus scout, bootstrap and bindy-bind9, uses the helpers:
+  - create-or-apply, delete-if-present and owner references;
+  - Ready-from-counts (3 copies);
+  - status-changed (3 copies);
+  - per-namespace fan-out (5 copies);
+  - reconcile instrumentation (3 copies);
+  - about 40 condition literals;
+  - duplicate 404 and condition constants, and bootstrap's four `delete_mc_*`.
+
+### Fixed
+- `crates/bindy-scout`: the ten finalizer add/remove functions sent an unguarded merge patch of the whole finalizer list, which could overwrite another controller's concurrent finalizer change. They now use the SDK's resourceVersion-guarded JSON Patch. A conflict fails the reconcile, which requeues.
+- `crates/bindy-controller-cluster`:
+  - `Bind9Cluster` counted an instance ready only if Ready=True was its *first* condition. It is now found by type.
+  - The status-changed checks no longer depend on condition order.
+  - The provider now patches when only a reason, or a non-first condition, changed.
+- All per-namespace fan-outs: a controller that exits before shutdown is an error reported at once. With `join_all` it was hidden until every namespace exited. The zone crate's `controller()` now uses `try_join!`.
+- `crates/bindy-bind9/src/bind9/zone_ops.rs`, `crates/bindy-controller-zone/src/dnszone/{transfer_peers,bind9_config,status_helpers}.rs`: a zone created before its secondary's Service existed no longer stays notifying a pod address that bindcar cannot rewrite.
+  - **The fallback is gone.** When no NOTIFY target was known, a primary zone used to get `also-notify` set to the secondary pods on port 5353. That is the pre-ADR-0019 form, which bindcar 0.9.0 cannot rewrite in place, so the zone notified that pod until it was replaced, and still reported Ready. Such a zone now gets no `also-notify` at all, which the peer refresh can fill in.
+  - **Not Ready until resolved.** A secondary without a target makes the zone `Degraded` with the new reason `NotifyTargetPending`, rechecked like a pending transfer. Once the Service has a ClusterIP, the refresh writes it in place.
+  - **Found by** the chaos e2e baseline on CI (PR #546). The race was already on `main`; timing changes in this PR exposed it.
+- `crates/bindy-controller-instance/src/{rollout,watch}.rs`: the owned-Deployment watch is filtered on what the instance reconcile reads, using the new `owned_deployment_key`: the rollout key (generation, observed generation, replica counts, `Progressing`) plus the start of deletion.
+  - On Kubernetes 1.33 and later, the Deployment controller rewrites each Deployment's status about 30 s after its old pods finish terminating (`terminatingReplicas`, condition timestamps).
+  - Before, that woke every instance for a reconcile that changed nothing. The chaos suite's quiet check caught 4 such reconciles on a kind 1.37 cluster.
+- `crates/bindy-bind9`: `is_unavailable_for_deletion` now sees a kube error behind a typed wrapper, so a transient error there is retried instead of the instance being skipped.
+- `crates/bindy-controller-zone`: the deleted-record untag check never matched. It compared error text against a context-wrapped error, and now logs a deleted record at info.
+
+### Why
+The review behind PR 1 found the same logic hand-written up to five times, and the copies had already drifted apart (positional Ready checks, unguarded finalizer patches, hidden controller exits).
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (operator and scout binaries)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-12 16:00] - `bindy bootstrap mc` writes the kubeconfig Secret to a private file
 
 **Author:** Erick Bourgeois

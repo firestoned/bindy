@@ -16,6 +16,12 @@ use super::transfer_peers::{
     mark_no_transfer_source, mark_peer_refresh_failed, mark_secondaries_not_loaded, PeerPushResult,
 };
 use crate::crd::{DNSZone, InstanceReference};
+use bindy_api::constants::CONDITION_STATUS_FALSE;
+use bindy_api::status_reasons::CONDITION_TYPE_PROGRESSING;
+
+/// Failure reason when the zone could not be configured on its primaries
+/// (or its primaries could not be found).
+const REASON_PRIMARY_FAILED: &str = "PrimaryFailed";
 
 /// Configure zone on all BIND9 instances (primary and secondary).
 ///
@@ -71,31 +77,30 @@ pub async fn configure_zone_on_instances(
     tracing::debug!("Ensuring BIND9 zone exists on all instances (declarative reconciliation)");
 
     // Set initial Progressing status (in-memory)
-    status_updater.set_condition(
-        "Progressing",
-        "True",
-        "PrimaryReconciling",
-        "Configuring zone on primary servers",
-    );
+    status_updater.set_progressing("PrimaryReconciling", "Configuring zone on primary servers");
 
     // The peers the zone should carry now, from the Pod store (ADR-0019).
-    let (primary_refs, secondary_refs, peers) =
-        match super::transfer_peers::zone_transfer_peers(&ctx, instance_refs).await {
-            Ok(found) => found,
-            Err(e) => {
-                set_failure_conditions(
-                    status_updater,
-                    "PrimaryFailed",
-                    &format!("Failed to find the zone's instances: {e}"),
-                );
-                status_updater.apply(&client).await?;
-                return Err(e);
-            }
-        };
+    let super::transfer_peers::ZonePeers {
+        primary_refs,
+        secondary_refs,
+        peers,
+        notify_missing,
+    } = match super::transfer_peers::zone_transfer_peers(&ctx, instance_refs).await {
+        Ok(found) => found,
+        Err(e) => {
+            set_failure_conditions(
+                status_updater,
+                REASON_PRIMARY_FAILED,
+                &format!("Failed to find the zone's instances: {e}"),
+            );
+            status_updater.apply(&client).await?;
+            return Err(e);
+        }
+    };
 
     if primary_refs.is_empty() {
         let message = "No primary servers found - cannot configure secondary zones";
-        set_failure_conditions(status_updater, "PrimaryFailed", message);
+        set_failure_conditions(status_updater, REASON_PRIMARY_FAILED, message);
         status_updater.apply(&client).await?;
         return Err(anyhow!(
             "No primary servers found for zone {}/{} - cannot configure secondary zones",
@@ -103,6 +108,14 @@ pub async fn configure_zone_on_instances(
             spec.zone_name
         ));
     }
+
+    // A secondary without a NOTIFY target keeps the zone not Ready and
+    // rechecked until its Service has a ClusterIP (ADR-0019).
+    super::transfer_peers::mark_notify_targets_pending(
+        status_updater,
+        &spec.zone_name,
+        &notify_missing,
+    );
 
     let recorded = dnszone
         .status
@@ -139,9 +152,7 @@ pub async fn configure_zone_on_instances(
     .await
     {
         Ok(outcome) => {
-            status_updater.set_condition(
-                "Progressing",
-                "True",
+            status_updater.set_progressing(
                 "PrimaryReconciled",
                 &format!(
                     "Zone {} configured on {} primary instance(s) ({} endpoint(s))",
@@ -153,7 +164,7 @@ pub async fn configure_zone_on_instances(
         Err(e) => {
             set_failure_conditions(
                 status_updater,
-                "PrimaryFailed",
+                REASON_PRIMARY_FAILED,
                 &format!("Failed to configure zone on primary servers: {e}"),
             );
             status_updater.apply(&client).await?;
@@ -179,9 +190,7 @@ pub async fn configure_zone_on_instances(
         mark_peer_refresh_failed(status_updater, &spec.zone_name, &push.primary_failures);
     }
 
-    status_updater.set_condition(
-        "Progressing",
-        "True",
+    status_updater.set_progressing(
         "SecondaryReconciling",
         "Configuring zone on secondary servers",
     );
@@ -210,9 +219,7 @@ pub async fn configure_zone_on_instances(
                 push.secondary_failures = secondary.failures;
                 mark_secondaries_not_loaded(status_updater, &spec.zone_name, &secondary.not_loaded);
                 if secondary.outcome.endpoints_configured > 0 {
-                    status_updater.set_condition(
-                        "Progressing",
-                        "True",
+                    status_updater.set_progressing(
                         "SecondaryReconciled",
                         &format!(
                             "Zone {} configured on {} secondary instance(s) ({} endpoint(s))",
@@ -231,9 +238,7 @@ pub async fn configure_zone_on_instances(
                     e
                 );
                 push.secondary_failures += 1;
-                status_updater.set_condition(
-                    "Degraded",
-                    "True",
+                status_updater.set_degraded(
                     "SecondaryFailed",
                     &format!(
                         "Zone configured on {} primary instance(s) but secondary configuration failed: {e}",
@@ -277,11 +282,11 @@ pub fn set_failure_conditions(
     reason: &str,
     message: &str,
 ) {
-    status_updater.set_condition("Degraded", "True", reason, message);
-    status_updater.set_condition("Ready", "False", reason, message);
+    status_updater.set_degraded(reason, message);
+    status_updater.set_not_ready(reason, message);
     status_updater.set_condition(
-        "Progressing",
-        "False",
+        CONDITION_TYPE_PROGRESSING,
+        CONDITION_STATUS_FALSE,
         reason,
         "Reconciliation attempt finished with errors",
     );

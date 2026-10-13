@@ -18,6 +18,7 @@
 //! Run with: cargo test --test scout_integration -- --ignored
 
 use bindy_api::crd::{ARecord, ARecordSpec};
+use bindy_controller_sdk::kube_errors;
 use bindy_scout::{
     arecord_label_selector, stale_arecord_label_selector, stale_httproute_arecord_label_selector,
     stale_tcproute_arecord_label_selector, stale_tlsroute_arecord_label_selector,
@@ -81,8 +82,13 @@ async fn ensure_namespace(client: &Client) {
         },
         ..Default::default()
     };
-    // AlreadyExists is fine — suites re-run against a warm cluster.
-    let _ = api.create(&PostParams::default(), &ns).await;
+    // AlreadyExists is fine: suites re-run against a warm cluster. Anything
+    // else means the cluster is not usable for this suite.
+    match api.create(&PostParams::default(), &ns).await {
+        Ok(_) => {}
+        Err(e) if kube_errors::is_conflict(&e) => {}
+        Err(e) => panic!("failed to create namespace {TEST_NAMESPACE}: {e}"),
+    }
 }
 
 /// Creates an ARecord carrying exactly the labels Scout writes.

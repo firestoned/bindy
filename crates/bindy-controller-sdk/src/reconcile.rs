@@ -7,7 +7,9 @@
 //! metrics, and turns success into `await_change`: there is no periodic
 //! resync, the next reconcile comes from a watch event (ADR-0016).
 //! [`instrumented_scheduled`] does the same for a reconcile that knows of a
-//! future instant it must act at (an RNDC key rotation). [`finalizer_error`]
+//! future instant it must act at (an RNDC key rotation).
+//! [`instrumented_action`] records the same metrics for a reconcile that
+//! returns its own `Action`. [`finalizer_error`]
 //! flattens kube's `finalizer::Error` into a [`ReconcileError`] for the
 //! controllers that use kube's `finalizer()` helper.
 
@@ -123,6 +125,40 @@ where
             Err(e.into())
         }
     }
+}
+
+/// Time a reconcile that picks its own `Action` and record how it went.
+///
+/// For reconcilers that already return `Result<Action, E>` (the `DNSZone`
+/// reconcile through kube's `finalizer()` helper, the zones-loaded gate):
+/// counts a success or an error for `kind` with the same metrics as
+/// [`instrumented`], and returns the result untouched. It neither logs nor
+/// converts the error; the caller maps it (e.g. with [`finalizer_error`]).
+///
+/// # Arguments
+/// * `kind` - The resource kind, used as the metrics label
+/// * `reconcile` - The reconcile itself
+///
+/// # Returns
+/// The reconcile's own result.
+///
+/// # Errors
+/// Returns the reconcile's error unchanged.
+pub async fn instrumented_action<F, E>(kind: &str, reconcile: F) -> Result<Action, E>
+where
+    F: Future<Output = Result<Action, E>>,
+{
+    let start = Instant::now();
+    let result = reconcile.await;
+    let duration = start.elapsed();
+
+    if result.is_ok() {
+        record_reconciliation_success(kind, duration);
+        return result;
+    }
+    record_reconciliation_error(kind, duration);
+    record_error(kind, ERROR_TYPE_RECONCILE);
+    result
 }
 
 /// Flatten a `finalizer::Error` into a [`ReconcileError`].
