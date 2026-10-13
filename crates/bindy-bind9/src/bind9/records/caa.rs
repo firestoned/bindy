@@ -4,80 +4,63 @@
 //! CAA record management.
 
 use super::super::types::RndcKeyData;
-use super::{
-    build_authenticated_client, build_record_fqdn, delete_rrset_for_replace, effective_record_ttl,
-    rrset_ttl_matches, should_update_record,
-};
+use super::{effective_record_ttl, write_rrset, CAA_TAG_IODEF, CAA_TAG_ISSUE, CAA_TAG_ISSUEWILD};
 use anyhow::{Context, Result};
-use hickory_net::client::ClientHandle;
-use hickory_proto::op::ResponseCode;
-use hickory_proto::rr::{rdata, DNSClass, Name, RData, Record, RecordType};
+use hickory_proto::rr::{rdata, Name, RData, RecordType};
 use std::str::FromStr;
-use tracing::debug;
 use url::Url;
 
-/// Compare existing DNS `RRset` with the desired CAA fields and TTL.
-///
-/// # Arguments
-///
-/// * `existing_records` - Records currently in DNS (from query)
-/// * `issuer_critical` - Desired issuer-critical flag from the spec
-/// * `tag` - Desired CAA tag (`issue`, `issuewild`, or `iodef`) from the spec
-/// * `value` - Desired CAA value from the spec
-/// * `desired_ttl` - Effective TTL from the spec
-///
-/// # Returns
-///
-/// `true` if the existing `RRset` matches the desired state exactly (no changes
-/// needed), `false` if an update is required (rdata or TTL differ).
-fn compare_caa_rrset(
-    existing_records: &[Record],
-    issuer_critical: bool,
-    tag: &str,
-    value: &str,
-    desired_ttl: u32,
-) -> bool {
-    if existing_records.len() != 1 {
-        return false;
+/// Parse the issuer domain of an `issue` / `issuewild` value; an empty value
+/// means "no CA may issue" (RFC 8659 4.2).
+fn parse_issuer(value: &str) -> Result<Option<Name>> {
+    if value.is_empty() {
+        return Ok(None);
     }
-    if !rrset_ttl_matches(existing_records, desired_ttl) {
-        return false;
-    }
-    let RData::CAA(existing_caa) = &existing_records[0].data else {
-        return false;
-    };
-
-    let flags_match = existing_caa.issuer_critical == issuer_critical;
-    let tag_match = existing_caa.tag == tag;
-
-    let value_match = match tag {
-        "issue" | "issuewild" => existing_caa
-            .value_as_issue()
-            .ok()
-            .map(|(name, _opts)| name.map(|n| n.to_string()).unwrap_or_default())
-            .is_some_and(|s| s == value),
-        "iodef" => existing_caa
-            .value_as_iodef()
-            .ok()
-            .is_some_and(|url| url.as_str() == value),
-        _ => false,
-    };
-
-    flags_match && tag_match && value_match
+    Name::from_str(value)
+        .map(Some)
+        .with_context(|| format!("Invalid CA domain name: {value}"))
 }
 
-/// Add a CAA record using dynamic DNS update (RFC 2136) with `RRset` synchronization.
+/// Convert a `CAARecord` spec to the CAA `RRset` value.
 ///
-/// If the existing `RRset` differs from the desired state, the entire CAA
-/// `RRset` for the name is deleted and recreated so stale rdata never lingers.
+/// Any non-zero `flags` sets the issuer-critical bit, as before.
+///
+/// # Errors
+///
+/// Returns an error if the tag is not `issue`, `issuewild` or `iodef`, the
+/// issuer domain is invalid, or the `iodef` URL is invalid.
+pub(crate) fn caa_rdata(flags: i32, tag: &str, value: &str) -> Result<Vec<RData>> {
+    let issuer_critical = flags != 0;
+    let caa = match tag {
+        CAA_TAG_ISSUE => rdata::CAA::new_issue(issuer_critical, parse_issuer(value)?, Vec::new()),
+        CAA_TAG_ISSUEWILD => {
+            rdata::CAA::new_issuewild(issuer_critical, parse_issuer(value)?, Vec::new())
+        }
+        CAA_TAG_IODEF => {
+            let url = Url::parse(value).with_context(|| format!("Invalid iodef URL: {value}"))?;
+            rdata::CAA::new_iodef(issuer_critical, url)
+        }
+        _ => anyhow::bail!(
+            "Unsupported CAA tag: {tag}. Supported tags: {CAA_TAG_ISSUE}, \
+             {CAA_TAG_ISSUEWILD}, {CAA_TAG_IODEF}"
+        ),
+    };
+    Ok(vec![RData::CAA(caa)])
+}
+
+/// Write the CAA `RRset` for a name using dynamic DNS update (RFC 2136).
+///
+/// The spec is validated before any DNS traffic, compared with the live
+/// `RRset` by value, and if it differs the `RRset` is replaced in one UPDATE
+/// (ADR-0021), so stale rdata never lingers.
 ///
 /// # Errors
 ///
 /// Returns an error if:
+/// - The tag, issuer domain or `iodef` URL is invalid (nothing is sent)
 /// - DNS server connection fails
 /// - TSIG signer creation fails
 /// - DNS update is rejected by the server
-/// - Invalid domain name, flags, tag, or value
 #[allow(clippy::too_many_arguments)]
 pub async fn add_caa_record(
     zone_name: &str,
@@ -89,80 +72,17 @@ pub async fn add_caa_record(
     server: &str,
     key_data: &RndcKeyData,
 ) -> Result<()> {
-    let issuer_critical = flags != 0;
-    let ttl_value = effective_record_ttl(ttl);
-
-    let should_update = should_update_record(
+    let desired = caa_rdata(flags, tag, value)?;
+    write_rrset(
         zone_name,
         name,
         RecordType::CAA,
-        "CAA",
+        effective_record_ttl(ttl),
+        desired,
         server,
-        |existing_records| {
-            compare_caa_rrset(existing_records, issuer_critical, tag, value, ttl_value)
-        },
+        key_data,
     )
-    .await?;
-
-    if !should_update {
-        return Ok(());
-    }
-
-    let zone =
-        Name::from_str(zone_name).context(format!("Invalid zone name for CAA: {zone_name}"))?;
-    let fqdn = build_record_fqdn(zone_name, name)?;
-
-    let record_data = match tag {
-        "issue" => {
-            let ca_name = if value.is_empty() {
-                None
-            } else {
-                Some(Name::from_str(value).context(format!("Invalid CA domain name: {value}"))?)
-            };
-            rdata::CAA::new_issue(issuer_critical, ca_name, Vec::new())
-        }
-        "issuewild" => {
-            let ca_name = if value.is_empty() {
-                None
-            } else {
-                Some(Name::from_str(value).context(format!("Invalid CA domain name: {value}"))?)
-            };
-            rdata::CAA::new_issuewild(issuer_critical, ca_name, Vec::new())
-        }
-        "iodef" => {
-            let url = Url::parse(value).context(format!("Invalid iodef URL: {value}"))?;
-            rdata::CAA::new_iodef(issuer_critical, url)
-        }
-        _ => anyhow::bail!("Unsupported CAA tag: {tag}. Supported tags: issue, issuewild, iodef"),
-    };
-
-    let mut record = Record::from_rdata(fqdn.clone(), ttl_value, RData::CAA(record_data));
-    record.dns_class = DNSClass::IN;
-
-    let mut client = build_authenticated_client(server, key_data).await?;
-
-    // Step 1: delete the existing RRset. NXRRSET (nothing there) is fine; a
-    // transport failure or REFUSED/NOTAUTH fails the write.
-    delete_rrset_for_replace(&mut client, &fqdn, RecordType::CAA, &zone).await?;
-
-    // Step 2: append the desired record to create the new RRset.
-    let response = client
-        .append(record, zone, false)
-        .await
-        .context(format!("Failed to send CAA record update for {fqdn}"))?;
-
-    match response.metadata.response_code {
-        ResponseCode::NoError => {
-            debug!(
-                "Successfully added CAA record: {} -> {} {} \"{}\" (TTL: {})",
-                fqdn, flags, tag, value, ttl_value
-            );
-            Ok(())
-        }
-        code => {
-            anyhow::bail!("DNS server rejected CAA record update for {fqdn}: {code:?}");
-        }
-    }
+    .await
 }
 
 #[cfg(test)]

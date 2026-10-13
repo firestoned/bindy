@@ -134,3 +134,39 @@ mod delete_step_tests {
         assert!(err.to_string().contains("503"));
     }
 }
+
+/// The rejection-cooldown key: one helper, used by the reconcile that notes
+/// a rejected write and the finalizer that clears it (ADR-0020). Both built
+/// it by hand before, one from the short type name plus "Record", the other
+/// from the kind.
+#[cfg(test)]
+mod rejected_write_key_tests {
+    use super::super::rejected_write_key;
+    use crate::crd::{ARecord, PTRRecord};
+    use serde_json::json;
+
+    fn record<K: serde::de::DeserializeOwned>(kind: &str, spec: serde_json::Value) -> K {
+        serde_json::from_value(json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": kind,
+            "metadata": {"name": "web", "namespace": "team"},
+            "spec": spec,
+        }))
+        .expect("valid fixture")
+    }
+
+    #[test]
+    fn key_is_kind_namespace_and_name() {
+        let a: ARecord = record(
+            "ARecord",
+            json!({"name": "www", "ipv4Addresses": ["192.0.2.1"]}),
+        );
+        assert_eq!(rejected_write_key(&a), "ARecord/team/web");
+
+        let ptr: PTRRecord = record(
+            "PTRRecord",
+            json!({"name": "10", "target": "www.example.com."}),
+        );
+        assert_eq!(rejected_write_key(&ptr), "PTRRecord/team/web");
+    }
+}

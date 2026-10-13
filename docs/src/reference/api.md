@@ -12,10 +12,10 @@ This document describes the Custom Resource Definitions (CRDs) provided by Bindy
 - [DNS Records](#dns-records)
   - [ARecord](#arecord)
   - [AAAARecord](#aaaarecord)
+  - [TXTRecord](#txtrecord)
   - [CNAMERecord](#cnamerecord)
   - [MXRecord](#mxrecord)
   - [NSRecord](#nsrecord)
-  - [TXTRecord](#txtrecord)
   - [SRVRecord](#srvrecord)
   - [CAARecord](#caarecord)
   - [PTRRecord](#ptrrecord)
@@ -121,6 +121,35 @@ AAAARecord maps a DNS hostname to an IPv6 address. This is the IPv6 equivalent o
 
 ---
 
+### TXTRecord
+
+**API Version**: `bindy.firestoned.io/v1beta1`
+
+TXTRecord stores arbitrary text data in DNS. Commonly used for SPF, DKIM, DMARC policies, and domain verification.
+
+#### Spec Fields
+
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `name` | string | Yes | Record name within the zone. |
+| `text` | array | Yes | Array of text strings. Each string can be up to 255 characters.  Multiple strings are concatenated by DNS resolvers. For long text, split into multiple strings. |
+| `ttl` | integer | No | Time To Live in seconds. |
+
+#### Status Fields
+
+| Field | Type | Required | Description |
+| ----- | ---- | -------- | ----------- |
+| `addresses` | string | No | Comma-separated list of addresses for display purposes.  For \`ARecord\` and \`AAAARecord\` resources, this field contains the IP addresses from \`spec.ipv4Addresses\` or \`spec.ipv6Addresses\` joined with commas. This is used for prettier kubectl output instead of showing JSON arrays.  Example: "192.0.2.1,192.0.2.2,192.0.2.3"  For other record types, this field is not used. |
+| `conditions` | array | No |  |
+| `lastUpdated` | string | No | Timestamp of the last successful update to BIND9.  This is updated after a successful nsupdate operation. Uses RFC 3339 format (e.g., "2025-12-26T10:30:00Z"). |
+| `observedGeneration` | integer | No |  |
+| `publishedName` | string | No | DNS record name (from \`spec.name\`) most recently published to BIND9.  Set by the record reconciler after a successful dynamic DNS update. When \`spec.name\` changes (a rename), the reconciler compares it against this field, deletes the old FQDN from the zone, publishes the new name, and then updates this field. Without it, renamed records would leave their old FQDN orphaned in BIND9. |
+| `recordHash` | string | No | SHA-256 hash of the record's spec data.  Used to detect when a record's data has actually changed, avoiding unnecessary BIND9 updates and zone transfers.  The hash is calculated from all fields in the record's spec that affect the DNS record data (name, addresses, TTL, etc.). |
+| `zone` | string | No | The FQDN of the zone that owns this record (set by \`DNSZone\` controller).  When a \`DNSZone\`'s label selector matches this record, the \`DNSZone\` controller sets this field to the zone's FQDN (e.g., \`"example.com"\`). The record reconciler uses this to determine which zone to update in BIND9.  If this field is empty, the record is not matched by any zone and should not be reconciled into BIND9.  **DEPRECATED**: Use \`zone_ref\` instead for structured zone reference. |
+| `zoneRef` | object | No | Structured reference to the \`DNSZone\` that owns this record.  Set by the \`DNSZone\` controller when the zone's \`recordsFrom\` selector matches this record's labels. Contains the complete Kubernetes object reference including apiVersion, kind, name, namespace, and zoneName.  The record reconciler uses this to: 1. Look up the parent \`DNSZone\` resource 2. Find the zone's primary \`Bind9Instance\` servers 3. Add this record to BIND9 on primaries 4. Trigger zone transfer (retransfer) on secondaries  If this field is None, the record is not selected by any zone and will not be added to BIND9. |
+
+---
+
 ### CNAMERecord
 
 **API Version**: `bindy.firestoned.io/v1beta1`
@@ -192,35 +221,6 @@ NSRecord delegates a subdomain to authoritative nameservers. Used for subdomain 
 | ----- | ---- | -------- | ----------- |
 | `name` | string | Yes | Subdomain to delegate. For zone apex, use "@". |
 | `nameserver` | string | Yes | Fully qualified domain name of the nameserver.  Must end with a dot. Example: "ns1.example.com." |
-| `ttl` | integer | No | Time To Live in seconds. |
-
-#### Status Fields
-
-| Field | Type | Required | Description |
-| ----- | ---- | -------- | ----------- |
-| `addresses` | string | No | Comma-separated list of addresses for display purposes.  For \`ARecord\` and \`AAAARecord\` resources, this field contains the IP addresses from \`spec.ipv4Addresses\` or \`spec.ipv6Addresses\` joined with commas. This is used for prettier kubectl output instead of showing JSON arrays.  Example: "192.0.2.1,192.0.2.2,192.0.2.3"  For other record types, this field is not used. |
-| `conditions` | array | No |  |
-| `lastUpdated` | string | No | Timestamp of the last successful update to BIND9.  This is updated after a successful nsupdate operation. Uses RFC 3339 format (e.g., "2025-12-26T10:30:00Z"). |
-| `observedGeneration` | integer | No |  |
-| `publishedName` | string | No | DNS record name (from \`spec.name\`) most recently published to BIND9.  Set by the record reconciler after a successful dynamic DNS update. When \`spec.name\` changes (a rename), the reconciler compares it against this field, deletes the old FQDN from the zone, publishes the new name, and then updates this field. Without it, renamed records would leave their old FQDN orphaned in BIND9. |
-| `recordHash` | string | No | SHA-256 hash of the record's spec data.  Used to detect when a record's data has actually changed, avoiding unnecessary BIND9 updates and zone transfers.  The hash is calculated from all fields in the record's spec that affect the DNS record data (name, addresses, TTL, etc.). |
-| `zone` | string | No | The FQDN of the zone that owns this record (set by \`DNSZone\` controller).  When a \`DNSZone\`'s label selector matches this record, the \`DNSZone\` controller sets this field to the zone's FQDN (e.g., \`"example.com"\`). The record reconciler uses this to determine which zone to update in BIND9.  If this field is empty, the record is not matched by any zone and should not be reconciled into BIND9.  **DEPRECATED**: Use \`zone_ref\` instead for structured zone reference. |
-| `zoneRef` | object | No | Structured reference to the \`DNSZone\` that owns this record.  Set by the \`DNSZone\` controller when the zone's \`recordsFrom\` selector matches this record's labels. Contains the complete Kubernetes object reference including apiVersion, kind, name, namespace, and zoneName.  The record reconciler uses this to: 1. Look up the parent \`DNSZone\` resource 2. Find the zone's primary \`Bind9Instance\` servers 3. Add this record to BIND9 on primaries 4. Trigger zone transfer (retransfer) on secondaries  If this field is None, the record is not selected by any zone and will not be added to BIND9. |
-
----
-
-### TXTRecord
-
-**API Version**: `bindy.firestoned.io/v1beta1`
-
-TXTRecord stores arbitrary text data in DNS. Commonly used for SPF, DKIM, DMARC policies, and domain verification.
-
-#### Spec Fields
-
-| Field | Type | Required | Description |
-| ----- | ---- | -------- | ----------- |
-| `name` | string | Yes | Record name within the zone. |
-| `text` | array | Yes | Array of text strings. Each string can be up to 255 characters.  Multiple strings are concatenated by DNS resolvers. For long text, split into multiple strings. |
 | `ttl` | integer | No | Time To Live in seconds. |
 
 #### Status Fields

@@ -185,22 +185,8 @@ async fn existing_record_names(
     kind: &str,
     namespace: &str,
 ) -> Result<std::collections::HashSet<String>> {
-    use crate::crd::{
-        AAAARecord, ARecord, CAARecord, CNAMERecord, DNSRecordKind, MXRecord, NSRecord, PTRRecord,
-        SRVRecord, TXTRecord,
-    };
-
-    match DNSRecordKind::try_from(kind)? {
-        DNSRecordKind::A => list_names::<ARecord>(client, namespace).await,
-        DNSRecordKind::AAAA => list_names::<AAAARecord>(client, namespace).await,
-        DNSRecordKind::TXT => list_names::<TXTRecord>(client, namespace).await,
-        DNSRecordKind::CNAME => list_names::<CNAMERecord>(client, namespace).await,
-        DNSRecordKind::MX => list_names::<MXRecord>(client, namespace).await,
-        DNSRecordKind::NS => list_names::<NSRecord>(client, namespace).await,
-        DNSRecordKind::SRV => list_names::<SRVRecord>(client, namespace).await,
-        DNSRecordKind::CAA => list_names::<CAARecord>(client, namespace).await,
-        DNSRecordKind::PTR => list_names::<PTRRecord>(client, namespace).await,
-    }
+    let kind = crate::crd::DNSRecordKind::try_from(kind)?;
+    bindy_api::match_record_kind!(kind, K => list_names::<K>(client, namespace).await)
 }
 
 /// What [`cleanup_stale_records`] did.

@@ -4,51 +4,33 @@
 //! NS record management.
 
 use super::super::types::RndcKeyData;
-use super::{
-    build_authenticated_client, build_record_fqdn, delete_rrset_for_replace, effective_record_ttl,
-    rrset_ttl_matches, should_update_record,
-};
-use anyhow::Result;
-use hickory_net::client::ClientHandle;
-use hickory_proto::op::ResponseCode;
-use hickory_proto::rr::{rdata, DNSClass, Name, RData, Record, RecordType};
+use super::{effective_record_ttl, write_rrset};
+use anyhow::{Context, Result};
+use hickory_proto::rr::{rdata, Name, RData, RecordType};
 use std::str::FromStr;
-use tracing::debug;
 
-/// Compare existing DNS `RRset` with the desired nameserver and TTL.
-///
-/// # Arguments
-///
-/// * `existing_records` - Records currently in DNS (from query)
-/// * `nameserver` - Desired nameserver host from the spec
-/// * `desired_ttl` - Effective TTL from the spec
-///
-/// # Returns
-///
-/// `true` if the existing `RRset` matches the desired state exactly (no changes
-/// needed), `false` if an update is required (rdata or TTL differ).
-fn compare_ns_rrset(existing_records: &[Record], nameserver: &str, desired_ttl: u32) -> bool {
-    if existing_records.len() != 1 {
-        return false;
-    }
-    if !rrset_ttl_matches(existing_records, desired_ttl) {
-        return false;
-    }
-    let RData::NS(existing_ns) = &existing_records[0].data else {
-        return false;
-    };
-    existing_ns.0.to_string() == nameserver
-}
-
-/// Add an NS record using dynamic DNS update (RFC 2136) with `RRset` synchronization.
-///
-/// NS records managed here are used for delegations. If the existing `RRset`
-/// differs from the desired state, the entire NS `RRset` for the name is
-/// deleted and recreated so stale delegation rdata never lingers.
+/// Convert an `NSRecord` spec's nameserver to the NS `RRset` value.
 ///
 /// # Errors
 ///
-/// Returns an error if the DNS update fails or the server rejects it.
+/// Returns an error if `nameserver` is not a valid domain name.
+pub(crate) fn ns_rdata(nameserver: &str) -> Result<Vec<RData>> {
+    let ns_name = Name::from_str(nameserver)
+        .with_context(|| format!("Invalid NS nameserver: {nameserver}"))?;
+    Ok(vec![RData::NS(rdata::NS(ns_name))])
+}
+
+/// Write the NS `RRset` for a name using dynamic DNS update (RFC 2136).
+///
+/// NS records managed here are used for delegations. The nameserver is
+/// validated before any DNS traffic, compared with the live `RRset` by value,
+/// and if it differs the `RRset` is replaced in one UPDATE (ADR-0021), so
+/// stale delegation rdata never lingers.
+///
+/// # Errors
+///
+/// Returns an error if the nameserver is invalid (nothing is sent), the DNS
+/// update fails, or the server rejects it.
 pub async fn add_ns_record(
     zone_name: &str,
     name: &str,
@@ -57,51 +39,17 @@ pub async fn add_ns_record(
     server: &str,
     key_data: &RndcKeyData,
 ) -> Result<()> {
-    let ttl_value = effective_record_ttl(ttl);
-    let should_update = should_update_record(
+    let desired = ns_rdata(nameserver)?;
+    write_rrset(
         zone_name,
         name,
         RecordType::NS,
-        "NS",
+        effective_record_ttl(ttl),
+        desired,
         server,
-        |existing_records| compare_ns_rrset(existing_records, nameserver, ttl_value),
+        key_data,
     )
-    .await?;
-
-    if !should_update {
-        return Ok(());
-    }
-
-    let zone = Name::from_str(zone_name)?;
-    let fqdn = build_record_fqdn(zone_name, name)?;
-    let ns_name = Name::from_str(nameserver)?;
-
-    let mut record = Record::from_rdata(fqdn.clone(), ttl_value, RData::NS(rdata::NS(ns_name)));
-    record.dns_class = DNSClass::IN;
-
-    debug!(
-        "Adding NS record: {} -> {} (TTL: {})",
-        fqdn, nameserver, ttl_value
-    );
-
-    let mut client = build_authenticated_client(server, key_data).await?;
-
-    // Step 1: delete the existing RRset. NXRRSET (nothing there) is fine; a
-    // transport failure or REFUSED/NOTAUTH fails the write.
-    delete_rrset_for_replace(&mut client, &fqdn, RecordType::NS, &zone).await?;
-
-    // Step 2: append the desired record to create the new RRset.
-    let response = client.append(record, zone, false).await?;
-
-    match response.metadata.response_code {
-        ResponseCode::NoError => {
-            debug!("Successfully added NS record: {} -> {}", name, nameserver);
-            Ok(())
-        }
-        code => Err(anyhow::anyhow!(
-            "DNS update failed with response code: {code:?}"
-        )),
-    }
+    .await
 }
 
 #[cfg(test)]

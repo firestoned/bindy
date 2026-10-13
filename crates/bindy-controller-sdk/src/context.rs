@@ -9,22 +9,23 @@
 //! API server.
 //!
 //! The nine DNS record kinds are handled generically through [`RecordKind`]
-//! and the [`RECORD_KINDS`] list: adding a record kind is one `RecordKind`
-//! impl and one list entry, not edits across the stores, the watch wiring and
-//! the selector queries (roadmap 01 Phase B step B3).
+//! and the [`RECORD_KINDS`] list, both generated from the record-kind table
+//! in `bindy-api` (ADR-0020): adding a record kind there reaches the stores,
+//! the watch wiring and the selector queries with no edit here.
 
 use crate::watch::{MultiStore, WatchSet};
 use bindy_api::crd::{
-    AAAARecord, ARecord, Bind9Cluster, Bind9Instance, CAARecord, CNAMERecord, ClusterBind9Provider,
-    DNSZone, MXRecord, NSRecord, PTRRecord, RecordReferenceWithTimestamp, RecordStatus, SRVRecord,
-    TXTRecord,
+    Bind9Cluster, Bind9Instance, ClusterBind9Provider, DNSRecordKind, DNSZone,
+    RecordReferenceWithTimestamp, RecordStatus,
 };
 use bindy_api::selector::matches_selector;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{Endpoints, Pod};
+use kube::core::object::HasSpec;
 use kube::core::NamespaceResourceScope;
 use kube::{Client, Resource, ResourceExt};
 use serde::de::DeserializeOwned;
+use serde::Serialize;
 use std::any::{Any, TypeId};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Debug;
@@ -171,52 +172,70 @@ impl Context {
     }
 }
 
-/// A DNS record CRD kind, for the generic store and watch plumbing.
+/// What a DNS record CRD kind is: the one trait every record kind implements
+/// (ADR-0020).
 ///
-/// Implemented once per record kind in this module; [`RECORD_KINDS`] lists
-/// them.
+/// Generated for every row of the record-kind table
+/// ([`bindy_api::for_each_record_kind`]); [`RECORD_KINDS`] lists the kinds.
+/// The kind string, finalizer and hickory `RecordType` all come from
+/// [`Self::DNS_KIND`], so they cannot disagree. The spec is reached through
+/// the kube-derived [`HasSpec`]; how a kind's spec becomes DNS data is the
+/// `ReconcilableRecord` impl in `bindy-bind9`, the one hand-written part.
 pub trait RecordKind:
     Resource<DynamicType = (), Scope = NamespaceResourceScope>
+    + HasSpec<Spec: Serialize + Clone + Debug + Send + Sync + 'static>
     + Clone
     + Debug
     + Send
     + Sync
+    + Serialize
     + DeserializeOwned
     + 'static
 {
-    /// The kind name, e.g. `ARecord`
-    const KIND: &'static str;
+    /// This kind's row of the record-kind table.
+    const DNS_KIND: DNSRecordKind;
+
+    /// The kind name, e.g. `ARecord`.
+    const KIND: &'static str = Self::DNS_KIND.as_str();
 
     /// The record's status, if it has one.
     fn record_status(&self) -> Option<&RecordStatus>;
 
     /// The record's DNS name from its spec (`spec.name`, e.g. `www` or `@`).
     fn spec_name(&self) -> &str;
+
+    /// The record's TTL from its spec (`spec.ttl`), if set.
+    fn ttl(&self) -> Option<i32>;
 }
 
-macro_rules! record_kind {
-    ($ty:ty, $kind:literal) => {
-        impl RecordKind for $ty {
-            const KIND: &'static str = $kind;
-            fn record_status(&self) -> Option<&RecordStatus> {
-                self.status.as_ref()
+/// Generates the [`RecordKind`] impls and [`RECORD_KINDS`] from the
+/// record-kind table.
+macro_rules! record_kinds {
+    (@rows $( ($variant:ident, $record:ty, $($rest:tt)*) ),* $(,)?) => {
+        $(
+            impl RecordKind for $record {
+                const DNS_KIND: DNSRecordKind = DNSRecordKind::$variant;
+                fn record_status(&self) -> Option<&RecordStatus> {
+                    self.status.as_ref()
+                }
+                fn spec_name(&self) -> &str {
+                    &self.spec.name
+                }
+                fn ttl(&self) -> Option<i32> {
+                    self.spec.ttl
+                }
             }
-            fn spec_name(&self) -> &str {
-                &self.spec.name
-            }
-        }
+        )*
+
+        /// Every record kind, in the order record discovery reports them
+        /// ([`DNSRecordKind::all`]).
+        pub const RECORD_KINDS: [RecordKindOps; DNSRecordKind::COUNT] = [
+            $( ops::<$record>(), )*
+        ];
     };
 }
 
-record_kind!(ARecord, "ARecord");
-record_kind!(AAAARecord, "AAAARecord");
-record_kind!(CNAMERecord, "CNAMERecord");
-record_kind!(TXTRecord, "TXTRecord");
-record_kind!(MXRecord, "MXRecord");
-record_kind!(NSRecord, "NSRecord");
-record_kind!(SRVRecord, "SRVRecord");
-record_kind!(CAARecord, "CAARecord");
-record_kind!(PTRRecord, "PTRRecord");
+bindy_api::for_each_record_kind!([record_kinds]);
 
 /// The type-erased operations for one record kind.
 #[derive(Clone, Copy)]
@@ -244,19 +263,6 @@ const fn ops<K: RecordKind>() -> RecordKindOps {
         wait_ready: wait_ready_kind::<K>,
     }
 }
-
-/// Every record kind, in the order record discovery reports them.
-pub const RECORD_KINDS: [RecordKindOps; 9] = [
-    ops::<ARecord>(),
-    ops::<AAAARecord>(),
-    ops::<CNAMERecord>(),
-    ops::<TXTRecord>(),
-    ops::<MXRecord>(),
-    ops::<NSRecord>(),
-    ops::<SRVRecord>(),
-    ops::<CAARecord>(),
-    ops::<PTRRecord>(),
-];
 
 fn register_kind<K: RecordKind>(watch: &mut WatchSet, records: &mut RecordStores) {
     records.insert(watch.register::<K>(K::KIND));

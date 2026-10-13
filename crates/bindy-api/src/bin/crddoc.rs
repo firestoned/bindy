@@ -9,10 +9,7 @@
 //! Usage:
 //!   cargo run --bin crddoc > docs/src/reference/api.md
 
-use bindy_api::crd::{
-    AAAARecord, ARecord, Bind9Cluster, Bind9Instance, CAARecord, CNAMERecord, DNSZone, MXRecord,
-    NSRecord, PTRRecord, SRVRecord, TXTRecord,
-};
+use bindy_api::crd::{Bind9Cluster, Bind9Instance, DNSRecordKind, DNSZone};
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::JSONSchemaProps;
 use kube::{CustomResourceExt, Resource};
 
@@ -31,15 +28,10 @@ fn main() {
     println!("- [Zone Management](#zone-management)");
     println!("  - [DNSZone](#dnszone)");
     println!("- [DNS Records](#dns-records)");
-    println!("  - [ARecord](#arecord)");
-    println!("  - [AAAARecord](#aaaarecord)");
-    println!("  - [CNAMERecord](#cnamerecord)");
-    println!("  - [MXRecord](#mxrecord)");
-    println!("  - [NSRecord](#nsrecord)");
-    println!("  - [TXTRecord](#txtrecord)");
-    println!("  - [SRVRecord](#srvrecord)");
-    println!("  - [CAARecord](#caarecord)");
-    println!("  - [PTRRecord](#ptrrecord)");
+    for kind in DNSRecordKind::all() {
+        let kind = kind.as_str();
+        println!("  - [{kind}](#{})", kind.to_lowercase());
+    }
     println!("- [Infrastructure](#infrastructure)");
     println!("  - [Bind9Cluster](#bind9cluster)");
     println!("  - [Bind9Instance](#bind9instance)");
@@ -53,15 +45,8 @@ fn main() {
     // DNS Records
     println!("## DNS Records");
     println!();
-    generate_crd_doc::<ARecord>();
-    generate_crd_doc::<AAAARecord>();
-    generate_crd_doc::<CNAMERecord>();
-    generate_crd_doc::<MXRecord>();
-    generate_crd_doc::<NSRecord>();
-    generate_crd_doc::<TXTRecord>();
-    generate_crd_doc::<SRVRecord>();
-    generate_crd_doc::<CAARecord>();
-    generate_crd_doc::<PTRRecord>();
+    // Every record kind, from the record-kind table (ADR-0020)
+    bindy_api::each_record_kind!(K => generate_crd_doc::<K>());
 
     // Infrastructure
     println!("## Infrastructure");

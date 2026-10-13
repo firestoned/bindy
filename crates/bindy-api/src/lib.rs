@@ -13,6 +13,7 @@
 //! - [`crd`] - Custom Resource Definition types for DNS resources
 //! - [`constants`] - Operator-wide constants
 //! - [`labels`] - Label, annotation and finalizer keys
+//! - [`record_kinds`] - The record-kind table: every DNS record kind, declared once (ADR-0020)
 //! - [`selector`] - Label selector matching utilities
 //! - [`status_reasons`] - Status condition reasons
 //!
@@ -23,6 +24,7 @@
 pub mod constants;
 pub mod crd;
 pub mod labels;
+pub mod record_kinds;
 pub mod selector;
 pub mod status_reasons;
 pub mod yaml;
