@@ -70,7 +70,7 @@ jobs:
 
       - name: Upload cargo-deny report
         if: steps.deny.outputs.report_exists == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: scheduled-cargo-deny-${{ github.run_number }}
           path: cargo-deny-report.json
@@ -225,7 +225,7 @@ jobs:
 
       - name: Upload gitleaks report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: scheduled-gitleaks-${{ github.run_number }}
           path: gitleaks-report.json
@@ -358,7 +358,7 @@ jobs:
       - name: Run Trivy scan on ${{ matrix.variant.description }}
         continue-on-error: true
         id: trivy
-        uses: firestoned/github-actions/security/trivy-scan@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        uses: firestoned/github-actions/security/trivy-scan@e034489c3a17ffaaaf7f8fb799156ce768d899d5 # v1.3.9
         with:
           image-ref: ghcr.io/${{ github.repository }}:${{ matrix.variant.tag }}
           sarif-category: trivy-scheduled-${{ matrix.variant.name }}
@@ -523,14 +523,14 @@ jobs:
 
       - name: Upload Trivy filesystem results to GitHub Security
         if: steps.trivy-fs.outputs.sarif_exists == 'true'
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
         with:
           sarif_file: trivy-fs-results.sarif
           category: trivy-fs
 
       - name: Upload Trivy filesystem results as artifact
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: trivy-fs-results-${{ github.run_number }}
           path: trivy-fs-results.sarif
@@ -586,14 +586,14 @@ jobs:
 
       - name: Upload Trivy Kubernetes results to GitHub Security
         if: steps.trivy-k8s.outputs.sarif_exists == 'true'
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
         with:
           sarif_file: trivy-k8s-results.sarif
           category: trivy-k8s
 
       - name: Upload Trivy Kubernetes results as artifact
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: trivy-k8s-results-${{ github.run_number }}
           path: trivy-k8s-results.sarif
@@ -660,14 +660,14 @@ jobs:
 
       - name: Upload Semgrep results to GitHub Security
         if: steps.semgrep.outputs.sarif_exists == 'true'
-        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
         with:
           sarif_file: semgrep-results.sarif
           category: semgrep
 
       - name: Upload Semgrep results as artifact
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: semgrep-results-${{ github.run_number }}
           path: semgrep-results.sarif
@@ -765,7 +765,7 @@ jobs:
 
       - name: Upload Kubesec output as artifact
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: kubesec-results-${{ github.run_number }}
           path: kubesec-output.txt

@@ -24,7 +24,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Setup Rust build environment
-        uses: firestoned/github-actions/rust/setup-rust-build@d0d51c638a90bffc2a1567fe7af112b37fe8854c # v1.3.7
+        uses: firestoned/github-actions/rust/setup-rust-build@e034489c3a17ffaaaf7f8fb799156ce768d899d5 # v1.3.9
         with:
           target: x86_64-unknown-linux-gnu
 
@@ -42,7 +42,7 @@ jobs:
         run: make sbom-stage SBOM_NAME=bindy-linux-amd64
 
       - name: Upload SBOM artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: sbom
           path: sbom/bindy-linux-amd64.cdx.json
@@ -56,7 +56,7 @@ jobs:
         run: make cbom-stage
 
       - name: Upload CBOM artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: cbom
           path: sbom/bindy-cbom.cdx.json
@@ -74,7 +74,7 @@ jobs:
 
     steps:
       - name: Download SBOM artifact
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           name: sbom
 
