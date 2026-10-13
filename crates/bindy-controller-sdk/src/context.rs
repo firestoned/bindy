@@ -189,6 +189,9 @@ pub trait RecordKind:
 
     /// The record's status, if it has one.
     fn record_status(&self) -> Option<&RecordStatus>;
+
+    /// The record's DNS name from its spec (`spec.name`, e.g. `www` or `@`).
+    fn spec_name(&self) -> &str;
 }
 
 macro_rules! record_kind {
@@ -197,6 +200,9 @@ macro_rules! record_kind {
             const KIND: &'static str = $kind;
             fn record_status(&self) -> Option<&RecordStatus> {
                 self.status.as_ref()
+            }
+            fn spec_name(&self) -> &str {
+                &self.spec.name
             }
         }
     };

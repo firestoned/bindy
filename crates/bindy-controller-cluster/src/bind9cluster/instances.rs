@@ -28,7 +28,6 @@ use bindy_controller_sdk::resources::{create_or_force_apply, delete_if_present};
 /// Returns an error if:
 /// - Failed to list existing instances
 /// - Failed to create new instances
-#[allow(clippy::too_many_lines)]
 pub(super) async fn reconcile_managed_instances(
     ctx: &Context,
     cluster: &Bind9Cluster,
@@ -42,29 +41,18 @@ pub(super) async fn reconcile_managed_instances(
         namespace, cluster_name
     );
 
-    // Get desired replica counts from spec
-    let primary_replicas = cluster
-        .spec
-        .common
-        .primary
-        .as_ref()
-        .and_then(|p| p.replicas)
-        .unwrap_or(0);
-
-    let secondary_replicas = cluster
-        .spec
-        .common
-        .secondary
-        .as_ref()
-        .and_then(|s| s.replicas)
-        .unwrap_or(0);
+    // Desired instance count per role, in `ServerRole::ALL` order
+    let desired: Vec<(ServerRole, usize)> = ServerRole::ALL
+        .iter()
+        .map(|&role| (role, desired_replicas(&cluster.spec.common, role)))
+        .collect();
 
     debug!(
-        "Desired replicas: {} primary, {} secondary",
-        primary_replicas, secondary_replicas
+        "Desired replicas for cluster {}/{}: {:?}",
+        namespace, cluster_name, desired
     );
 
-    if primary_replicas == 0 && secondary_replicas == 0 {
+    if desired.iter().all(|&(_, count)| count == 0) {
         debug!(
             "No instances requested for cluster {}/{}",
             namespace, cluster_name
@@ -95,183 +83,49 @@ pub(super) async fn reconcile_managed_instances(
         cluster_name
     );
 
-    // Separate by role
-    let existing_primary: Vec<_> = managed_instances
-        .iter()
-        .filter(|i| i.spec.role == ServerRole::Primary)
-        .collect();
-
-    let existing_secondary: Vec<_> = managed_instances
-        .iter()
-        .filter(|i| i.spec.role == ServerRole::Secondary)
-        .collect();
-
-    debug!(
-        "Existing instances: {} primary, {} secondary",
-        existing_primary.len(),
-        existing_secondary.len()
-    );
-
     // Create ownerReference to the Bind9Cluster
     // Fails fast when the cluster has no UID: an ownerReference with an
     // empty UID is invalid.
     let owner_ref = crate::bind9_resources::controller_owner_reference(cluster)?;
 
-    // Handle scale-up: Create missing primary instances
-    // CRITICAL: Compare desired vs current state to find missing instances
-    // Build set of desired instance names, compare with existing, create the difference
-    let mut primaries_to_create = 0;
-    {
-        // Build set of desired primary instance names based on replica count
-        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-        let desired_primary_names: std::collections::HashSet<String> = (0..(primary_replicas
-            as usize))
-            .map(|i| format!("{cluster_name}-primary-{i}"))
-            .collect();
-
-        // Build set of existing primary instance names
-        let existing_primary_names: std::collections::HashSet<String> = existing_primary
+    let scope = ManagedScope {
+        client: &client,
+        namespace: &namespace,
+        cluster_name: &cluster_name,
+        common_spec: &cluster.spec.common,
+        owner_ref: &owner_ref,
+    };
+    let mut outcomes: Vec<(ServerRole, ScaleOutcome)> = Vec::with_capacity(desired.len());
+    for &(role, desired_count) in &desired {
+        let existing: Vec<&Bind9Instance> = managed_instances
             .iter()
-            .map(|instance| instance.name_any())
+            .filter(|i| i.spec.role == role)
             .collect();
-
-        // Find missing instances (desired - existing)
-        let missing_primaries: Vec<_> = desired_primary_names
-            .difference(&existing_primary_names)
-            .collect();
-
-        // Create each missing instance
-        for instance_name in missing_primaries {
-            // Extract index from name (e.g., "production-dns-primary-0" -> 0)
-            let index = instance_name
-                .rsplit('-')
-                .next()
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(0);
-
-            create_managed_instance_with_owner(
-                &client,
-                &namespace,
-                &cluster_name,
-                ServerRole::Primary,
-                index,
-                &cluster.spec.common,
-                Some(owner_ref.clone()),
-            )
-            .await?;
-            primaries_to_create += 1;
-        }
+        outcomes.push((
+            role,
+            scale_role(&scope, role, desired_count, &existing).await?,
+        ));
     }
 
-    // Handle scale-down: Delete excess primary instances
-    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-    let primaries_to_delete = existing_primary
-        .len()
-        .saturating_sub(primary_replicas as usize);
-    if primaries_to_delete > 0 {
-        // Sort by index descending to delete highest-indexed instances first
-        let mut sorted_primary: Vec<_> = existing_primary.iter().collect();
-        sorted_primary.sort_by_key(|instance| {
-            instance
-                .metadata
-                .annotations
-                .as_ref()
-                .and_then(|a| a.get(BINDY_INSTANCE_INDEX_ANNOTATION))
-                .and_then(|idx| idx.parse::<usize>().ok())
-                .unwrap_or(0)
-        });
-        sorted_primary.reverse();
-
-        for instance in sorted_primary.iter().take(primaries_to_delete) {
-            let instance_name = instance.name_any();
-            delete_managed_instance(&client, &namespace, &instance_name).await?;
-        }
-    }
-
-    // Handle scale-up: Create missing secondary instances
-    // CRITICAL: Compare desired vs current state to find missing instances
-    // Build set of desired instance names, compare with existing, create the difference
-    let mut secondaries_to_create = 0;
-    {
-        // Build set of desired secondary instance names based on replica count
-        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-        let desired_secondary_names: std::collections::HashSet<String> = (0..(secondary_replicas
-            as usize))
-            .map(|i| format!("{cluster_name}-secondary-{i}"))
-            .collect();
-
-        // Build set of existing secondary instance names
-        let existing_secondary_names: std::collections::HashSet<String> = existing_secondary
+    let outcome_of = |role: ServerRole| {
+        outcomes
             .iter()
-            .map(|instance| instance.name_any())
-            .collect();
-
-        // Find missing instances (desired - existing)
-        let missing_secondaries: Vec<_> = desired_secondary_names
-            .difference(&existing_secondary_names)
-            .collect();
-
-        // Create each missing instance
-        for instance_name in missing_secondaries {
-            // Extract index from name (e.g., "production-dns-secondary-0" -> 0)
-            let index = instance_name
-                .rsplit('-')
-                .next()
-                .and_then(|s| s.parse::<usize>().ok())
-                .unwrap_or(0);
-
-            create_managed_instance_with_owner(
-                &client,
-                &namespace,
-                &cluster_name,
-                ServerRole::Secondary,
-                index,
-                &cluster.spec.common,
-                Some(owner_ref.clone()),
-            )
-            .await?;
-            secondaries_to_create += 1;
-        }
-    }
-
-    // Handle scale-down: Delete excess secondary instances
-    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
-    let secondaries_to_delete = existing_secondary
-        .len()
-        .saturating_sub(secondary_replicas as usize);
-    if secondaries_to_delete > 0 {
-        // Sort by index descending to delete highest-indexed instances first
-        let mut sorted_secondary: Vec<_> = existing_secondary.iter().collect();
-        sorted_secondary.sort_by_key(|instance| {
-            instance
-                .metadata
-                .annotations
-                .as_ref()
-                .and_then(|a| a.get(BINDY_INSTANCE_INDEX_ANNOTATION))
-                .and_then(|idx| idx.parse::<usize>().ok())
-                .unwrap_or(0)
-        });
-        sorted_secondary.reverse();
-
-        for instance in sorted_secondary.iter().take(secondaries_to_delete) {
-            let instance_name = instance.name_any();
-            delete_managed_instance(&client, &namespace, &instance_name).await?;
-        }
-    }
-
-    if primaries_to_create > 0
-        || secondaries_to_create > 0
-        || primaries_to_delete > 0
-        || secondaries_to_delete > 0
-    {
+            .find(|(r, _)| *r == role)
+            .map_or_else(ScaleOutcome::default, |&(_, o)| o)
+    };
+    let (primary, secondary) = (
+        outcome_of(ServerRole::Primary),
+        outcome_of(ServerRole::Secondary),
+    );
+    if outcomes.iter().any(|(_, o)| o.created > 0 || o.deleted > 0) {
         info!(
             "Scaled cluster {}/{}: created {} primary, {} secondary; deleted {} primary, {} secondary",
             namespace,
             cluster_name,
-            primaries_to_create,
-            secondaries_to_create,
-            primaries_to_delete,
-            secondaries_to_delete
+            primary.created,
+            secondary.created,
+            primary.deleted,
+            secondary.deleted
         );
     } else {
         debug!(
@@ -294,6 +148,235 @@ pub(super) async fn reconcile_managed_instances(
     ensure_managed_instance_resources(&client, cluster, &managed_instances).await?;
 
     Ok(())
+}
+
+/// The desired number of managed instances for `role`: the role block's
+/// `replicas`, or 0 when it is unset. The CRD schema bounds `replicas` to
+/// `0..=100`, so a negative value (unreachable through the API) is treated
+/// as 0.
+pub(super) fn desired_replicas(
+    common: &crate::crd::Bind9ClusterCommonSpec,
+    role: ServerRole,
+) -> usize {
+    common
+        .role_replicas(role)
+        .and_then(|r| usize::try_from(r).ok())
+        .unwrap_or(0)
+}
+
+/// The name of the managed instance of `cluster_name` at `index` for `role`,
+/// e.g. `production-dns-primary-0`.
+pub(super) fn managed_instance_name(cluster_name: &str, role: ServerRole, index: usize) -> String {
+    format!("{cluster_name}-{}-{index}", role.as_str())
+}
+
+/// The instance index a managed instance carries in its
+/// `BINDY_INSTANCE_INDEX_ANNOTATION`, or 0 when it is absent or unparseable.
+pub(super) fn instance_index(instance: &Bind9Instance) -> usize {
+    instance
+        .metadata
+        .annotations
+        .as_ref()
+        .and_then(|a| a.get(BINDY_INSTANCE_INDEX_ANNOTATION))
+        .and_then(|idx| idx.parse::<usize>().ok())
+        .unwrap_or(0)
+}
+
+/// The indices in `0..desired` that have no instance in `existing` named
+/// [`managed_instance_name`], in ascending order. These are the instances a
+/// scale-up creates.
+pub(super) fn missing_indices(
+    cluster_name: &str,
+    role: ServerRole,
+    desired: usize,
+    existing: &[&Bind9Instance],
+) -> Vec<usize> {
+    let existing_names: std::collections::HashSet<String> = existing
+        .iter()
+        .map(|instance| instance.name_any())
+        .collect();
+    (0..desired)
+        .filter(|&index| {
+            !existing_names.contains(&managed_instance_name(cluster_name, role, index))
+        })
+        .collect()
+}
+
+/// The names of the instances a scale-down to `desired` deletes, in deletion
+/// order: the `existing.len() - desired` instances with the highest
+/// [`instance_index`]. Instances with the same index are taken last-listed
+/// first.
+pub(super) fn scale_down_victims(existing: &[&Bind9Instance], desired: usize) -> Vec<String> {
+    let excess = existing.len().saturating_sub(desired);
+    // Reversing before the stable sort takes equal indices last-listed first
+    let mut by_index_desc: Vec<&Bind9Instance> = existing.iter().rev().copied().collect();
+    by_index_desc.sort_by_key(|instance| std::cmp::Reverse(instance_index(instance)));
+    by_index_desc
+        .into_iter()
+        .take(excess)
+        .map(ResourceExt::name_any)
+        .collect()
+}
+
+/// What the cluster's managed instances belong to, shared by every role's
+/// scaling step.
+struct ManagedScope<'a> {
+    /// Kubernetes API client
+    client: &'a Client,
+    /// The cluster's namespace
+    namespace: &'a str,
+    /// The cluster's name
+    cluster_name: &'a str,
+    /// The cluster's common spec (source of truth for instance specs)
+    common_spec: &'a crate::crd::Bind9ClusterCommonSpec,
+    /// The controller ownerReference to the `Bind9Cluster`
+    owner_ref: &'a k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference,
+}
+
+/// How many instances [`scale_role`] created and deleted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ScaleOutcome {
+    /// Instances created by the scale-up
+    created: usize,
+    /// Instances deleted by the scale-down
+    deleted: usize,
+}
+
+/// Scale the managed instances of one role to `desired`.
+///
+/// Scale-up creates every [`missing_indices`] instance, lowest index first;
+/// scale-down then deletes the [`scale_down_victims`] of `existing` (the
+/// instances listed before any were created).
+///
+/// # Arguments
+///
+/// * `scope` - The cluster the instances belong to
+/// * `role` - The role being scaled
+/// * `desired` - The desired number of instances of `role`
+/// * `existing` - The cluster's managed instances of `role`
+///
+/// # Errors
+///
+/// Returns an error if creating or deleting an instance fails.
+async fn scale_role(
+    scope: &ManagedScope<'_>,
+    role: ServerRole,
+    desired: usize,
+    existing: &[&Bind9Instance],
+) -> Result<ScaleOutcome> {
+    let to_create = missing_indices(scope.cluster_name, role, desired, existing);
+    for &index in &to_create {
+        create_managed_instance_with_owner(
+            scope.client,
+            scope.namespace,
+            scope.cluster_name,
+            role,
+            index,
+            scope.common_spec,
+            Some(scope.owner_ref.clone()),
+        )
+        .await?;
+    }
+
+    let to_delete = scale_down_victims(existing, desired);
+    for instance_name in &to_delete {
+        delete_managed_instance(scope.client, scope.namespace, instance_name).await?;
+    }
+
+    Ok(ScaleOutcome {
+        created: to_create.len(),
+        deleted: to_delete.len(),
+    })
+}
+
+/// The `bindcarConfig` every managed instance inherits: the cluster's
+/// `spec.global.bindcarConfig`.
+pub(super) fn managed_bindcar_config(
+    common: &crate::crd::Bind9ClusterCommonSpec,
+) -> Option<&crate::crd::BindcarConfig> {
+    common
+        .global
+        .as_ref()
+        .and_then(|g| g.bindcar_config.as_ref())
+}
+
+/// The spec a managed instance should have: the cluster-inherited fields
+/// (`version`, `image`, `configMapRefs`, `volumes`, `volumeMounts`,
+/// `bindcarConfig`, and `config` cleared) taken from the cluster, every other
+/// field kept from `instance_fields`.
+///
+/// Cluster- and role-level placement is not copied down: it is resolved
+/// against the live cluster when the Deployment is built (see
+/// `crate::placement::resolve_placement`), so a cluster-level change
+/// converges without rewriting every managed instance spec.
+///
+/// # Arguments
+///
+/// * `common` - The cluster's common spec
+/// * `bindcar_config` - [`managed_bindcar_config`] of `common`
+/// * `instance_fields` - The instance-specific fields: the existing spec on
+///   update, [`new_managed_instance_fields`] on create
+pub(super) fn desired_managed_spec(
+    common: &crate::crd::Bind9ClusterCommonSpec,
+    bindcar_config: Option<&crate::crd::BindcarConfig>,
+    instance_fields: &Bind9InstanceSpec,
+) -> Bind9InstanceSpec {
+    Bind9InstanceSpec {
+        version: common.version.clone(),
+        image: common.image.clone(),
+        config_map_refs: common.config_map_refs.clone(),
+        config: None, // Managed instances inherit from cluster
+        volumes: common.volumes.clone(),
+        volume_mounts: common.volume_mounts.clone(),
+        bindcar_config: bindcar_config.cloned(),
+        ..instance_fields.clone()
+    }
+}
+
+/// The instance-specific fields of a newly created managed instance: one
+/// replica, everything else left to inherit from the cluster and role.
+pub(super) fn new_managed_instance_fields(
+    cluster_name: &str,
+    role: ServerRole,
+) -> Bind9InstanceSpec {
+    #[allow(deprecated)] // Backward compatibility: the deprecated rndc_secret_ref field
+    Bind9InstanceSpec {
+        cluster_ref: cluster_name.to_string(),
+        role,
+        replicas: Some(1), // Each managed instance has 1 replica
+        version: None,
+        image: None,
+        config_map_refs: None,
+        config: None,          // Inherit from cluster
+        primary_servers: None, // TODO: Could populate for secondaries
+        volumes: None,
+        volume_mounts: None,
+        rndc_secret_ref: None, // Inherit from cluster/role config (deprecated)
+        rndc_key: None,        // Inherit from cluster/role config
+        storage: None,         // Use default (emptyDir)
+        placement: None,       // Inherit from role / cluster level at build time
+        bindcar_config: None,
+    }
+}
+
+/// Whether `current` differs from the cluster in a field the cluster
+/// reconciler drives updates on: `version`, `image`, `configMapRefs`,
+/// `volumes`, `volumeMounts` or `bindcarConfig`.
+///
+/// `config` is not compared, although [`desired_managed_spec`] clears it: an
+/// instance whose only difference is a `config` is left alone until one of
+/// these fields drifts.
+pub(super) fn managed_fields_differ(
+    current: &Bind9InstanceSpec,
+    common: &crate::crd::Bind9ClusterCommonSpec,
+    bindcar_config: Option<&crate::crd::BindcarConfig>,
+) -> bool {
+    current.version != common.version
+        || current.image != common.image
+        || current.config_map_refs != common.config_map_refs
+        || current.volumes != common.volumes
+        || current.volume_mounts != common.volume_mounts
+        || current.bindcar_config.as_ref() != bindcar_config
 }
 
 /// Update existing managed instances to match the cluster's current spec.
@@ -329,55 +412,20 @@ pub(super) async fn update_existing_managed_instances(
     let instance_api: Api<Bind9Instance> = Api::namespaced(client.clone(), namespace);
     let mut updated_count = 0;
 
+    let desired_bindcar_config = managed_bindcar_config(common_spec);
+
     for instance in managed_instances {
         let instance_name = instance.name_any();
 
-        // Build the desired spec based on current cluster configuration
-        let desired_bindcar_config = common_spec
-            .global
-            .as_ref()
-            .and_then(|g| g.bindcar_config.clone());
-
-        // Check if instance spec needs updating by comparing key fields
-        let needs_update = instance.spec.version != common_spec.version
-            || instance.spec.image != common_spec.image
-            || instance.spec.config_map_refs != common_spec.config_map_refs
-            || instance.spec.volumes != common_spec.volumes
-            || instance.spec.volume_mounts != common_spec.volume_mounts
-            || instance.spec.bindcar_config != desired_bindcar_config;
-
-        if needs_update {
+        if managed_fields_differ(&instance.spec, common_spec, desired_bindcar_config) {
             debug!(
                 "Instance {}/{} spec differs from cluster spec, updating",
                 namespace, instance_name
             );
 
-            // Build updated instance spec - preserve instance-specific fields, update cluster-inherited fields
-            #[allow(deprecated)]
-            // Backward compatibility: preserve deprecated rndc_secret_ref if set
-            let updated_spec = Bind9InstanceSpec {
-                cluster_ref: instance.spec.cluster_ref.clone(),
-                role: instance.spec.role,
-                replicas: instance.spec.replicas, // Preserve instance replicas (always 1 for managed)
-                version: common_spec.version.clone(),
-                image: common_spec.image.clone(),
-                config_map_refs: common_spec.config_map_refs.clone(),
-                config: None, // Managed instances inherit from cluster
-                primary_servers: instance.spec.primary_servers.clone(), // Preserve if set
-                volumes: common_spec.volumes.clone(),
-                volume_mounts: common_spec.volume_mounts.clone(),
-                rndc_secret_ref: instance.spec.rndc_secret_ref.clone(), // Preserve if set (deprecated)
-                rndc_key: instance.spec.rndc_key.clone(),               // Preserve if set
-                storage: instance.spec.storage.clone(),                 // Preserve if set
-                // Preserve any instance-level placement the user set directly.
-                // Cluster- and role-level placement is NOT copied down here:
-                // it is resolved against the live cluster when the Deployment
-                // is built (see `crate::placement::resolve_placement`), so a
-                // cluster-level change converges without rewriting every
-                // managed instance spec.
-                placement: instance.spec.placement.clone(),
-                bindcar_config: desired_bindcar_config,
-            };
+            // Preserve instance-specific fields, update cluster-inherited fields
+            let updated_spec =
+                desired_managed_spec(common_spec, desired_bindcar_config, &instance.spec);
 
             // Use server-side apply to update the instance spec
             let patch = serde_json::json!({
@@ -554,7 +602,6 @@ pub(super) async fn ensure_managed_instance_resources(
 /// # Arguments
 ///
 /// * `owner_ref` - Optional ownerReference to the parent `Bind9Cluster`
-#[allow(clippy::too_many_lines)]
 async fn create_managed_instance_with_owner(
     client: &Client,
     namespace: &str,
@@ -564,12 +611,8 @@ async fn create_managed_instance_with_owner(
     common_spec: &crate::crd::Bind9ClusterCommonSpec,
     owner_ref: Option<k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference>,
 ) -> Result<()> {
-    let role_str = match role {
-        ServerRole::Primary => ROLE_PRIMARY,
-        ServerRole::Secondary => ROLE_SECONDARY,
-    };
-
-    let instance_name = format!("{cluster_name}-{role_str}-{index}");
+    let role_str = role.as_str();
+    let instance_name = managed_instance_name(cluster_name, role, index);
 
     info!(
         "Creating managed instance {}/{} for cluster {} (role: {:?}, index: {})",
@@ -586,26 +629,9 @@ async fn create_managed_instance_with_owner(
     labels.insert(BINDY_ROLE_LABEL.to_string(), role_str.to_string());
     labels.insert(K8S_PART_OF.to_string(), PART_OF_BINDY.to_string());
 
-    // Propagate custom labels from cluster spec based on role
-    match role {
-        ServerRole::Primary => {
-            if let Some(primary_config) = &common_spec.primary {
-                if let Some(custom_labels) = &primary_config.labels {
-                    for (key, value) in custom_labels {
-                        labels.insert(key.clone(), value.clone());
-                    }
-                }
-            }
-        }
-        ServerRole::Secondary => {
-            if let Some(secondary_config) = &common_spec.secondary {
-                if let Some(custom_labels) = &secondary_config.labels {
-                    for (key, value) in custom_labels {
-                        labels.insert(key.clone(), value.clone());
-                    }
-                }
-            }
-        }
+    // Propagate custom labels from the role block of the cluster spec
+    if let Some(custom_labels) = common_spec.role_labels(role) {
+        labels.extend(custom_labels.iter().map(|(k, v)| (k.clone(), v.clone())));
     }
 
     // Create annotations
@@ -616,27 +642,11 @@ async fn create_managed_instance_with_owner(
     );
 
     // Build instance spec - copy configuration from cluster
-    #[allow(deprecated)] // Backward compatibility: include deprecated rndc_secret_ref field
-    let instance_spec = Bind9InstanceSpec {
-        cluster_ref: cluster_name.to_string(),
-        role,
-        replicas: Some(1), // Each managed instance has 1 replica
-        version: common_spec.version.clone(),
-        image: common_spec.image.clone(),
-        config_map_refs: common_spec.config_map_refs.clone(),
-        config: None,          // Inherit from cluster
-        primary_servers: None, // TODO: Could populate for secondaries
-        volumes: common_spec.volumes.clone(),
-        volume_mounts: common_spec.volume_mounts.clone(),
-        rndc_secret_ref: None, // Inherit from cluster/role config (deprecated)
-        rndc_key: None,        // Inherit from cluster/role config
-        storage: None,         // Use default (emptyDir)
-        placement: None,       // Inherit from role / cluster level at build time
-        bindcar_config: common_spec
-            .global
-            .as_ref()
-            .and_then(|g| g.bindcar_config.clone()),
-    };
+    let instance_spec = desired_managed_spec(
+        common_spec,
+        managed_bindcar_config(common_spec),
+        &new_managed_instance_fields(cluster_name, role),
+    );
 
     let instance = Bind9Instance {
         metadata: ObjectMeta {
@@ -777,3 +787,7 @@ pub(super) async fn delete_cluster_instances(
 
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "instances_tests.rs"]
+mod instances_tests;

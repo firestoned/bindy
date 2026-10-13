@@ -140,7 +140,7 @@ Bindy is designed for use in regulated banking environments where DNS infrastruc
 
 #### DI-4: Data Consistency
 - **Control:** DNS zones synchronized across primary and secondary servers
-- **Evidence:** `crates/bindy-bind9/src/bind9_resources.rs`, ConfigMap/Secret generation
+- **Evidence:** `crates/bindy-bind9/src/bind9_resources/`, ConfigMap/Secret generation
 - **Implementation:**
   - Zone serial numbers auto-incremented
   - AXFR/IXFR for zone transfers

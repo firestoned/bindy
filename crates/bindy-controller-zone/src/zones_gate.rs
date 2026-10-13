@@ -563,7 +563,12 @@ async fn load_zone_on_pod(
     let instance_namespace = instance.namespace().unwrap_or_default();
     let instance_name = instance.name_any();
     let zone_namespace = zone.namespace().unwrap_or_default();
-    let instance_refs = get_instances_from_zone(zone, &ctx.stores.bind9_instances)?;
+    let instances = bindy_bind9::primary::partition_zone_instances(
+        &ctx.client,
+        &ctx.stores.bind9_instances,
+        get_instances_from_zone(zone, &ctx.stores.bind9_instances)?,
+    )
+    .await?;
     let resolver = InstanceResolver::for_single_pod(
         &ctx.client,
         &ctx.stores,
@@ -572,11 +577,8 @@ async fn load_zone_on_pod(
         pod_ip,
     );
     let mut discarded = bindy_controller_sdk::status::DNSZoneStatusUpdater::new(zone);
-    let crate::dnszone::transfer_peers::ZonePeers {
-        primary_refs,
-        peers,
-        ..
-    } = crate::dnszone::transfer_peers::zone_transfer_peers(ctx, &instance_refs).await?;
+    let crate::dnszone::transfer_peers::ZonePeers { peers, .. } =
+        crate::dnszone::transfer_peers::zone_transfer_peers(ctx, &instances).await;
 
     if instance.spec.role == ServerRole::Secondary {
         ensure!(
@@ -588,7 +590,7 @@ async fn load_zone_on_pod(
         let failures = crate::dnszone::transfer_peers::refresh_primary_peers(
             ctx,
             &zone.spec.zone_name,
-            &primary_refs,
+            &instances.primaries,
             &peers,
             &full_resolver,
         )
@@ -603,7 +605,7 @@ async fn load_zone_on_pod(
             zone.clone(),
             &peers.primaries,
             &mut discarded,
-            &instance_refs,
+            &instances.secondaries,
             false,
             &resolver,
         )
@@ -623,7 +625,7 @@ async fn load_zone_on_pod(
         ctx.clone(),
         zone.clone(),
         &mut discarded,
-        &instance_refs,
+        &instances,
         &peers,
         &resolver,
     )
@@ -639,7 +641,8 @@ async fn load_zone_on_pod(
     let records = ctx
         .stores
         .records_tagged_with_zone(&zone_namespace, &zone.name_any());
-    let own_instance: Vec<_> = instance_refs
+    let own_instance: Vec<_> = instances
+        .all
         .into_iter()
         .filter(|r| r.namespace == instance_namespace && r.name == instance_name)
         .collect();

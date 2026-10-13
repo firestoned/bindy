@@ -56,7 +56,7 @@ const MAX_REASONABLE_PAGES: usize = 10_000;
 ///
 /// Returns an error if Kubernetes API operations fail, or if the pages are
 /// anomalous (a repeated continue token, an empty page that still has a
-/// continue token, or more than [`MAX_REASONABLE_PAGES`] pages). Callers act
+/// continue token, or more than `MAX_REASONABLE_PAGES` pages). Callers act
 /// on the full list, so a partial one is never returned.
 pub async fn list_all_paginated<K>(api: &Api<K>, mut list_params: ListParams) -> Result<Vec<K>>
 where

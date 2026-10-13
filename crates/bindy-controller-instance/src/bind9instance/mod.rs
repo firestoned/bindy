@@ -413,11 +413,7 @@ pub(crate) async fn reconcile_bind9instance(
         // the same helpers: the cluster's shared ConfigMap for any instance
         // with a clusterRef (managed or hand-made), and the RNDC Secret the
         // resolved rndcKey config names (a secretRef is not `{name}-rndc-key`).
-        let rndc_config = resources::resolve_full_rndc_config(
-            &instance,
-            cluster.as_ref(),
-            cluster_provider.as_ref(),
-        );
+        let rndc_config = resources::resolve_full_rndc_config(&instance, cluster.as_ref());
         let child_names = resources::drift_child_names(&name, &instance, &rndc_config);
         let current_configmap = configmap_api.get(&child_names.configmap).await.ok();
         let configmap_exists = current_configmap.is_some();
@@ -655,11 +651,7 @@ pub(crate) async fn reconcile_bind9instance(
             // Update rotation status if Secret is available
             if let Some(ref secret) = secret {
                 // Resolve RNDC config for rotation status update
-                let rndc_config = resources::resolve_full_rndc_config(
-                    &instance,
-                    cluster.as_ref(),
-                    cluster_provider.as_ref(),
-                );
+                let rndc_config = resources::resolve_full_rndc_config(&instance, cluster.as_ref());
 
                 if let Err(e) =
                     update_rotation_status(&client, &instance, secret, &rndc_config).await

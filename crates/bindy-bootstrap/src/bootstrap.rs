@@ -223,7 +223,7 @@ pub(crate) const SCOUT_DEPLOYMENT_NAME: &str = "bindy-scout";
 /// Default ServiceAccount name created by `bootstrap mc` on the queen-ship cluster.
 ///
 /// Each child cluster gets its own SA so access can be revoked independently.
-/// The local in-cluster scout SA is named [`SCOUT_SERVICE_ACCOUNT_NAME`] (`bindy-scout`);
+/// The local in-cluster scout SA is named `SCOUT_SERVICE_ACCOUNT_NAME` (`bindy-scout`);
 /// the remote SA uses this distinct name to avoid confusion.
 pub const MC_DEFAULT_SERVICE_ACCOUNT_NAME: &str = "bindy-scout-remote";
 
@@ -315,7 +315,8 @@ pub(crate) fn resolve_image(registry: Option<&str>, tag: &str) -> String {
 ///
 /// When `dry_run` is `true`, prints the resources that would be applied to stdout (as YAML)
 /// without connecting to a cluster. When `false`, applies each resource via server-side apply
-/// (idempotent — safe to run multiple times).
+/// (idempotent, safe to run multiple times). Both modes walk the same `operator_steps`
+/// list, so what `--dry-run` shows is exactly what is applied.
 ///
 /// # Arguments
 /// * `namespace` - Namespace to install bindy into (default: `bindy-system`)
@@ -324,32 +325,24 @@ pub(crate) fn resolve_image(registry: Option<&str>, tag: &str) -> String {
 /// * `registry` - Optional registry override for air-gapped environments
 ///
 /// # Errors
-/// Returns error if Kubernetes API calls fail (in non-dry-run mode).
+/// Returns error if a resource cannot be built or serialized, or (in non-dry-run mode)
+/// if Kubernetes API calls fail.
 pub async fn run_bootstrap_operator(
     namespace: &str,
     dry_run: bool,
     image_tag: &str,
     registry: Option<&str>,
 ) -> Result<()> {
+    let steps = operator_steps(namespace, image_tag, registry)?;
     if dry_run {
-        return run_operator_dry_run(namespace, image_tag, registry);
+        print!("{}", render_dry_run(OPERATOR_DRY_RUN_BANNER, &steps)?);
+        return Ok(());
     }
 
     let client = Client::try_default()
         .await
         .context("Failed to connect to Kubernetes cluster — is KUBECONFIG set?")?;
-
-    apply_namespace(&client, namespace).await?;
-    apply_crds(&client).await?;
-    apply_service_account(&client, namespace).await?;
-    for yaml in OPERATOR_CLUSTER_ROLE_YAMLS {
-        apply_cluster_role(&client, yaml).await?;
-    }
-    apply_cluster_role_binding(&client, namespace).await?;
-    apply_tokenreview_cluster_role_binding(&client, namespace).await?;
-    apply_secrets_writer_role(&client, namespace).await?;
-    apply_secrets_writer_role_binding(&client, namespace).await?;
-    apply_deployment(&client, namespace, image_tag, registry).await?;
+    apply_steps(&client, namespace, &steps, FIELD_MANAGER).await?;
 
     println!("\nBootstrap complete! The operator is running in namespace {namespace}.");
 
@@ -363,7 +356,7 @@ pub async fn run_bootstrap_operator(
 ///
 /// When `dry_run` is `true`, prints the resources that would be applied to stdout (as YAML)
 /// without connecting to a cluster. When `false`, applies each resource via server-side apply
-/// (idempotent — safe to run multiple times).
+/// (idempotent, safe to run multiple times). Both modes walk the same `scout_steps` list.
 ///
 /// # Arguments
 /// * `namespace` - Namespace to install scout into (default: `bindy-system`)
@@ -371,32 +364,23 @@ pub async fn run_bootstrap_operator(
 /// * `opts` - Deployment configuration (image, registry, cluster name, IPs, zone, remote secret)
 ///
 /// # Errors
-/// Returns error if Kubernetes API calls fail (in non-dry-run mode).
+/// Returns error if a resource cannot be built or serialized, or (in non-dry-run mode)
+/// if Kubernetes API calls fail.
 pub async fn run_bootstrap_scout(
     namespace: &str,
     dry_run: bool,
     opts: &ScoutDeploymentOptions<'_>,
 ) -> Result<()> {
+    let steps = scout_steps(namespace, opts)?;
     if dry_run {
-        return run_scout_dry_run(namespace, opts);
+        print!("{}", render_dry_run(SCOUT_DRY_RUN_BANNER, &steps)?);
+        return Ok(());
     }
 
     let client = Client::try_default()
         .await
         .context("Failed to connect to Kubernetes cluster — is KUBECONFIG set?")?;
-
-    apply_namespace(&client, namespace).await?;
-    apply_crds(&client).await?;
-    apply_scout_service_account(&client, namespace).await?;
-    apply_scout_cluster_role(&client).await?;
-    apply_scout_cluster_role_binding(&client, namespace).await?;
-    apply_scout_writer_role(&client, namespace).await?;
-    apply_scout_writer_role_binding(&client, namespace).await?;
-    if let Some(secret_name) = opts.remote_secret {
-        apply_scout_secrets_reader_role(&client, namespace, secret_name).await?;
-        apply_scout_secrets_reader_role_binding(&client, namespace).await?;
-    }
-    apply_scout_deployment(&client, namespace, opts).await?;
+    apply_steps(&client, namespace, &steps, SCOUT_FIELD_MANAGER).await?;
 
     println!("\nBootstrap complete! Scout is running in namespace {namespace}.");
 
@@ -404,376 +388,378 @@ pub async fn run_bootstrap_scout(
 }
 
 // ---------------------------------------------------------------------------
-// Dry-run paths — no cluster connection needed
+// Steps: the one object list each command both prints (--dry-run) and applies
 // ---------------------------------------------------------------------------
 
-fn run_operator_dry_run(namespace: &str, image_tag: &str, registry: Option<&str>) -> Result<()> {
-    println!("# Dry-run mode — no resources will be applied\n");
+/// First line of `bindy bootstrap operator --dry-run`.
+pub(crate) const OPERATOR_DRY_RUN_BANNER: &str =
+    "# Dry-run mode \u{2014} no resources will be applied";
 
-    print_resource("Namespace", &build_namespace(namespace))?;
+/// First line of `bindy bootstrap scout --dry-run`.
+pub(crate) const SCOUT_DRY_RUN_BANNER: &str =
+    "# Dry-run mode (scout) \u{2014} no resources will be applied";
 
-    for crd in build_all_crds()? {
-        let name = crd.metadata.name.as_deref().unwrap_or("unknown");
-        print_resource(&format!("CustomResourceDefinition/{name}"), &crd)?;
-    }
+/// Last line of every `--dry-run`.
+const DRY_RUN_FOOTER: &str = "# Dry-run complete \u{2014} no resources were applied";
 
-    print_resource("ServiceAccount", &build_service_account(namespace))?;
-    for yaml in OPERATOR_CLUSTER_ROLE_YAMLS {
-        let role = parse_cluster_role(yaml)?;
-        let name = role.metadata.name.clone().unwrap_or_default();
-        print_resource(&format!("ClusterRole ({name})"), &role)?;
-    }
-    print_resource("ClusterRoleBinding", &build_cluster_role_binding(namespace))?;
-    print_resource(
-        "ClusterRoleBinding (bindcar-tokenreview)",
-        &build_tokenreview_cluster_role_binding(namespace)?,
-    )?;
-    print_resource(
-        "Role (secrets-writer)",
-        &build_secrets_writer_role(namespace),
-    )?;
-    print_resource(
-        "RoleBinding (secrets-writer)",
-        &build_secrets_writer_role_binding(namespace),
-    )?;
-    print_resource(
-        "Deployment",
-        &build_deployment(namespace, image_tag, registry)?,
-    )?;
+/// Declares [`BootstrapObject`], one boxed variant per kind (named after the
+/// kind), and a `From<Kind>` impl for each.
+macro_rules! bootstrap_objects {
+    ($($kind:ident),* $(,)?) => {
+        /// An object a bootstrap command applies.
+        ///
+        /// Serializes as the wrapped object itself (`untagged`), so `--dry-run`
+        /// prints exactly the manifest that is applied. Variants are boxed: a
+        /// Deployment is several times the size of the other kinds.
+        #[derive(serde::Serialize)]
+        #[serde(untagged)]
+        pub(crate) enum BootstrapObject {
+            $($kind(Box<$kind>),)*
+        }
 
-    println!("# Dry-run complete — no resources were applied");
-    Ok(())
+        $(impl From<$kind> for BootstrapObject {
+            fn from(object: $kind) -> Self {
+                Self::$kind(Box::new(object))
+            }
+        })*
+    };
 }
 
-fn run_scout_dry_run(namespace: &str, opts: &ScoutDeploymentOptions<'_>) -> Result<()> {
-    println!("# Dry-run mode (scout) — no resources will be applied\n");
+bootstrap_objects!(
+    Namespace,
+    CustomResourceDefinition,
+    ServiceAccount,
+    ClusterRole,
+    ClusterRoleBinding,
+    Role,
+    RoleBinding,
+    Deployment,
+);
 
-    print_resource("Namespace", &build_namespace(namespace))?;
+/// One entry of a command's object list.
+pub(crate) struct Step {
+    /// The object to apply.
+    pub(crate) object: BootstrapObject,
+    /// The `# <heading>` line above the object in `--dry-run` output.
+    pub(crate) heading: String,
+    /// The `✓ ...` line printed once the object is applied.
+    pub(crate) applied: String,
+}
 
-    for crd in build_all_crds()? {
-        let name = crd.metadata.name.as_deref().unwrap_or("unknown");
-        print_resource(&format!("CustomResourceDefinition/{name}"), &crd)?;
+/// Build a [`Step`].
+fn step(object: impl Into<BootstrapObject>, heading: impl Into<String>, applied: String) -> Step {
+    Step {
+        object: object.into(),
+        heading: heading.into(),
+        applied,
     }
-
-    print_resource(
-        "ServiceAccount (scout)",
-        &build_scout_service_account(namespace),
-    )?;
-    print_resource("ClusterRole (scout)", &build_scout_cluster_role())?;
-    print_resource(
-        "ClusterRoleBinding (scout)",
-        &build_scout_cluster_role_binding(namespace),
-    )?;
-    print_resource("Role (scout-writer)", &build_scout_writer_role(namespace))?;
-    print_resource(
-        "RoleBinding (scout-writer)",
-        &build_scout_writer_role_binding(namespace),
-    )?;
-    if let Some(secret_name) = opts.remote_secret {
-        print_resource(
-            "Role (scout-secrets-reader)",
-            &build_scout_secrets_reader_role(namespace, secret_name),
-        )?;
-        print_resource(
-            "RoleBinding (scout-secrets-reader)",
-            &build_scout_secrets_reader_role_binding(namespace),
-        )?;
-    }
-    print_resource(
-        "Deployment (scout)",
-        &build_scout_deployment(namespace, opts)?,
-    )?;
-
-    println!("# Dry-run complete — no resources were applied");
-    Ok(())
 }
 
-fn print_resource<T: serde::Serialize>(label: &str, resource: &T) -> Result<()> {
-    let yaml = bindy_api::yaml::to_string(resource)
-        .with_context(|| format!("Failed to serialize {label}"))?;
-    println!("---\n# {label}");
-    print!("{yaml}");
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Apply helpers
-// ---------------------------------------------------------------------------
-
-async fn apply_namespace(client: &Client, name: &str) -> Result<()> {
-    let api: Api<Namespace> = Api::all(client.clone());
-    let ns = build_namespace(name);
-    api.patch(
-        name,
-        &PatchParams::apply(FIELD_MANAGER).force(),
-        &Patch::Apply(&ns),
-    )
-    .await
-    .with_context(|| format!("Failed to apply Namespace/{name}"))?;
-    println!("✓ Namespace: {name}");
-    Ok(())
-}
-
-async fn apply_crds(client: &Client) -> Result<()> {
-    let api: Api<CustomResourceDefinition> = Api::all(client.clone());
+/// The Namespace and CRD steps every install command starts with.
+fn namespace_and_crd_steps(namespace: &str) -> Result<Vec<Step>> {
+    let mut steps = vec![step(
+        build_namespace(namespace),
+        "Namespace",
+        format!("✓ Namespace: {namespace}"),
+    )];
     for crd in build_all_crds()? {
         let name = crd.metadata.name.clone().unwrap_or_default();
-        api.patch(
-            &name,
-            &PatchParams::apply(FIELD_MANAGER).force(),
-            &Patch::Apply(&crd),
-        )
-        .await
-        .with_context(|| format!("Failed to apply CRD/{name}"))?;
-        println!("✓ CRD: {name}");
+        let heading = format!("CustomResourceDefinition/{name}");
+        steps.push(step(crd, heading, format!("✓ CRD: {name}")));
     }
-    Ok(())
+    Ok(steps)
 }
 
-async fn apply_service_account(client: &Client, namespace: &str) -> Result<()> {
-    let api: Api<ServiceAccount> = Api::namespaced(client.clone(), namespace);
-    let sa = build_service_account(namespace);
-    api.patch(
-        SERVICE_ACCOUNT_NAME,
-        &PatchParams::apply(FIELD_MANAGER).force(),
-        &Patch::Apply(&sa),
-    )
-    .await
-    .context("Failed to apply ServiceAccount/bindy")?;
-    println!("✓ ServiceAccount: {SERVICE_ACCOUNT_NAME} (namespace: {namespace})");
-    Ok(())
-}
-
-async fn apply_cluster_role(client: &Client, yaml: &str) -> Result<()> {
-    let role = parse_cluster_role(yaml)?;
-    let name = role.metadata.name.clone().unwrap_or_default();
-    let api: Api<ClusterRole> = Api::all(client.clone());
-    api.patch(
-        &name,
-        &PatchParams::apply(FIELD_MANAGER).force(),
-        &Patch::Apply(&role),
-    )
-    .await
-    .with_context(|| format!("Failed to apply ClusterRole/{name}"))?;
-    println!("✓ ClusterRole: {name}");
-    Ok(())
-}
-
-async fn apply_cluster_role_binding(client: &Client, namespace: &str) -> Result<()> {
-    let api: Api<ClusterRoleBinding> = Api::all(client.clone());
-    let crb = build_cluster_role_binding(namespace);
-    api.patch(
-        CLUSTER_ROLE_BINDING_NAME,
-        &PatchParams::apply(FIELD_MANAGER).force(),
-        &Patch::Apply(&crb),
-    )
-    .await
-    .context("Failed to apply ClusterRoleBinding/bindy-rolebinding")?;
-    println!("✓ ClusterRoleBinding: {CLUSTER_ROLE_BINDING_NAME}");
-    Ok(())
-}
-
-/// Apply the TokenReview ClusterRoleBinding, re-homing the subject namespace
-/// to the requested install namespace (see [`build_tokenreview_cluster_role_binding`]).
-async fn apply_tokenreview_cluster_role_binding(client: &Client, namespace: &str) -> Result<()> {
-    let api: Api<ClusterRoleBinding> = Api::all(client.clone());
-    let crb = build_tokenreview_cluster_role_binding(namespace)?;
-    api.patch(
-        BINDCAR_TOKENREVIEW_NAME,
-        &PatchParams::apply(FIELD_MANAGER).force(),
-        &Patch::Apply(&crb),
-    )
-    .await
-    .with_context(|| format!("Failed to apply ClusterRoleBinding/{BINDCAR_TOKENREVIEW_NAME}"))?;
-    println!("✓ ClusterRoleBinding: {BINDCAR_TOKENREVIEW_NAME} (subject namespace: {namespace})");
-    Ok(())
-}
-
-async fn apply_secrets_writer_role(client: &Client, namespace: &str) -> Result<()> {
-    let api: Api<Role> = Api::namespaced(client.clone(), namespace);
-    let role = build_secrets_writer_role(namespace);
-    api.patch(
-        SECRETS_WRITER_ROLE_NAME,
-        &PatchParams::apply(FIELD_MANAGER).force(),
-        &Patch::Apply(&role),
-    )
-    .await
-    .with_context(|| format!("Failed to apply Role/{SECRETS_WRITER_ROLE_NAME}"))?;
-    println!("✓ Role: {SECRETS_WRITER_ROLE_NAME} (namespace: {namespace})");
-    Ok(())
-}
-
-async fn apply_secrets_writer_role_binding(client: &Client, namespace: &str) -> Result<()> {
-    let api: Api<RoleBinding> = Api::namespaced(client.clone(), namespace);
-    let rb = build_secrets_writer_role_binding(namespace);
-    api.patch(
-        SECRETS_WRITER_ROLE_BINDING_NAME,
-        &PatchParams::apply(FIELD_MANAGER).force(),
-        &Patch::Apply(&rb),
-    )
-    .await
-    .with_context(|| format!("Failed to apply RoleBinding/{SECRETS_WRITER_ROLE_BINDING_NAME}"))?;
-    println!("✓ RoleBinding: {SECRETS_WRITER_ROLE_BINDING_NAME} (namespace: {namespace})");
-    Ok(())
-}
-
-async fn apply_deployment(
-    client: &Client,
+/// The objects `bindy bootstrap operator` applies, in apply order.
+///
+/// # Arguments
+/// * `namespace` - Namespace to install bindy into
+/// * `image_tag` - Image tag for the operator Deployment
+/// * `registry` - Optional registry override
+///
+/// # Errors
+/// Returns an error if a CRD, embedded RBAC manifest or the Deployment fails to build.
+pub(crate) fn operator_steps(
     namespace: &str,
     image_tag: &str,
     registry: Option<&str>,
-) -> Result<()> {
-    let api: Api<Deployment> = Api::namespaced(client.clone(), namespace);
-    let deployment = build_deployment(namespace, image_tag, registry)?;
-    api.patch(
-        OPERATOR_DEPLOYMENT_NAME,
-        &PatchParams::apply(FIELD_MANAGER).force(),
-        &Patch::Apply(&deployment),
-    )
-    .await
-    .context("Failed to apply operator Deployment")?;
+) -> Result<Vec<Step>> {
+    let ns = namespace;
+    let mut steps = namespace_and_crd_steps(ns)?;
+    steps.push(step(
+        build_service_account(ns),
+        "ServiceAccount",
+        format!("✓ ServiceAccount: {SERVICE_ACCOUNT_NAME} (namespace: {ns})"),
+    ));
+    for yaml in OPERATOR_CLUSTER_ROLE_YAMLS {
+        let role = parse_cluster_role(yaml)?;
+        let name = role.metadata.name.clone().unwrap_or_default();
+        let heading = format!("ClusterRole ({name})");
+        steps.push(step(role, heading, format!("✓ ClusterRole: {name}")));
+    }
     let image = resolve_image(registry, image_tag);
-    println!("✓ Deployment: {OPERATOR_DEPLOYMENT_NAME} (image: {image})");
-    Ok(())
+    steps.extend([
+        step(
+            build_cluster_role_binding(ns),
+            "ClusterRoleBinding",
+            format!("✓ ClusterRoleBinding: {CLUSTER_ROLE_BINDING_NAME}"),
+        ),
+        step(
+            build_tokenreview_cluster_role_binding(ns)?,
+            "ClusterRoleBinding (bindcar-tokenreview)",
+            format!("✓ ClusterRoleBinding: {BINDCAR_TOKENREVIEW_NAME} (subject namespace: {ns})"),
+        ),
+        step(
+            build_secrets_writer_role(ns),
+            "Role (secrets-writer)",
+            format!("✓ Role: {SECRETS_WRITER_ROLE_NAME} (namespace: {ns})"),
+        ),
+        step(
+            build_secrets_writer_role_binding(ns),
+            "RoleBinding (secrets-writer)",
+            format!("✓ RoleBinding: {SECRETS_WRITER_ROLE_BINDING_NAME} (namespace: {ns})"),
+        ),
+        step(
+            build_deployment(ns, image_tag, registry)?,
+            "Deployment",
+            format!("✓ Deployment: {OPERATOR_DEPLOYMENT_NAME} (image: {image})"),
+        ),
+    ]);
+    Ok(steps)
 }
 
-// ---------------------------------------------------------------------------
-// Scout apply helpers
-// ---------------------------------------------------------------------------
-
-async fn apply_scout_service_account(client: &Client, namespace: &str) -> Result<()> {
-    let api: Api<ServiceAccount> = Api::namespaced(client.clone(), namespace);
-    let sa = build_scout_service_account(namespace);
-    api.patch(
-        SCOUT_SERVICE_ACCOUNT_NAME,
-        &PatchParams::apply(SCOUT_FIELD_MANAGER).force(),
-        &Patch::Apply(&sa),
-    )
-    .await
-    .context("Failed to apply ServiceAccount/bindy-scout")?;
-    println!("✓ ServiceAccount: {SCOUT_SERVICE_ACCOUNT_NAME} (namespace: {namespace})");
-    Ok(())
-}
-
-async fn apply_scout_cluster_role(client: &Client) -> Result<()> {
-    let api: Api<ClusterRole> = Api::all(client.clone());
-    let role = build_scout_cluster_role();
-    api.patch(
-        SCOUT_CLUSTER_ROLE_NAME,
-        &PatchParams::apply(SCOUT_FIELD_MANAGER).force(),
-        &Patch::Apply(&role),
-    )
-    .await
-    .with_context(|| format!("Failed to apply ClusterRole/{SCOUT_CLUSTER_ROLE_NAME}"))?;
-    println!("✓ ClusterRole: {SCOUT_CLUSTER_ROLE_NAME}");
-    Ok(())
-}
-
-async fn apply_scout_cluster_role_binding(client: &Client, namespace: &str) -> Result<()> {
-    let api: Api<ClusterRoleBinding> = Api::all(client.clone());
-    let crb = build_scout_cluster_role_binding(namespace);
-    api.patch(
-        SCOUT_CLUSTER_ROLE_BINDING_NAME,
-        &PatchParams::apply(SCOUT_FIELD_MANAGER).force(),
-        &Patch::Apply(&crb),
-    )
-    .await
-    .context("Failed to apply ClusterRoleBinding/bindy-scout")?;
-    println!("✓ ClusterRoleBinding: {SCOUT_CLUSTER_ROLE_BINDING_NAME}");
-    Ok(())
-}
-
-async fn apply_scout_writer_role(client: &Client, namespace: &str) -> Result<()> {
-    let api: Api<Role> = Api::namespaced(client.clone(), namespace);
-    let role = build_scout_writer_role(namespace);
-    api.patch(
-        SCOUT_WRITER_ROLE_NAME,
-        &PatchParams::apply(SCOUT_FIELD_MANAGER).force(),
-        &Patch::Apply(&role),
-    )
-    .await
-    .with_context(|| format!("Failed to apply Role/{SCOUT_WRITER_ROLE_NAME}"))?;
-    println!("✓ Role: {SCOUT_WRITER_ROLE_NAME} (namespace: {namespace})");
-    Ok(())
-}
-
-async fn apply_scout_writer_role_binding(client: &Client, namespace: &str) -> Result<()> {
-    let api: Api<RoleBinding> = Api::namespaced(client.clone(), namespace);
-    let rb = build_scout_writer_role_binding(namespace);
-    api.patch(
-        SCOUT_WRITER_ROLE_BINDING_NAME,
-        &PatchParams::apply(SCOUT_FIELD_MANAGER).force(),
-        &Patch::Apply(&rb),
-    )
-    .await
-    .with_context(|| format!("Failed to apply RoleBinding/{SCOUT_WRITER_ROLE_BINDING_NAME}"))?;
-    println!("✓ RoleBinding: {SCOUT_WRITER_ROLE_BINDING_NAME} (namespace: {namespace})");
-    Ok(())
-}
-
-/// Applies the namespaced, `resourceNames`-restricted Role granting read access to the
-/// single remote-cluster kubeconfig Secret. Only called when `--remote-secret` (Phase 2
-/// mode) is configured — same-cluster-only deployments get no Secret access at all.
-async fn apply_scout_secrets_reader_role(
-    client: &Client,
-    namespace: &str,
-    secret_name: &str,
-) -> Result<()> {
-    let api: Api<Role> = Api::namespaced(client.clone(), namespace);
-    let role = build_scout_secrets_reader_role(namespace, secret_name);
-    api.patch(
-        SCOUT_SECRETS_READER_ROLE_NAME,
-        &PatchParams::apply(SCOUT_FIELD_MANAGER).force(),
-        &Patch::Apply(&role),
-    )
-    .await
-    .with_context(|| format!("Failed to apply Role/{SCOUT_SECRETS_READER_ROLE_NAME}"))?;
-    println!(
-        "✓ Role: {SCOUT_SECRETS_READER_ROLE_NAME} (namespace: {namespace}, secret: {secret_name})"
-    );
-    Ok(())
-}
-
-/// Applies the RoleBinding pairing [`apply_scout_secrets_reader_role`]'s Role with the
-/// Scout ServiceAccount. Only called when `--remote-secret` (Phase 2 mode) is configured.
-async fn apply_scout_secrets_reader_role_binding(client: &Client, namespace: &str) -> Result<()> {
-    let api: Api<RoleBinding> = Api::namespaced(client.clone(), namespace);
-    let rb = build_scout_secrets_reader_role_binding(namespace);
-    api.patch(
-        SCOUT_SECRETS_READER_ROLE_BINDING_NAME,
-        &PatchParams::apply(SCOUT_FIELD_MANAGER).force(),
-        &Patch::Apply(&rb),
-    )
-    .await
-    .with_context(|| {
-        format!("Failed to apply RoleBinding/{SCOUT_SECRETS_READER_ROLE_BINDING_NAME}")
-    })?;
-    println!("✓ RoleBinding: {SCOUT_SECRETS_READER_ROLE_BINDING_NAME} (namespace: {namespace})");
-    Ok(())
-}
-
-async fn apply_scout_deployment(
-    client: &Client,
-    namespace: &str,
-    opts: &ScoutDeploymentOptions<'_>,
-) -> Result<()> {
-    let api: Api<Deployment> = Api::namespaced(client.clone(), namespace);
-    let deployment = build_scout_deployment(namespace, opts)?;
-    api.patch(
-        SCOUT_DEPLOYMENT_NAME,
-        &PatchParams::apply(SCOUT_FIELD_MANAGER).force(),
-        &Patch::Apply(&deployment),
-    )
-    .await
-    .context("Failed to apply scout Deployment")?;
+/// The objects `bindy bootstrap scout` applies, in apply order.
+///
+/// The namespaced, `resourceNames`-restricted secrets-reader Role and RoleBinding
+/// are included only when `opts.remote_secret` is set (Phase 2 mode); same-cluster
+/// deployments get no Secret access at all.
+///
+/// # Arguments
+/// * `namespace` - Namespace to install scout into
+/// * `opts` - Deployment configuration
+///
+/// # Errors
+/// Returns an error if a CRD or the Deployment fails to build.
+pub(crate) fn scout_steps(namespace: &str, opts: &ScoutDeploymentOptions<'_>) -> Result<Vec<Step>> {
+    let ns = namespace;
+    let mut steps = namespace_and_crd_steps(ns)?;
+    steps.extend([
+        step(
+            build_scout_service_account(ns),
+            "ServiceAccount (scout)",
+            format!("✓ ServiceAccount: {SCOUT_SERVICE_ACCOUNT_NAME} (namespace: {ns})"),
+        ),
+        step(
+            build_scout_cluster_role(),
+            "ClusterRole (scout)",
+            format!("✓ ClusterRole: {SCOUT_CLUSTER_ROLE_NAME}"),
+        ),
+        step(
+            build_scout_cluster_role_binding(ns),
+            "ClusterRoleBinding (scout)",
+            format!("✓ ClusterRoleBinding: {SCOUT_CLUSTER_ROLE_BINDING_NAME}"),
+        ),
+        step(
+            build_scout_writer_role(ns),
+            "Role (scout-writer)",
+            format!("✓ Role: {SCOUT_WRITER_ROLE_NAME} (namespace: {ns})"),
+        ),
+        step(
+            build_scout_writer_role_binding(ns),
+            "RoleBinding (scout-writer)",
+            format!("✓ RoleBinding: {SCOUT_WRITER_ROLE_BINDING_NAME} (namespace: {ns})"),
+        ),
+    ]);
+    if let Some(secret) = opts.remote_secret {
+        steps.extend([
+            step(
+                build_scout_secrets_reader_role(ns, secret),
+                "Role (scout-secrets-reader)",
+                format!(
+                    "✓ Role: {SCOUT_SECRETS_READER_ROLE_NAME} (namespace: {ns}, secret: {secret})"
+                ),
+            ),
+            step(
+                build_scout_secrets_reader_role_binding(ns),
+                "RoleBinding (scout-secrets-reader)",
+                format!(
+                    "✓ RoleBinding: {SCOUT_SECRETS_READER_ROLE_BINDING_NAME} (namespace: {ns})"
+                ),
+            ),
+        ]);
+    }
     let image = resolve_image(opts.registry, opts.image_tag);
-    println!("✓ Deployment: {SCOUT_DEPLOYMENT_NAME} (image: {image})");
+    steps.push(step(
+        build_scout_deployment(ns, opts)?,
+        "Deployment (scout)",
+        format!("✓ Deployment: {SCOUT_DEPLOYMENT_NAME} (image: {image})"),
+    ));
+    Ok(steps)
+}
+
+/// Render the `--dry-run` output for `steps`: the banner, a blank line, then a
+/// `---` / `# <heading>` / YAML block per object, then the footer.
+///
+/// # Errors
+/// Returns `Failed to serialize <heading>` if an object cannot be rendered as YAML.
+pub(crate) fn render_dry_run(banner: &str, steps: &[Step]) -> Result<String> {
+    let mut out = format!("{banner}\n\n");
+    for step in steps {
+        let yaml = bindy_api::yaml::to_string(&step.object)
+            .with_context(|| format!("Failed to serialize {}", step.heading))?;
+        out.push_str(&format!("---\n# {}\n{yaml}", step.heading));
+    }
+    out.push_str(DRY_RUN_FOOTER);
+    out.push('\n');
+    Ok(out)
+}
+
+/// Apply `steps` in order, printing each step's `✓` line to stdout once applied.
+///
+/// Cluster-scoped objects go through `Api::all`; namespaced ones through
+/// `Api::namespaced(namespace)`.
+///
+/// # Errors
+/// Stops at, and returns, the first failed apply.
+async fn apply_steps(
+    client: &Client,
+    namespace: &str,
+    steps: &[Step],
+    field_manager: &str,
+) -> Result<()> {
+    use BootstrapObject as O;
+
+    let fm = field_manager;
+    for step in steps {
+        let c = client.clone();
+        let ns = namespace;
+        match &step.object {
+            O::Namespace(o) => apply(&Api::all(c), &**o, fm).await?,
+            O::CustomResourceDefinition(o) => apply(&Api::all(c), &**o, fm).await?,
+            O::ClusterRole(o) => apply(&Api::all(c), &**o, fm).await?,
+            O::ClusterRoleBinding(o) => apply(&Api::all(c), &**o, fm).await?,
+            O::ServiceAccount(o) => apply(&Api::namespaced(c, ns), &**o, fm).await?,
+            O::Role(o) => apply(&Api::namespaced(c, ns), &**o, fm).await?,
+            O::RoleBinding(o) => apply(&Api::namespaced(c, ns), &**o, fm).await?,
+            O::Deployment(o) => apply(&Api::namespaced(c, ns), &**o, fm).await?,
+        }
+        println!("{}", step.applied);
+    }
+    Ok(())
+}
+
+/// Server-side apply one object (`force: true`) under `field_manager`.
+///
+/// The object is addressed by its own `metadata.name`; `api` decides the scope
+/// (cluster or namespace).
+///
+/// # Arguments
+/// * `api` - The API for the object's kind and scope
+/// * `obj` - The object to apply
+/// * `field_manager` - The server-side-apply field manager
+///
+/// # Errors
+/// Returns `Cannot apply <Kind>: metadata.name is not set` (without calling the
+/// API) when the object has no name, and `Failed to apply <Kind>/<name>` with the
+/// `kube::Error` in the chain when the API call fails.
+pub(crate) async fn apply<K>(api: &Api<K>, obj: &K, field_manager: &str) -> Result<()>
+where
+    K: Resource<DynamicType = ()> + Clone + Debug + DeserializeOwned + serde::Serialize,
+{
+    let kind = K::kind(&());
+    let Some(name) = obj.meta().name.as_deref() else {
+        return Err(anyhow!("Cannot apply {kind}: metadata.name is not set"));
+    };
+    api.patch(
+        name,
+        &PatchParams::apply(field_manager).force(),
+        &Patch::Apply(obj),
+    )
+    .await
+    .with_context(|| format!("Failed to apply {kind}/{name}"))?;
     Ok(())
 }
 
 // ---------------------------------------------------------------------------
 // Resource builders
 // ---------------------------------------------------------------------------
+
+/// API group of `Role`, `ClusterRole` and their bindings.
+const RBAC_API_GROUP: &str = "rbac.authorization.k8s.io";
+
+/// The core (`""`) API group, as it appears in a `PolicyRule`.
+const CORE_API_GROUP: &str = "";
+
+/// API group of the bindy CRDs.
+const BINDY_API_GROUP: &str = "bindy.firestoned.io";
+
+/// `app.kubernetes.io/name` label key.
+const APP_NAME_LABEL: &str = "app.kubernetes.io/name";
+
+/// `app.kubernetes.io/component` label key.
+const APP_COMPONENT_LABEL: &str = "app.kubernetes.io/component";
+
+/// `app.kubernetes.io/name` value on everything bootstrap creates.
+const APP_NAME: &str = "bindy";
+
+/// `app.kubernetes.io/component` value for the operator's RBAC objects.
+const RBAC_COMPONENT: &str = "rbac";
+
+/// `app.kubernetes.io/component` value for Scout's objects.
+const SCOUT_COMPONENT: &str = "scout";
+
+/// The read-only verbs.
+const READ_VERBS: &[&str] = &["get", "list", "watch"];
+
+/// The verbs Scout needs on a watched source kind: read, plus patch/update so the
+/// kube-rs finalizer can add and remove itself on the object's metadata.
+const WATCH_AND_FINALIZE_VERBS: &[&str] = &["get", "list", "watch", "patch", "update"];
+
+/// Full CRUD.
+const CRUD_VERBS: &[&str] = &[
+    "get", "list", "watch", "create", "update", "patch", "delete",
+];
+
+/// The `app.kubernetes.io/name: bindy` + `app.kubernetes.io/component` label pair.
+pub(crate) fn labels(component: &str) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        (APP_NAME_LABEL.to_string(), APP_NAME.to_string()),
+        (APP_COMPONENT_LABEL.to_string(), component.to_string()),
+    ])
+}
+
+/// A binding subject for ServiceAccount `name` in `namespace`.
+pub(crate) fn sa_subject(name: &str, namespace: &str) -> Subject {
+    Subject {
+        kind: <ServiceAccount as k8s_openapi::Resource>::KIND.to_string(),
+        name: name.to_string(),
+        namespace: Some(namespace.to_string()),
+        api_group: Some(CORE_API_GROUP.to_string()),
+    }
+}
+
+/// A `roleRef` to the `R` (`Role` or `ClusterRole`) named `name`.
+pub(crate) fn role_ref<R: k8s_openapi::Resource>(name: &str) -> RoleRef {
+    RoleRef {
+        api_group: RBAC_API_GROUP.to_string(),
+        kind: R::KIND.to_string(),
+        name: name.to_string(),
+    }
+}
+
+/// A `PolicyRule` granting `verbs` on `resources` in `groups`.
+pub(crate) fn rule(groups: &[&str], resources: &[&str], verbs: &[&str]) -> PolicyRule {
+    PolicyRule {
+        api_groups: Some(strings(groups)),
+        resources: Some(strings(resources)),
+        verbs: strings(verbs),
+        ..Default::default()
+    }
+}
+
+fn strings(items: &[&str]) -> Vec<String> {
+    items.iter().map(ToString::to_string).collect()
+}
 
 /// Build the operator namespace object.
 pub(crate) fn build_namespace(name: &str) -> Namespace {
@@ -797,17 +783,7 @@ pub(crate) fn build_service_account(namespace: &str) -> ServiceAccount {
         metadata: ObjectMeta {
             name: Some(SERVICE_ACCOUNT_NAME.to_string()),
             namespace: Some(namespace.to_string()),
-            labels: Some(
-                [
-                    ("app.kubernetes.io/name".to_string(), "bindy".to_string()),
-                    (
-                        "app.kubernetes.io/component".to_string(),
-                        "rbac".to_string(),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            ),
+            labels: Some(labels(RBAC_COMPONENT)),
             ..Default::default()
         },
         ..Default::default()
@@ -823,17 +799,8 @@ pub(crate) fn build_cluster_role_binding(namespace: &str) -> ClusterRoleBinding 
             name: Some(CLUSTER_ROLE_BINDING_NAME.to_string()),
             ..Default::default()
         },
-        role_ref: RoleRef {
-            api_group: "rbac.authorization.k8s.io".to_string(),
-            kind: "ClusterRole".to_string(),
-            name: OPERATOR_ROLE_NAME.to_string(),
-        },
-        subjects: Some(vec![Subject {
-            kind: "ServiceAccount".to_string(),
-            name: SERVICE_ACCOUNT_NAME.to_string(),
-            namespace: Some(namespace.to_string()),
-            api_group: Some(String::new()),
-        }]),
+        role_ref: role_ref::<ClusterRole>(OPERATOR_ROLE_NAME),
+        subjects: Some(vec![sa_subject(SERVICE_ACCOUNT_NAME, namespace)]),
     }
 }
 
@@ -848,30 +815,14 @@ pub(crate) fn build_secrets_writer_role(namespace: &str) -> Role {
         metadata: ObjectMeta {
             name: Some(SECRETS_WRITER_ROLE_NAME.to_string()),
             namespace: Some(namespace.to_string()),
-            labels: Some(
-                [
-                    ("app.kubernetes.io/name".to_string(), "bindy".to_string()),
-                    (
-                        "app.kubernetes.io/component".to_string(),
-                        "rbac".to_string(),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            ),
+            labels: Some(labels(RBAC_COMPONENT)),
             ..Default::default()
         },
-        rules: Some(vec![PolicyRule {
-            api_groups: Some(vec![String::new()]),
-            resources: Some(vec!["secrets".to_string()]),
-            verbs: vec![
-                "create".to_string(),
-                "update".to_string(),
-                "patch".to_string(),
-                "delete".to_string(),
-            ],
-            ..Default::default()
-        }]),
+        rules: Some(vec![rule(
+            &[CORE_API_GROUP],
+            &["secrets"],
+            &["create", "update", "patch", "delete"],
+        )]),
     }
 }
 
@@ -882,30 +833,11 @@ pub(crate) fn build_secrets_writer_role_binding(namespace: &str) -> RoleBinding 
         metadata: ObjectMeta {
             name: Some(SECRETS_WRITER_ROLE_BINDING_NAME.to_string()),
             namespace: Some(namespace.to_string()),
-            labels: Some(
-                [
-                    ("app.kubernetes.io/name".to_string(), "bindy".to_string()),
-                    (
-                        "app.kubernetes.io/component".to_string(),
-                        "rbac".to_string(),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            ),
+            labels: Some(labels(RBAC_COMPONENT)),
             ..Default::default()
         },
-        role_ref: RoleRef {
-            api_group: "rbac.authorization.k8s.io".to_string(),
-            kind: "Role".to_string(),
-            name: SECRETS_WRITER_ROLE_NAME.to_string(),
-        },
-        subjects: Some(vec![Subject {
-            kind: "ServiceAccount".to_string(),
-            name: SERVICE_ACCOUNT_NAME.to_string(),
-            namespace: Some(namespace.to_string()),
-            api_group: Some(String::new()),
-        }]),
+        role_ref: role_ref::<Role>(SECRETS_WRITER_ROLE_NAME),
+        subjects: Some(vec![sa_subject(SERVICE_ACCOUNT_NAME, namespace)]),
     }
 }
 
@@ -1039,18 +971,30 @@ pub(crate) fn build_tokenreview_cluster_role_binding(
 /// Build a single CRD from a Rust type, ensuring `storage: true` and `served: true`.
 ///
 /// Mirrors the logic in `src/bin/crdgen.rs` so bootstrap and crdgen stay in sync.
+///
+/// # Errors
+/// As [`mark_storage_version`].
 pub(crate) fn build_crd<T: CustomResourceExt>() -> Result<CustomResourceDefinition> {
-    let crd = T::crd();
-    let mut crd_json = serde_json::to_value(&crd).context("Failed to serialize CRD to JSON")?;
+    mark_storage_version(T::crd())
+}
 
-    if let Some(versions) = crd_json["spec"]["versions"].as_array_mut() {
-        if let Some(first) = versions.first_mut() {
-            first["storage"] = serde_json::Value::Bool(true);
-            first["served"] = serde_json::Value::Bool(true);
-        }
-    }
-
-    serde_json::from_value(crd_json).context("Failed to deserialize CRD from JSON")
+/// Mark the first version of `crd` as `served: true` and `storage: true`.
+///
+/// # Errors
+/// Returns an error if `spec.versions` is empty: a CRD with no version cannot be
+/// served, so applying it would only fail later on the API server.
+pub(crate) fn mark_storage_version(
+    mut crd: CustomResourceDefinition,
+) -> Result<CustomResourceDefinition> {
+    let Some(first) = crd.spec.versions.first_mut() else {
+        let name = crd.metadata.name.as_deref().unwrap_or_default();
+        return Err(anyhow!(
+            "CRD {name} has no spec.versions to mark as served and stored"
+        ));
+    };
+    first.storage = true;
+    first.served = true;
+    Ok(crd)
 }
 
 /// Build all 13 CRDs in the same order as `crdgen`.
@@ -1082,17 +1026,7 @@ pub(crate) fn build_scout_service_account(namespace: &str) -> ServiceAccount {
         metadata: ObjectMeta {
             name: Some(SCOUT_SERVICE_ACCOUNT_NAME.to_string()),
             namespace: Some(namespace.to_string()),
-            labels: Some(
-                [
-                    ("app.kubernetes.io/name".to_string(), "bindy".to_string()),
-                    (
-                        "app.kubernetes.io/component".to_string(),
-                        "scout".to_string(),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            ),
+            labels: Some(labels(SCOUT_COMPONENT)),
             ..Default::default()
         },
         ..Default::default()
@@ -1108,20 +1042,14 @@ pub(crate) fn build_scout_service_account(namespace: &str) -> ServiceAccount {
 /// the namespaced, `resourceNames`-restricted Role from
 /// [`build_scout_secrets_reader_role`].
 pub(crate) fn build_scout_cluster_role() -> ClusterRole {
+    const NETWORKING: &str = "networking.k8s.io";
+    const GATEWAY: &str = "gateway.networking.k8s.io";
+    const FINALIZER_VERBS: &[&str] = &["update"];
+
     ClusterRole {
         metadata: ObjectMeta {
             name: Some(SCOUT_CLUSTER_ROLE_NAME.to_string()),
-            labels: Some(
-                [
-                    ("app.kubernetes.io/name".to_string(), "bindy".to_string()),
-                    (
-                        "app.kubernetes.io/component".to_string(),
-                        "scout".to_string(),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            ),
+            labels: Some(labels(SCOUT_COMPONENT)),
             ..Default::default()
         },
         rules: Some(vec![
@@ -1129,108 +1057,49 @@ pub(crate) fn build_scout_cluster_role() -> ClusterRole {
             // kube-rs finalizer::finalizer() patches the main resource metadata to
             // add/remove finalizers, so patch+update on ingresses (not just the
             // ingresses/finalizers subresource) is required.
-            PolicyRule {
-                api_groups: Some(vec!["networking.k8s.io".to_string()]),
-                resources: Some(vec!["ingresses".to_string()]),
-                verbs: vec![
-                    "get".to_string(),
-                    "list".to_string(),
-                    "watch".to_string(),
-                    "patch".to_string(),
-                    "update".to_string(),
-                ],
-                ..Default::default()
-            },
+            rule(&[NETWORKING], &["ingresses"], WATCH_AND_FINALIZE_VERBS),
             // Also grant the finalizers subresource for forward-compatibility.
-            PolicyRule {
-                api_groups: Some(vec!["networking.k8s.io".to_string()]),
-                resources: Some(vec!["ingresses/finalizers".to_string()]),
-                verbs: vec!["update".to_string()],
-                ..Default::default()
-            },
-            // Watch LoadBalancer Services for external IP → ARecord automation.
+            rule(&[NETWORKING], &["ingresses/finalizers"], FINALIZER_VERBS),
+            // Watch LoadBalancer Services for external IP to ARecord automation.
             // patch+update required to add/remove the Scout finalizer on the Service metadata.
-            PolicyRule {
-                api_groups: Some(vec![String::new()]),
-                resources: Some(vec!["services".to_string()]),
-                verbs: vec![
-                    "get".to_string(),
-                    "list".to_string(),
-                    "watch".to_string(),
-                    "patch".to_string(),
-                    "update".to_string(),
-                ],
-                ..Default::default()
-            },
+            rule(&[CORE_API_GROUP], &["services"], WATCH_AND_FINALIZE_VERBS),
             // services/finalizers subresource for forward-compatibility.
-            PolicyRule {
-                api_groups: Some(vec![String::new()]),
-                resources: Some(vec!["services/finalizers".to_string()]),
-                verbs: vec!["update".to_string()],
-                ..Default::default()
-            },
+            rule(&[CORE_API_GROUP], &["services/finalizers"], FINALIZER_VERBS),
             // Watch HTTPRoutes, TLSRoutes, and TCPRoutes from the Gateway API
             // (gateway.networking.k8s.io) to automate A record creation for Gateway
             // routes with opt-in annotations. Gateways are read to follow a route's
             // parentRefs back to the serving gateway and discover its external IP.
             // patch+update required to add/remove the Scout finalizer on route metadata.
-            PolicyRule {
-                api_groups: Some(vec!["gateway.networking.k8s.io".to_string()]),
-                resources: Some(vec![
-                    "httproutes".to_string(),
-                    "tlsroutes".to_string(),
-                    "tcproutes".to_string(),
-                ]),
-                verbs: vec![
-                    "get".to_string(),
-                    "list".to_string(),
-                    "watch".to_string(),
-                    "patch".to_string(),
-                    "update".to_string(),
-                ],
-                ..Default::default()
-            },
+            rule(
+                &[GATEWAY],
+                &["httproutes", "tlsroutes", "tcproutes"],
+                WATCH_AND_FINALIZE_VERBS,
+            ),
             // route/finalizers subresource for forward-compatibility.
-            PolicyRule {
-                api_groups: Some(vec!["gateway.networking.k8s.io".to_string()]),
-                resources: Some(vec![
-                    "httproutes/finalizers".to_string(),
-                    "tlsroutes/finalizers".to_string(),
-                    "tcproutes/finalizers".to_string(),
-                ]),
-                verbs: vec!["update".to_string()],
-                ..Default::default()
-            },
-            // Gateways are read-only — Scout reads status.addresses to discover external IPs.
-            PolicyRule {
-                api_groups: Some(vec!["gateway.networking.k8s.io".to_string()]),
-                resources: Some(vec!["gateways".to_string()]),
-                verbs: vec!["get".to_string(), "list".to_string(), "watch".to_string()],
-                ..Default::default()
-            },
+            rule(
+                &[GATEWAY],
+                &[
+                    "httproutes/finalizers",
+                    "tlsroutes/finalizers",
+                    "tcproutes/finalizers",
+                ],
+                FINALIZER_VERBS,
+            ),
+            // Gateways are read-only: Scout reads status.addresses to discover external IPs.
+            rule(&[GATEWAY], &["gateways"], READ_VERBS),
             // Read DNSZones for zone validation
-            PolicyRule {
-                api_groups: Some(vec!["bindy.firestoned.io".to_string()]),
-                resources: Some(vec!["dnszones".to_string()]),
-                verbs: vec!["get".to_string(), "list".to_string(), "watch".to_string()],
-                ..Default::default()
-            },
+            rule(&[BINDY_API_GROUP], &["dnszones"], READ_VERBS),
             // NOTE: there is deliberately no cluster-wide Secret rule here. Reading the
             // remote-cluster kubeconfig Secret (Phase 2 only) is granted by a namespaced,
-            // resourceNames-restricted Role/RoleBinding instead — see
-            // `build_scout_secrets_reader_role` and `apply_scout_secrets_reader_role`,
-            // applied only when `--remote-secret` is configured. This closes the previously
-            // unscoped `secrets: get` grant that applied to every Secret in every namespace.
+            // resourceNames-restricted Role/RoleBinding instead (see
+            // `build_scout_secrets_reader_role`), applied only when `--remote-secret` is
+            // configured. This closes the previously unscoped `secrets: get` grant that
+            // applied to every Secret in every namespace.
             // Read Namespace labels for --namespace-selector / BINDY_SCOUT_NAMESPACE_SELECTOR:
             // scout checks each source object's namespace against the configured selector
             // before acting, via a List scoped to that single namespace by name. Namespace
             // metadata (name/labels) is low-sensitivity, unlike Secret contents.
-            PolicyRule {
-                api_groups: Some(vec![String::new()]),
-                resources: Some(vec!["namespaces".to_string()]),
-                verbs: vec!["get".to_string(), "list".to_string()],
-                ..Default::default()
-            },
+            rule(&[CORE_API_GROUP], &["namespaces"], &["get", "list"]),
         ]),
         ..Default::default()
     }
@@ -1243,30 +1112,11 @@ pub(crate) fn build_scout_cluster_role_binding(namespace: &str) -> ClusterRoleBi
     ClusterRoleBinding {
         metadata: ObjectMeta {
             name: Some(SCOUT_CLUSTER_ROLE_BINDING_NAME.to_string()),
-            labels: Some(
-                [
-                    ("app.kubernetes.io/name".to_string(), "bindy".to_string()),
-                    (
-                        "app.kubernetes.io/component".to_string(),
-                        "scout".to_string(),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            ),
+            labels: Some(labels(SCOUT_COMPONENT)),
             ..Default::default()
         },
-        role_ref: RoleRef {
-            api_group: "rbac.authorization.k8s.io".to_string(),
-            kind: "ClusterRole".to_string(),
-            name: SCOUT_CLUSTER_ROLE_NAME.to_string(),
-        },
-        subjects: Some(vec![Subject {
-            kind: "ServiceAccount".to_string(),
-            name: SCOUT_SERVICE_ACCOUNT_NAME.to_string(),
-            namespace: Some(namespace.to_string()),
-            api_group: Some(String::new()),
-        }]),
+        role_ref: role_ref::<ClusterRole>(SCOUT_CLUSTER_ROLE_NAME),
+        subjects: Some(vec![sa_subject(SCOUT_SERVICE_ACCOUNT_NAME, namespace)]),
     }
 }
 
@@ -1276,33 +1126,10 @@ pub(crate) fn build_scout_writer_role(namespace: &str) -> Role {
         metadata: ObjectMeta {
             name: Some(SCOUT_WRITER_ROLE_NAME.to_string()),
             namespace: Some(namespace.to_string()),
-            labels: Some(
-                [
-                    ("app.kubernetes.io/name".to_string(), "bindy".to_string()),
-                    (
-                        "app.kubernetes.io/component".to_string(),
-                        "scout".to_string(),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            ),
+            labels: Some(labels(SCOUT_COMPONENT)),
             ..Default::default()
         },
-        rules: Some(vec![PolicyRule {
-            api_groups: Some(vec!["bindy.firestoned.io".to_string()]),
-            resources: Some(vec!["arecords".to_string()]),
-            verbs: vec![
-                "get".to_string(),
-                "list".to_string(),
-                "watch".to_string(),
-                "create".to_string(),
-                "update".to_string(),
-                "patch".to_string(),
-                "delete".to_string(),
-            ],
-            ..Default::default()
-        }]),
+        rules: Some(vec![rule(&[BINDY_API_GROUP], &["arecords"], CRUD_VERBS)]),
     }
 }
 
@@ -1312,30 +1139,11 @@ pub(crate) fn build_scout_writer_role_binding(namespace: &str) -> RoleBinding {
         metadata: ObjectMeta {
             name: Some(SCOUT_WRITER_ROLE_BINDING_NAME.to_string()),
             namespace: Some(namespace.to_string()),
-            labels: Some(
-                [
-                    ("app.kubernetes.io/name".to_string(), "bindy".to_string()),
-                    (
-                        "app.kubernetes.io/component".to_string(),
-                        "scout".to_string(),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            ),
+            labels: Some(labels(SCOUT_COMPONENT)),
             ..Default::default()
         },
-        role_ref: RoleRef {
-            api_group: "rbac.authorization.k8s.io".to_string(),
-            kind: "Role".to_string(),
-            name: SCOUT_WRITER_ROLE_NAME.to_string(),
-        },
-        subjects: Some(vec![Subject {
-            kind: "ServiceAccount".to_string(),
-            name: SCOUT_SERVICE_ACCOUNT_NAME.to_string(),
-            namespace: Some(namespace.to_string()),
-            api_group: Some(String::new()),
-        }]),
+        role_ref: role_ref::<Role>(SCOUT_WRITER_ROLE_NAME),
+        subjects: Some(vec![sa_subject(SCOUT_SERVICE_ACCOUNT_NAME, namespace)]),
     }
 }
 
@@ -1351,25 +1159,12 @@ pub(crate) fn build_scout_secrets_reader_role(namespace: &str, secret_name: &str
         metadata: ObjectMeta {
             name: Some(SCOUT_SECRETS_READER_ROLE_NAME.to_string()),
             namespace: Some(namespace.to_string()),
-            labels: Some(
-                [
-                    ("app.kubernetes.io/name".to_string(), "bindy".to_string()),
-                    (
-                        "app.kubernetes.io/component".to_string(),
-                        "scout".to_string(),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            ),
+            labels: Some(labels(SCOUT_COMPONENT)),
             ..Default::default()
         },
         rules: Some(vec![PolicyRule {
-            api_groups: Some(vec![String::new()]),
-            resources: Some(vec!["secrets".to_string()]),
             resource_names: Some(vec![secret_name.to_string()]),
-            verbs: vec!["get".to_string()],
-            ..Default::default()
+            ..rule(&[CORE_API_GROUP], &["secrets"], &["get"])
         }]),
     }
 }
@@ -1381,30 +1176,11 @@ pub(crate) fn build_scout_secrets_reader_role_binding(namespace: &str) -> RoleBi
         metadata: ObjectMeta {
             name: Some(SCOUT_SECRETS_READER_ROLE_BINDING_NAME.to_string()),
             namespace: Some(namespace.to_string()),
-            labels: Some(
-                [
-                    ("app.kubernetes.io/name".to_string(), "bindy".to_string()),
-                    (
-                        "app.kubernetes.io/component".to_string(),
-                        "scout".to_string(),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            ),
+            labels: Some(labels(SCOUT_COMPONENT)),
             ..Default::default()
         },
-        role_ref: RoleRef {
-            api_group: "rbac.authorization.k8s.io".to_string(),
-            kind: "Role".to_string(),
-            name: SCOUT_SECRETS_READER_ROLE_NAME.to_string(),
-        },
-        subjects: Some(vec![Subject {
-            kind: "ServiceAccount".to_string(),
-            name: SCOUT_SERVICE_ACCOUNT_NAME.to_string(),
-            namespace: Some(namespace.to_string()),
-            api_group: Some(String::new()),
-        }]),
+        role_ref: role_ref::<Role>(SCOUT_SECRETS_READER_ROLE_NAME),
+        subjects: Some(vec![sa_subject(SCOUT_SERVICE_ACCOUNT_NAME, namespace)]),
     }
 }
 
@@ -1519,25 +1295,46 @@ pub async fn run_bootstrap_multi_cluster(
         .await
         .context("Failed to connect to Kubernetes cluster — is KUBECONFIG set?")?;
 
-    let (kubeconfig_server, ca_data_b64, cluster_name) = read_cluster_info()?;
-    let server = server_override.unwrap_or(&kubeconfig_server);
+    let cluster = read_cluster_info()?;
+    let server = resolve_server(server_override, &cluster)?;
     if server_override.is_some() {
-        eprintln!("ℹ Using server override: {server} (KUBECONFIG had: {kubeconfig_server})");
+        let had = cluster.server.as_deref().unwrap_or("no server");
+        eprintln!("ℹ Using server override: {server} (KUBECONFIG had: {had})");
     }
 
-    apply_mc_service_account(&client, namespace, service_account).await?;
-    apply_mc_writer_role(&client, namespace, service_account).await?;
-    apply_mc_writer_role_binding(&client, namespace, service_account).await?;
+    let sa = service_account;
+    let fm = MC_FIELD_MANAGER;
+    let service_account_obj = build_mc_service_account(namespace, sa);
+    apply(
+        &Api::namespaced(client.clone(), namespace),
+        &service_account_obj,
+        fm,
+    )
+    .await?;
+    eprintln!("✓ ServiceAccount: {sa} (namespace: {namespace})");
+    let role = build_mc_writer_role(namespace, sa);
+    apply(&Api::namespaced(client.clone(), namespace), &role, fm).await?;
+    eprintln!("✓ Role: {sa} (namespace: {namespace})");
+    let rb = build_mc_writer_role_binding(namespace, sa);
+    apply(&Api::namespaced(client.clone(), namespace), &rb, fm).await?;
+    eprintln!("✓ RoleBinding: {sa} (namespace: {namespace})");
 
-    let token_secret_name = format!("{service_account}{SA_TOKEN_SECRET_SUFFIX}");
-    apply_mc_sa_token_secret(&client, namespace, service_account).await?;
+    let token_secret_name = format!("{sa}{SA_TOKEN_SECRET_SUFFIX}");
+    let token_secret = build_mc_sa_token_secret(namespace, sa);
+    apply(
+        &Api::namespaced(client.clone(), namespace),
+        &token_secret,
+        fm,
+    )
+    .await?;
+    eprintln!("✓ Secret: {token_secret_name} (namespace: {namespace})");
     eprintln!("⏳ Waiting for SA token to be populated...");
     let token = wait_for_sa_token(&client, namespace, &token_secret_name).await?;
 
     let kubeconfig_yaml = build_kubeconfig_yaml(
-        &cluster_name,
-        server,
-        ca_data_b64.as_deref(),
+        &cluster.name,
+        &server,
+        cluster.ca_data_b64.as_deref(),
         service_account,
         &token,
         allow_insecure,
@@ -1694,17 +1491,7 @@ pub(crate) fn build_mc_service_account(namespace: &str, sa_name: &str) -> Servic
         metadata: ObjectMeta {
             name: Some(sa_name.to_string()),
             namespace: Some(namespace.to_string()),
-            labels: Some(
-                [
-                    ("app.kubernetes.io/name".to_string(), "bindy".to_string()),
-                    (
-                        "app.kubernetes.io/component".to_string(),
-                        MC_COMPONENT_LABEL.to_string(),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            ),
+            labels: Some(labels(MC_COMPONENT_LABEL)),
             ..Default::default()
         },
         ..Default::default()
@@ -1714,8 +1501,8 @@ pub(crate) fn build_mc_service_account(namespace: &str, sa_name: &str) -> Servic
 /// Build the namespaced Role for the multi-cluster service account on the queen-ship.
 ///
 /// Grants:
-/// - Full CRUD on `arecords` — scout creates/deletes ARecords via the remote client
-/// - Read-only on `dnszones` — scout validates zones before creating ARecords
+/// - Full CRUD on `arecords`: scout creates/deletes ARecords via the remote client
+/// - Read-only on `dnszones`: scout validates zones before creating ARecords
 ///
 /// Both resources live in the same target namespace on the queen-ship cluster, so a
 /// namespaced `Role` is sufficient.  The scout watches DNSZones via
@@ -1729,40 +1516,12 @@ pub(crate) fn build_mc_writer_role(namespace: &str, sa_name: &str) -> Role {
         metadata: ObjectMeta {
             name: Some(sa_name.to_string()),
             namespace: Some(namespace.to_string()),
-            labels: Some(
-                [
-                    ("app.kubernetes.io/name".to_string(), "bindy".to_string()),
-                    (
-                        "app.kubernetes.io/component".to_string(),
-                        MC_COMPONENT_LABEL.to_string(),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            ),
+            labels: Some(labels(MC_COMPONENT_LABEL)),
             ..Default::default()
         },
         rules: Some(vec![
-            PolicyRule {
-                api_groups: Some(vec!["bindy.firestoned.io".to_string()]),
-                resources: Some(vec!["arecords".to_string()]),
-                verbs: vec![
-                    "get".to_string(),
-                    "list".to_string(),
-                    "watch".to_string(),
-                    "create".to_string(),
-                    "update".to_string(),
-                    "patch".to_string(),
-                    "delete".to_string(),
-                ],
-                ..Default::default()
-            },
-            PolicyRule {
-                api_groups: Some(vec!["bindy.firestoned.io".to_string()]),
-                resources: Some(vec!["dnszones".to_string()]),
-                verbs: vec!["get".to_string(), "list".to_string(), "watch".to_string()],
-                ..Default::default()
-            },
+            rule(&[BINDY_API_GROUP], &["arecords"], CRUD_VERBS),
+            rule(&[BINDY_API_GROUP], &["dnszones"], READ_VERBS),
         ]),
     }
 }
@@ -1776,30 +1535,11 @@ pub(crate) fn build_mc_writer_role_binding(namespace: &str, sa_name: &str) -> Ro
         metadata: ObjectMeta {
             name: Some(sa_name.to_string()),
             namespace: Some(namespace.to_string()),
-            labels: Some(
-                [
-                    ("app.kubernetes.io/name".to_string(), "bindy".to_string()),
-                    (
-                        "app.kubernetes.io/component".to_string(),
-                        MC_COMPONENT_LABEL.to_string(),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            ),
+            labels: Some(labels(MC_COMPONENT_LABEL)),
             ..Default::default()
         },
-        role_ref: RoleRef {
-            api_group: "rbac.authorization.k8s.io".to_string(),
-            kind: "Role".to_string(),
-            name: sa_name.to_string(),
-        },
-        subjects: Some(vec![Subject {
-            kind: "ServiceAccount".to_string(),
-            name: sa_name.to_string(),
-            namespace: Some(namespace.to_string()),
-            api_group: Some(String::new()),
-        }]),
+        role_ref: role_ref::<Role>(sa_name),
+        subjects: Some(vec![sa_subject(sa_name, namespace)]),
     }
 }
 
@@ -1808,27 +1548,16 @@ pub(crate) fn build_mc_writer_role_binding(namespace: &str, sa_name: &str) -> Ro
 /// After this Secret is applied, the Kubernetes token controller populates `data.token`
 /// with a long-lived bearer token for the specified service account.
 pub(crate) fn build_mc_sa_token_secret(namespace: &str, sa_name: &str) -> Secret {
-    let mut annotations = BTreeMap::new();
-    annotations.insert(
+    let annotations = BTreeMap::from([(
         "kubernetes.io/service-account.name".to_string(),
         sa_name.to_string(),
-    );
+    )]);
 
     Secret {
         metadata: ObjectMeta {
             name: Some(format!("{sa_name}{SA_TOKEN_SECRET_SUFFIX}")),
             namespace: Some(namespace.to_string()),
-            labels: Some(
-                [
-                    ("app.kubernetes.io/name".to_string(), "bindy".to_string()),
-                    (
-                        "app.kubernetes.io/component".to_string(),
-                        MC_COMPONENT_LABEL.to_string(),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            ),
+            labels: Some(labels(MC_COMPONENT_LABEL)),
             annotations: Some(annotations),
             ..Default::default()
         },
@@ -1846,31 +1575,21 @@ pub(crate) fn build_mc_kubeconfig_secret(
     sa_name: &str,
     kubeconfig_yaml: &str,
 ) -> Secret {
-    let mut data = BTreeMap::new();
-    data.insert(
+    let data = BTreeMap::from([(
         "kubeconfig".to_string(),
         ByteString(kubeconfig_yaml.as_bytes().to_vec()),
+    )]);
+    let mut secret_labels = labels(MC_COMPONENT_LABEL);
+    secret_labels.insert(
+        "bindy.firestoned.io/service-account".to_string(),
+        sa_name.to_string(),
     );
 
     Secret {
         metadata: ObjectMeta {
             name: Some(format!("{sa_name}{REMOTE_KUBECONFIG_SECRET_SUFFIX}")),
             namespace: Some(namespace.to_string()),
-            labels: Some(
-                [
-                    ("app.kubernetes.io/name".to_string(), "bindy".to_string()),
-                    (
-                        "app.kubernetes.io/component".to_string(),
-                        MC_COMPONENT_LABEL.to_string(),
-                    ),
-                    (
-                        "bindy.firestoned.io/service-account".to_string(),
-                        sa_name.to_string(),
-                    ),
-                ]
-                .into_iter()
-                .collect(),
-            ),
+            labels: Some(secret_labels),
             ..Default::default()
         },
         type_: Some(REMOTE_KUBECONFIG_SECRET_TYPE.to_string()),
@@ -1880,69 +1599,8 @@ pub(crate) fn build_mc_kubeconfig_secret(
 }
 
 // ---------------------------------------------------------------------------
-// Multi-cluster apply helpers
+// Multi-cluster token wait and KUBECONFIG reading
 // ---------------------------------------------------------------------------
-
-async fn apply_mc_service_account(client: &Client, namespace: &str, sa_name: &str) -> Result<()> {
-    let api: Api<ServiceAccount> = Api::namespaced(client.clone(), namespace);
-    let sa = build_mc_service_account(namespace, sa_name);
-    api.patch(
-        sa_name,
-        &PatchParams::apply(MC_FIELD_MANAGER).force(),
-        &Patch::Apply(&sa),
-    )
-    .await
-    .with_context(|| format!("Failed to apply ServiceAccount/{sa_name}"))?;
-    eprintln!("✓ ServiceAccount: {sa_name} (namespace: {namespace})");
-    Ok(())
-}
-
-async fn apply_mc_writer_role(client: &Client, namespace: &str, sa_name: &str) -> Result<()> {
-    let api: Api<Role> = Api::namespaced(client.clone(), namespace);
-    let role = build_mc_writer_role(namespace, sa_name);
-    api.patch(
-        sa_name,
-        &PatchParams::apply(MC_FIELD_MANAGER).force(),
-        &Patch::Apply(&role),
-    )
-    .await
-    .with_context(|| format!("Failed to apply Role/{sa_name}"))?;
-    eprintln!("✓ Role: {sa_name} (namespace: {namespace})");
-    Ok(())
-}
-
-async fn apply_mc_writer_role_binding(
-    client: &Client,
-    namespace: &str,
-    sa_name: &str,
-) -> Result<()> {
-    let api: Api<RoleBinding> = Api::namespaced(client.clone(), namespace);
-    let rb = build_mc_writer_role_binding(namespace, sa_name);
-    api.patch(
-        sa_name,
-        &PatchParams::apply(MC_FIELD_MANAGER).force(),
-        &Patch::Apply(&rb),
-    )
-    .await
-    .with_context(|| format!("Failed to apply RoleBinding/{sa_name}"))?;
-    eprintln!("✓ RoleBinding: {sa_name} (namespace: {namespace})");
-    Ok(())
-}
-
-async fn apply_mc_sa_token_secret(client: &Client, namespace: &str, sa_name: &str) -> Result<()> {
-    let secret_name = format!("{sa_name}{SA_TOKEN_SECRET_SUFFIX}");
-    let api: Api<Secret> = Api::namespaced(client.clone(), namespace);
-    let secret = build_mc_sa_token_secret(namespace, sa_name);
-    api.patch(
-        &secret_name,
-        &PatchParams::apply(MC_FIELD_MANAGER).force(),
-        &Patch::Apply(&secret),
-    )
-    .await
-    .with_context(|| format!("Failed to apply Secret/{secret_name}"))?;
-    eprintln!("✓ Secret: {secret_name} (namespace: {namespace})");
-    Ok(())
-}
 
 /// Poll the SA token Secret until the `token` key is populated, up to a bounded timeout.
 ///
@@ -1973,16 +1631,36 @@ async fn wait_for_sa_token(client: &Client, namespace: &str, secret_name: &str) 
     ))
 }
 
-/// Read the current KUBECONFIG context's cluster server URL and CA certificate.
+/// The cluster entry of the current KUBECONFIG context.
+pub(crate) struct KubeconfigCluster {
+    /// The cluster entry's name.
+    pub(crate) name: String,
+    /// The API server URL, if the entry has one.
+    pub(crate) server: Option<String>,
+    /// Base64-encoded PEM CA bundle: the inline data, or the CA file's content.
+    /// `None` when neither is configured.
+    pub(crate) ca_data_b64: Option<String>,
+}
+
+/// Read the current KUBECONFIG context's cluster entry ([`cluster_info`]).
 ///
-/// Returns `(server_url, ca_data_base64, cluster_name)`.
-/// `ca_data_base64` is `None` when neither inline data nor a CA file is configured,
-/// in which case `build_kubeconfig_yaml` sets `insecure-skip-tls-verify: true`.
-fn read_cluster_info() -> Result<(String, Option<String>, String)> {
+/// # Errors
+/// Returns an error if KUBECONFIG cannot be read, or as [`cluster_info`].
+fn read_cluster_info() -> Result<KubeconfigCluster> {
     let raw = Kubeconfig::read().context(
         "Failed to read KUBECONFIG — ensure KUBECONFIG env var is set or ~/.kube/config exists",
     )?;
+    cluster_info(&raw)
+}
 
+/// The cluster entry of `raw`'s current context: its name, server URL and CA bundle.
+///
+/// An inline `certificate-authority-data` wins over a `certificate-authority` file.
+///
+/// # Errors
+/// Returns an error if the current context or its cluster is missing or empty, or
+/// the CA file cannot be read.
+pub(crate) fn cluster_info(raw: &Kubeconfig) -> Result<KubeconfigCluster> {
     let current_context = raw.current_context.as_deref().unwrap_or_default();
 
     let named_context = raw
@@ -2011,11 +1689,6 @@ fn read_cluster_info() -> Result<(String, Option<String>, String)> {
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Cluster '{cluster_name}' has no data in KUBECONFIG"))?;
 
-    let server = cluster
-        .server
-        .clone()
-        .unwrap_or_else(|| "https://kubernetes.default.svc".to_string());
-
     // Prefer inline base64-encoded CA; fall back to reading from a file path.
     let ca_data = if let Some(ca_b64) = &cluster.certificate_authority_data {
         Some(ca_b64.clone())
@@ -2027,7 +1700,34 @@ fn read_cluster_info() -> Result<(String, Option<String>, String)> {
         None
     };
 
-    Ok((server, ca_data, cluster_name))
+    Ok(KubeconfigCluster {
+        name: cluster_name,
+        server: cluster.server.clone(),
+        ca_data_b64: ca_data,
+    })
+}
+
+/// The API server URL to write into the child cluster's kubeconfig.
+///
+/// `--server` wins; otherwise the KUBECONFIG cluster's own server URL.
+///
+/// # Errors
+/// Returns an error when there is neither: there is no in-cluster default that a
+/// child cluster could reach.
+pub(crate) fn resolve_server(
+    server_override: Option<&str>,
+    cluster: &KubeconfigCluster,
+) -> Result<String> {
+    if let Some(server) = server_override {
+        return Ok(server.to_string());
+    }
+    cluster.server.clone().ok_or_else(|| {
+        anyhow!(
+            "KUBECONFIG cluster '{}' has no server URL; pass --server <url> with an API \
+             server address reachable from the child cluster",
+            cluster.name
+        )
+    })
 }
 
 /// Build the scout Deployment manifest.

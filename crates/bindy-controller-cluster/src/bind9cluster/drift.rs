@@ -6,6 +6,7 @@
 //! This module detects when the actual managed instances don't match
 //! the desired replica counts in the cluster spec.
 
+use super::instances::desired_replicas;
 #[allow(clippy::wildcard_imports)]
 use super::types::*;
 use bindy_controller_sdk::pagination::list_all_paginated;
@@ -38,21 +39,8 @@ pub(super) async fn detect_instance_drift(
     name: &str,
 ) -> Result<bool> {
     // Get desired replica counts from spec
-    let desired_primary = cluster
-        .spec
-        .common
-        .primary
-        .as_ref()
-        .and_then(|p| p.replicas)
-        .unwrap_or(0);
-
-    let desired_secondary = cluster
-        .spec
-        .common
-        .secondary
-        .as_ref()
-        .and_then(|s| s.replicas)
-        .unwrap_or(0);
+    let desired_primary = desired_replicas(&cluster.spec.common, ServerRole::Primary);
+    let desired_secondary = desired_replicas(&cluster.spec.common, ServerRole::Secondary);
 
     // List existing managed instances
     let api: Api<Bind9Instance> = Api::namespaced(client.clone(), namespace);
@@ -81,9 +69,7 @@ pub(super) async fn detect_instance_drift(
         .count();
 
     // Drift detected if counts don't match
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let drift = actual_primary != desired_primary as usize
-        || actual_secondary != desired_secondary as usize;
+    let drift = actual_primary != desired_primary || actual_secondary != desired_secondary;
 
     if drift {
         info!(

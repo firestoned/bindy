@@ -413,3 +413,59 @@ mod notify_target_tests {
         assert!(!instance_serves_zone(&[]));
     }
 }
+
+/// The NS and glue pass writes, per nameserver, an NS record at the apex and
+/// one A / AAAA glue record per address of an in-zone nameserver.
+#[cfg(test)]
+mod glue_tests {
+    use super::super::{glue_addresses, glue_owner_name, Glue};
+    use crate::crd::NameServer;
+
+    fn nameserver(hostname: &str, ipv4: Option<&str>, ipv6: Option<&str>) -> NameServer {
+        NameServer {
+            hostname: hostname.to_string(),
+            ipv4_address: ipv4.map(str::to_string),
+            ipv6_address: ipv6.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn in_zone_nameserver_glue_is_owned_by_its_relative_name() {
+        assert_eq!(
+            glue_owner_name("ns2.example.com.", "example.com"),
+            Some("ns2")
+        );
+        assert_eq!(
+            glue_owner_name("ns2.example.com", "example.com."),
+            Some("ns2")
+        );
+        assert_eq!(
+            glue_owner_name("a.ns.example.com.", "example.com"),
+            Some("a.ns")
+        );
+    }
+
+    #[test]
+    fn out_of_zone_nameserver_needs_no_glue() {
+        assert_eq!(glue_owner_name("ns1.other.net.", "example.com"), None);
+        // A label that merely ends with the zone's name is not in the zone.
+        assert_eq!(glue_owner_name("nsexample.com.", "example.com"), None);
+        // The apex itself has no owner name below the zone.
+        assert_eq!(glue_owner_name("example.com.", "example.com"), None);
+    }
+
+    #[test]
+    fn glue_addresses_are_a_then_aaaa() {
+        let dual = nameserver("ns2.example.com.", Some("192.0.2.2"), Some("2001:db8::2"));
+        assert_eq!(
+            glue_addresses(&dual),
+            vec![Glue::V4("192.0.2.2"), Glue::V6("2001:db8::2")]
+        );
+
+        let v6 = nameserver("ns3.example.com.", None, Some("2001:db8::3"));
+        assert_eq!(glue_addresses(&v6), vec![Glue::V6("2001:db8::3")]);
+
+        let none = nameserver("ns4.example.com.", None, None);
+        assert!(glue_addresses(&none).is_empty());
+    }
+}

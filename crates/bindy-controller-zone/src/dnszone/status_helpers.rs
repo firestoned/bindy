@@ -3,8 +3,8 @@
 
 //! Status calculation and finalization helpers for DNSZone reconciliation.
 //!
-//! This module contains functions for calculating expected instance counts
-//! and determining the final Ready/Degraded status of a DNSZone.
+//! This module contains functions for determining the final Ready/Degraded
+//! status of a DNSZone.
 
 use anyhow::Result;
 use k8s_openapi::jiff::{civil, tz::TimeZone, Timestamp};
@@ -15,52 +15,12 @@ use super::types::{
     REASON_TRANSFER_PENDING,
 };
 use crate::constants::{CONDITION_STATUS_FALSE, CONDITION_STATUS_TRUE};
-use crate::crd::{DNSSECStatus, InstanceReference};
+use crate::crd::DNSSECStatus;
 use bindy_api::status_reasons::{CONDITION_TYPE_PROGRESSING, CONDITION_TYPE_READY};
 
 /// Reason on `Degraded` and `Ready` when not every expected instance has the
 /// zone configured.
 const REASON_PARTIAL_RECONCILIATION: &str = "PartialReconciliation";
-
-/// Calculate expected instance counts (primary and secondary).
-///
-/// This function filters the instance references to determine how many
-/// primary and secondary instances should be configured. Roles come from the
-/// `Bind9Instance` store, with a GET only for an instance it does not hold
-/// (ADR-0016).
-///
-/// # Arguments
-///
-/// * `client` - Kubernetes API client, for the fallback GET
-/// * `store` - The shared `Bind9Instance` reflector store
-/// * `instance_refs` - List of instance references assigned to the zone
-///
-/// # Returns
-///
-/// Tuple of `(expected_primary_count, expected_secondary_count)`
-///
-/// # Errors
-///
-/// Returns an error if an instance's role cannot be read. A failed lookup is
-/// never counted as zero expected instances: with zero expected, the final
-/// conditions could report `Ready=True` for a zone that was not configured.
-pub async fn calculate_expected_instance_counts(
-    client: &Client,
-    store: &crate::context::MultiStore<crate::crd::Bind9Instance>,
-    instance_refs: &[InstanceReference],
-) -> Result<(usize, usize)> {
-    let expected_primary_count =
-        super::primary::filter_primary_instances_cached(client, store, instance_refs)
-            .await?
-            .len();
-
-    let expected_secondary_count =
-        super::secondary::filter_secondary_instances(client, store, instance_refs)
-            .await?
-            .len();
-
-    Ok((expected_primary_count, expected_secondary_count))
-}
 
 /// Set the final zone conditions in memory (no API call).
 ///

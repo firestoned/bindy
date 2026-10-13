@@ -7,6 +7,7 @@
 //! including:
 //! - Reading an instance's role, from the reflector store or the API server
 //! - Filtering instance references to only primary instances, or by role
+//! - Partitioning a zone's instances by role in one pass ([`ZoneInstances`])
 
 use anyhow::Result;
 use kube::{Api, Client};
@@ -245,6 +246,66 @@ pub async fn filter_primary_instances_cached(
     }
 
     Ok(primary_refs)
+}
+
+/// A zone's instances, with each instance's role read once and the result
+/// kept, so a reconcile filters by role without asking again.
+///
+/// Every list keeps the order of the input references.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ZoneInstances {
+    /// Every instance whose role could be read: primaries and secondaries
+    /// interleaved in input order. An instance the API server reports as
+    /// deleted (404) is in no list.
+    pub all: Vec<crate::crd::InstanceReference>,
+    /// The instances with role=Primary, in input order.
+    pub primaries: Vec<crate::crd::InstanceReference>,
+    /// The instances with role=Secondary, in input order.
+    pub secondaries: Vec<crate::crd::InstanceReference>,
+}
+
+/// Partitions a zone's instance references by role, reading each role once.
+///
+/// Uses the same lookup as [`instance_role_cached`]: the `Bind9Instance`
+/// reflector store first (no API call), a GET for an instance the store does
+/// not hold yet. An instance the GET reports as deleted (404) is skipped with
+/// a warning; any other GET failure fails the whole partition, so a live
+/// instance never silently drops out of a zone write's target set.
+///
+/// # Arguments
+///
+/// * `client` - Kubernetes API client, for the fallback GET
+/// * `store` - The shared `Bind9Instance` reflector store
+/// * `refs` - The zone's instance references
+///
+/// # Returns
+///
+/// The live instances, all together and split into primaries and
+/// secondaries, each list in input order.
+///
+/// # Errors
+///
+/// Returns an error when the fallback GET for an uncached instance fails for
+/// any reason other than 404 Not Found.
+pub async fn partition_zone_instances(
+    client: &Client,
+    store: &crate::context::MultiStore<crate::crd::Bind9Instance>,
+    refs: Vec<crate::crd::InstanceReference>,
+) -> Result<ZoneInstances> {
+    use crate::crd::ServerRole;
+
+    let mut partition = ZoneInstances::default();
+    for instance_ref in refs {
+        let Some(role) = instance_role_cached(client, store, &instance_ref).await? else {
+            continue;
+        };
+        match role {
+            ServerRole::Primary => partition.primaries.push(instance_ref.clone()),
+            ServerRole::Secondary => partition.secondaries.push(instance_ref.clone()),
+        }
+        partition.all.push(instance_ref);
+    }
+    Ok(partition)
 }
 
 #[cfg(test)]

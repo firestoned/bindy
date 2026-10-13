@@ -99,7 +99,7 @@ pub(super) async fn reconcile_pod_disruption_budgets(
     let name = cluster.name_any();
     let pdb_api: Api<PodDisruptionBudget> = Api::namespaced(client.clone(), &namespace);
 
-    for role in [ServerRole::Primary, ServerRole::Secondary] {
+    for &role in ServerRole::ALL {
         let pdb = build_pod_disruption_budget(&name, &namespace, role, Some(cluster))?;
         let pdb_name = pdb.name_any();
 

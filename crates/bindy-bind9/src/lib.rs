@@ -42,3 +42,5 @@ pub mod safe_volume;
 mod bind9_acl_tests;
 #[cfg(test)]
 mod bind9_resources_tests;
+#[cfg(test)]
+mod rendered_config_tests;

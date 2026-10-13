@@ -15,13 +15,14 @@ use tracing::{debug, info};
 use super::transfer_peers::{
     mark_no_transfer_source, mark_peer_refresh_failed, mark_secondaries_not_loaded, PeerPushResult,
 };
-use crate::crd::{DNSZone, InstanceReference};
+use crate::crd::DNSZone;
 use bindy_api::constants::CONDITION_STATUS_FALSE;
 use bindy_api::status_reasons::CONDITION_TYPE_PROGRESSING;
+use bindy_bind9::primary::ZoneInstances;
 
 /// Failure reason when the zone could not be configured on its primaries
 /// (or its primaries could not be found).
-const REASON_PRIMARY_FAILED: &str = "PrimaryFailed";
+pub(crate) const REASON_PRIMARY_FAILED: &str = "PrimaryFailed";
 
 /// Configure zone on all BIND9 instances (primary and secondary).
 ///
@@ -42,7 +43,7 @@ const REASON_PRIMARY_FAILED: &str = "PrimaryFailed";
 /// * `ctx` - Application context with Kubernetes client
 /// * `dnszone` - The DNSZone resource being reconciled
 /// * `status_updater` - Status updater for condition updates
-/// * `instance_refs` - All instance references assigned to the zone
+/// * `instances` - The zone's instances by role, read once per reconcile
 ///
 /// # Returns
 ///
@@ -55,17 +56,16 @@ const REASON_PRIMARY_FAILED: &str = "PrimaryFailed";
 /// Returns an error if:
 /// - No primary instance is assigned (cannot configure secondary zones)
 /// - Primary configuration fails completely
-/// - Kubernetes API operations fail
+/// - The status cannot be written on a failure path
 ///
 /// Note: Secondary configuration failure is non-fatal and reported through
 /// `Degraded`. On every fatal error path the Ready condition is set to False
 /// and the Progressing condition is resolved before the error is returned.
-#[allow(clippy::too_many_lines)]
 pub async fn configure_zone_on_instances(
     ctx: Arc<crate::context::Context>,
     dnszone: &DNSZone,
     status_updater: &mut bindy_controller_sdk::status::DNSZoneStatusUpdater,
-    instance_refs: &[InstanceReference],
+    instances: &ZoneInstances,
 ) -> Result<(
     super::types::ZoneConfigOutcome,
     super::types::ZoneConfigOutcome,
@@ -81,24 +81,11 @@ pub async fn configure_zone_on_instances(
 
     // The peers the zone should carry now, from the Pod store (ADR-0019).
     let super::transfer_peers::ZonePeers {
-        primary_refs,
-        secondary_refs,
         peers,
         notify_missing,
-    } = match super::transfer_peers::zone_transfer_peers(&ctx, instance_refs).await {
-        Ok(found) => found,
-        Err(e) => {
-            set_failure_conditions(
-                status_updater,
-                REASON_PRIMARY_FAILED,
-                &format!("Failed to find the zone's instances: {e}"),
-            );
-            status_updater.apply(&client).await?;
-            return Err(e);
-        }
-    };
+    } = super::transfer_peers::zone_transfer_peers(&ctx, instances).await;
 
-    if primary_refs.is_empty() {
+    if instances.primaries.is_empty() {
         let message = "No primary servers found - cannot configure secondary zones";
         set_failure_conditions(status_updater, REASON_PRIMARY_FAILED, message);
         status_updater.apply(&client).await?;
@@ -146,7 +133,7 @@ pub async fn configure_zone_on_instances(
         ctx.clone(),
         dnszone.clone(),
         status_updater,
-        instance_refs,
+        instances,
         &peers,
     )
     .await
@@ -182,7 +169,7 @@ pub async fn configure_zone_on_instances(
         push.primary_failures = super::transfer_peers::refresh_primary_peers(
             &ctx,
             &spec.zone_name,
-            &primary_refs,
+            &instances.primaries,
             &peers,
             &resolver,
         )
@@ -195,7 +182,7 @@ pub async fn configure_zone_on_instances(
         "Configuring zone on secondary servers",
     );
 
-    let secondary_outcome = if secondary_refs.is_empty() {
+    let secondary_outcome = if instances.secondaries.is_empty() {
         super::types::ZoneConfigOutcome::default()
     } else if peers.primaries.is_empty() {
         // Every primary pod is still loading its zones (or none runs): the
@@ -210,7 +197,7 @@ pub async fn configure_zone_on_instances(
             dnszone.clone(),
             &peers.primaries,
             status_updater,
-            instance_refs,
+            &instances.secondaries,
             changes.primaries_changed,
         )
         .await

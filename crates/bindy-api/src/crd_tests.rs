@@ -1410,3 +1410,172 @@ mod instance_reference_hash_tests {
         assert_eq!(set.len(), 1);
     }
 }
+
+/// Role accessors on `Bind9ClusterCommonSpec`: one call replaces the
+/// `match role { Primary => common.primary..., Secondary => common.secondary... }`
+/// pattern repeated across the controller crates.
+#[cfg(test)]
+mod role_accessor_tests {
+    use crate::crd::{Bind9ClusterCommonSpec, ServerRole};
+    use crate::labels::{ROLE_PRIMARY, ROLE_SECONDARY};
+    use serde_json::json;
+
+    /// A common spec whose primary and secondary blocks set every per-role
+    /// field to a distinct value, so a swapped arm fails the assertion.
+    fn full_spec() -> Bind9ClusterCommonSpec {
+        serde_json::from_value(json!({
+            "primary": {
+                "replicas": 3,
+                "labels": {"tier": "p"},
+                "service": {"annotations": {"svc": "p"}},
+                "placement": {"spread": [{"topologyKey": "zone-p"}]},
+                "allowTransfer": ["10.0.0.0/8"],
+                "rndcKey": {"autoRotate": true, "rotateAfter": "1h"},
+            },
+            "secondary": {
+                "replicas": 5,
+                "labels": {"tier": "s"},
+                "service": {"annotations": {"svc": "s"}},
+                "placement": {"spread": [{"topologyKey": "zone-s"}]},
+                "allowTransfer": ["192.168.0.0/16"],
+                "rndcKey": {"autoRotate": false, "rotateAfter": "2h"},
+            },
+        }))
+        .expect("valid Bind9ClusterCommonSpec fixture")
+    }
+
+    /// A common spec with neither role block.
+    fn empty_spec() -> Bind9ClusterCommonSpec {
+        serde_json::from_value(json!({})).expect("valid empty Bind9ClusterCommonSpec")
+    }
+
+    #[test]
+    fn as_str_is_the_role_label_value() {
+        assert_eq!(ServerRole::Primary.as_str(), ROLE_PRIMARY);
+        assert_eq!(ServerRole::Secondary.as_str(), ROLE_SECONDARY);
+    }
+
+    #[test]
+    fn all_lists_every_role_once_primary_first() {
+        assert_eq!(
+            ServerRole::ALL,
+            &[ServerRole::Primary, ServerRole::Secondary]
+        );
+    }
+
+    #[test]
+    fn role_replicas_reads_the_matching_block() {
+        let spec = full_spec();
+        assert_eq!(spec.role_replicas(ServerRole::Primary), Some(3));
+        assert_eq!(spec.role_replicas(ServerRole::Secondary), Some(5));
+    }
+
+    #[test]
+    fn role_labels_reads_the_matching_block() {
+        let spec = full_spec();
+        let p = spec
+            .role_labels(ServerRole::Primary)
+            .expect("primary labels");
+        let s = spec
+            .role_labels(ServerRole::Secondary)
+            .expect("secondary labels");
+        assert_eq!(p.get("tier").map(String::as_str), Some("p"));
+        assert_eq!(s.get("tier").map(String::as_str), Some("s"));
+    }
+
+    #[test]
+    fn role_service_reads_the_matching_block() {
+        let spec = full_spec();
+        let annotation = |role| {
+            spec.role_service(role)
+                .and_then(|svc| svc.annotations.as_ref())
+                .and_then(|a| a.get("svc").cloned())
+        };
+        assert_eq!(annotation(ServerRole::Primary).as_deref(), Some("p"));
+        assert_eq!(annotation(ServerRole::Secondary).as_deref(), Some("s"));
+    }
+
+    #[test]
+    fn role_placement_reads_the_matching_block() {
+        let spec = full_spec();
+        let key = |role| {
+            spec.role_placement(role)
+                .and_then(|p| p.spread.as_ref())
+                .and_then(|rules| rules.first())
+                .map(|rule| rule.topology_key.clone())
+        };
+        assert_eq!(key(ServerRole::Primary).as_deref(), Some("zone-p"));
+        assert_eq!(key(ServerRole::Secondary).as_deref(), Some("zone-s"));
+    }
+
+    #[test]
+    fn role_allow_transfer_reads_the_matching_block() {
+        let spec = full_spec();
+        assert_eq!(
+            spec.role_allow_transfer(ServerRole::Primary),
+            Some(&vec!["10.0.0.0/8".to_string()])
+        );
+        assert_eq!(
+            spec.role_allow_transfer(ServerRole::Secondary),
+            Some(&vec!["192.168.0.0/16".to_string()])
+        );
+    }
+
+    #[test]
+    fn role_rndc_key_reads_the_matching_block() {
+        let spec = full_spec();
+        let p = spec
+            .role_rndc_key(ServerRole::Primary)
+            .expect("primary key");
+        let s = spec
+            .role_rndc_key(ServerRole::Secondary)
+            .expect("secondary key");
+        assert!(p.auto_rotate);
+        assert_eq!(p.rotate_after, "1h");
+        assert!(!s.auto_rotate);
+        assert_eq!(s.rotate_after, "2h");
+    }
+
+    #[test]
+    fn every_accessor_is_none_when_the_role_block_is_absent() {
+        let spec = empty_spec();
+        for &role in ServerRole::ALL {
+            assert_eq!(spec.role_replicas(role), None, "{role:?} replicas");
+            assert!(spec.role_labels(role).is_none(), "{role:?} labels");
+            assert!(spec.role_service(role).is_none(), "{role:?} service");
+            assert!(spec.role_placement(role).is_none(), "{role:?} placement");
+            assert!(
+                spec.role_allow_transfer(role).is_none(),
+                "{role:?} allow_transfer"
+            );
+            assert!(spec.role_rndc_key(role).is_none(), "{role:?} rndc_key");
+        }
+    }
+
+    #[test]
+    fn every_accessor_is_none_when_the_field_is_unset_in_a_present_block() {
+        let spec: Bind9ClusterCommonSpec =
+            serde_json::from_value(json!({"primary": {}, "secondary": {}}))
+                .expect("valid spec with empty role blocks");
+        for &role in ServerRole::ALL {
+            assert_eq!(spec.role_replicas(role), None, "{role:?} replicas");
+            assert!(spec.role_labels(role).is_none(), "{role:?} labels");
+            assert!(spec.role_service(role).is_none(), "{role:?} service");
+            assert!(spec.role_placement(role).is_none(), "{role:?} placement");
+            assert!(
+                spec.role_allow_transfer(role).is_none(),
+                "{role:?} allow_transfer"
+            );
+            assert!(spec.role_rndc_key(role).is_none(), "{role:?} rndc_key");
+        }
+    }
+
+    #[test]
+    fn one_role_block_does_not_leak_into_the_other() {
+        let spec: Bind9ClusterCommonSpec =
+            serde_json::from_value(json!({"primary": {"replicas": 2}}))
+                .expect("valid spec with only a primary block");
+        assert_eq!(spec.role_replicas(ServerRole::Primary), Some(2));
+        assert_eq!(spec.role_replicas(ServerRole::Secondary), None);
+    }
+}
