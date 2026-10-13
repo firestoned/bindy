@@ -27,9 +27,14 @@ mod tests {
         assert!(selector.matches(&labels));
     }
 
+    /// Discovery maps a `status.records[].kind` to the RRset type it deletes
+    /// through `DNSRecordKind::try_from(kind)?.to_hickory_record_type()`.
+    fn hickory_type_of(kind: &str) -> anyhow::Result<hickory_proto::rr::RecordType> {
+        Ok(crate::crd::DNSRecordKind::try_from(kind)?.to_hickory_record_type())
+    }
+
     #[test]
-    fn test_hickory_record_type_for_kind_maps_all_kinds() {
-        use super::super::hickory_record_type_for_kind;
+    fn test_record_kind_maps_to_hickory_type_for_all_kinds() {
         use hickory_proto::rr::RecordType;
 
         let expected = [
@@ -46,7 +51,7 @@ mod tests {
 
         for (kind, record_type) in expected {
             assert_eq!(
-                hickory_record_type_for_kind(kind).expect("known kind must map"),
+                hickory_type_of(kind).expect("known kind must map"),
                 record_type,
                 "kind {kind} must map to {record_type}"
             );
@@ -54,11 +59,9 @@ mod tests {
     }
 
     #[test]
-    fn test_hickory_record_type_for_kind_rejects_unknown_kind() {
-        use super::super::hickory_record_type_for_kind;
-
-        assert!(hickory_record_type_for_kind("UnknownRecord").is_err());
-        assert!(hickory_record_type_for_kind("").is_err());
+    fn test_record_kind_to_hickory_type_rejects_unknown_kind() {
+        assert!(hickory_type_of("UnknownRecord").is_err());
+        assert!(hickory_type_of("").is_err());
     }
 
     // ========================================================================

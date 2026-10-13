@@ -238,6 +238,7 @@ pub struct StaleRecordCleanup {
 /// * `dnszone` - The DNSZone resource being reconciled
 /// * `status_updater` - Status updater for modifying zone status
 /// * `stores` - The shared reflector stores
+/// * `primary_refs` - The zone's primary instances, queried and cleaned
 ///
 /// # Returns
 ///
@@ -252,6 +253,7 @@ pub async fn cleanup_stale_records(
     dnszone: &DNSZone,
     status_updater: &mut bindy_controller_sdk::status::DNSZoneStatusUpdater,
     stores: &crate::context::Stores,
+    primary_refs: &[crate::crd::InstanceReference],
 ) -> Result<StaleRecordCleanup> {
     use crate::bind9::records::query_dns_record;
     use crate::crd::{DNSRecordKind, RecordReferenceWithTimestamp};
@@ -298,15 +300,6 @@ pub async fn cleanup_stale_records(
         existing.insert(key, names);
     }
 
-    // Get instances to query DNS and delete if needed
-    let instance_refs =
-        super::validation::get_instances_from_zone(dnszone, &stores.bind9_instances)?;
-    let primary_refs = bindy_bind9::primary::filter_primary_instances_cached(
-        client,
-        &stores.bind9_instances,
-        &instance_refs,
-    )
-    .await?;
     let resolver = bindy_bind9::instances::InstanceResolver::for_kube(client, stores);
 
     let mut records_to_keep: Vec<RecordReferenceWithTimestamp> = Vec::new();
@@ -382,7 +375,7 @@ pub async fn cleanup_stale_records(
         // Query and potentially delete from each primary instance
         let lookup = super::helpers::for_each_instance_endpoint(
             &resolver,
-            &primary_refs,
+            primary_refs,
             true,      // with_rndc_key (needed for deletion)
             "dns-tcp", // Use DNS TCP port for queries and updates
             |pod_endpoint, _instance_name, rndc_key| {

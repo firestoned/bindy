@@ -197,7 +197,7 @@ mod tests {
         };
 
         // When: Resolve full RNDC config
-        let resolved = resources::resolve_full_rndc_config(&instance, None, None);
+        let resolved = resources::resolve_full_rndc_config(&instance, None);
 
         // Then: Should use instance-level config
         assert!(resolved.auto_rotate);
@@ -234,7 +234,7 @@ mod tests {
         };
 
         // When: Resolve full RNDC config
-        let resolved = resources::resolve_full_rndc_config(&instance, None, None);
+        let resolved = resources::resolve_full_rndc_config(&instance, None);
 
         // Then: Should use default config
         assert!(!resolved.auto_rotate); // Default is false

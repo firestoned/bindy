@@ -1695,7 +1695,7 @@ mod tests {
 
         fn assert_agree(inst: &Bind9Instance, cluster: Option<&Bind9Cluster>) {
             let name = inst.metadata.name.clone().expect("name");
-            let rndc = resolve_full_rndc_config(inst, cluster, None);
+            let rndc = resolve_full_rndc_config(inst, cluster);
             let names = drift_child_names(&name, inst, &rndc);
 
             if let Some(cm) =
@@ -1736,7 +1736,7 @@ mod tests {
             let c = cluster();
             let inst = instance("hand-made", "prod", false);
             assert_agree(&inst, Some(&c));
-            let rndc = resolve_full_rndc_config(&inst, Some(&c), None);
+            let rndc = resolve_full_rndc_config(&inst, Some(&c));
             assert_eq!(
                 drift_child_names("hand-made", &inst, &rndc).configmap,
                 "prod-config"

@@ -4856,3 +4856,83 @@ mod shared_names_tests {
         );
     }
 }
+
+/// The cluster and instance ConfigMap builders render through one shared
+/// options builder and one shared ConfigMap body. An instance that adds
+/// nothing of its own (no `spec.config`, no `configMapRefs`, no role
+/// `allowTransfer`) must render byte-for-byte the files its cluster renders.
+#[cfg(test)]
+mod cluster_instance_config_parity_tests {
+    use crate::bind9_resources::{build_cluster_configmap, build_configmap};
+    use crate::crd::{Bind9Cluster, Bind9Instance};
+    use serde_json::{json, Value};
+
+    fn cluster(global: Value) -> Bind9Cluster {
+        serde_json::from_value(json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "Bind9Cluster",
+            "metadata": { "name": "parity", "namespace": "dns", "uid": "cluster-uid" },
+            "spec": { "global": global },
+        }))
+        .expect("test Bind9Cluster must deserialize")
+    }
+
+    fn silent_instance() -> Bind9Instance {
+        serde_json::from_value(json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "Bind9Instance",
+            "metadata": { "name": "parity-0", "namespace": "dns", "uid": "instance-uid" },
+            "spec": { "clusterRef": "parity", "role": "primary" },
+        }))
+        .expect("test Bind9Instance must deserialize")
+    }
+
+    fn globals() -> Vec<Value> {
+        vec![
+            json!({}),
+            json!({
+                "recursion": true,
+                "allowQuery": ["10.0.0.0/8", "any"],
+                "allowTransfer": ["192.0.2.1"],
+                "forwarders": ["9.9.9.9", "2001:db8::1"],
+                "listenOn": ["10.1.1.1"],
+                "listenOnV6": ["::1"],
+                "rateLimit": { "responsesPerSecond": 0 },
+                "dnssec": { "validation": false },
+            }),
+            json!({
+                "allowTransfer": [],
+                "rateLimit": { "responsesPerSecond": 40 },
+                "dnssec": {
+                    "validation": true,
+                    "signing": { "enabled": true, "policy": "corp", "nsec3": true },
+                },
+            }),
+        ]
+    }
+
+    #[test]
+    fn a_silent_instance_renders_its_clusters_files() {
+        for global in globals() {
+            let cluster = cluster(global.clone());
+            let instance = silent_instance();
+
+            let cluster_cm = build_cluster_configmap("parity", "dns", &cluster).unwrap();
+            let instance_cm =
+                build_configmap("parity-0", "dns", &instance, Some(&cluster), None).unwrap();
+
+            let cluster_data = cluster_cm.data.unwrap();
+            let instance_data = instance_cm.data.unwrap();
+            assert_eq!(
+                cluster_data, instance_data,
+                "instance and cluster ConfigMaps diverge for global {global}"
+            );
+            for (file, body) in &cluster_data {
+                assert!(
+                    !body.contains("{{"),
+                    "{file} keeps a template placeholder for global {global}: {body}"
+                );
+            }
+        }
+    }
+}

@@ -9,10 +9,10 @@
 //! zones, and report what could not be pushed.
 
 use crate::crd::{InstanceReference, ZoneTransferPeers};
-use anyhow::Result;
 use bindy_bind9::bind9::zone_ops::PeerUpdate;
 use bindy_bind9::instances::InstanceResolver;
 use bindy_bind9::peers::{desired_transfer_peers, service_cluster_ip};
+use bindy_bind9::primary::ZoneInstances;
 use k8s_openapi::api::core::v1::Service;
 use kube::{Api, Client};
 use std::sync::Arc;
@@ -196,61 +196,41 @@ pub async fn secondary_notify_targets(
     (targets, missing)
 }
 
-/// A zone's instances by role, the peers it should carry now, and the
-/// secondaries that have no NOTIFY target yet.
+/// The peers a zone should carry now, and the secondaries that have no
+/// NOTIFY target yet.
 #[derive(Debug, Clone)]
 pub struct ZonePeers {
-    /// The zone's primary instances
-    pub primary_refs: Vec<InstanceReference>,
-    /// The zone's secondary instances
-    pub secondary_refs: Vec<InstanceReference>,
     /// The peers to carry ([`desired_transfer_peers`])
     pub peers: ZoneTransferPeers,
     /// Secondary instances without a NOTIFY target ([`secondary_notify_targets`])
     pub notify_missing: Vec<String>,
 }
 
-/// The zone's primary and secondary instances and the peers it should carry
-/// now (ADR-0019 decision 1).
+/// The peers the zone should carry now, from its instances already split by
+/// role (ADR-0019 decision 1).
 ///
 /// # Arguments
-/// * `ctx` - Controller context (instance and Pod stores, client)
-/// * `instance_refs` - Every instance the zone selects
+/// * `ctx` - Controller context (Pod store, client)
+/// * `instances` - The zone's instances by role
 ///
 /// # Returns
 /// The zone's [`ZonePeers`].
-///
-/// # Errors
-/// Returns an error if an instance's role cannot be read.
 pub async fn zone_transfer_peers(
     ctx: &crate::context::Context,
-    instance_refs: &[InstanceReference],
-) -> Result<ZonePeers> {
-    let primary_refs = bindy_bind9::primary::filter_primary_instances_cached(
-        &ctx.client,
-        &ctx.stores.bind9_instances,
-        instance_refs,
-    )
-    .await?;
-    let secondary_refs = super::secondary::filter_secondary_instances(
-        &ctx.client,
-        &ctx.stores.bind9_instances,
-        instance_refs,
-    )
-    .await?;
-    let (notify, notify_missing) = secondary_notify_targets(&ctx.client, &secondary_refs).await;
+    instances: &ZoneInstances,
+) -> ZonePeers {
+    let (notify, notify_missing) =
+        secondary_notify_targets(&ctx.client, &instances.secondaries).await;
     let peers = desired_transfer_peers(
         &ctx.stores.bind9_pods.state(),
-        &primary_refs,
-        &secondary_refs,
+        &instances.primaries,
+        &instances.secondaries,
         notify,
     );
-    Ok(ZonePeers {
-        primary_refs,
-        secondary_refs,
+    ZonePeers {
         peers,
         notify_missing,
-    })
+    }
 }
 
 /// Rewrite `allow-transfer` / `also-notify` on every primary endpoint that

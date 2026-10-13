@@ -251,7 +251,7 @@ crates/
 │       reconcile.rs, error.rs, requeue.rs, retry.rs, status.rs, pagination.rs, resources.rs,
 │       rate_limit.rs, namespace_scope.rs, metrics.rs  (+ *_tests.rs siblings)
 ├── bindy-bind9/                 ← BIND9 domain logic, no controllers, no kube::runtime
-│   └── src/ bind9/ (mod.rs, rndc.rs, zone_ops.rs, records/, ...), bind9_resources.rs,
+│   └── src/ bind9/ (mod.rs, rndc.rs, zone_ops.rs, records/, ...), bind9_resources/,
 │       placement.rs, instances.rs, primary.rs, record_push.rs, context.rs (StoresBind9Ext), ...
 ├── bindy-controller-cluster/    ← Bind9Cluster + ClusterBind9Provider (bind9cluster/, watch.rs)
 ├── bindy-controller-instance/   ← Bind9Instance (bind9instance/, watch.rs)

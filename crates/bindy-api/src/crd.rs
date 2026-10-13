@@ -3500,6 +3500,113 @@ pub struct Bind9ClusterCommonSpec {
     pub volume_mounts: Option<Vec<VolumeMount>>,
 }
 
+/// Reads one field of the role block (`primary` or `secondary`) that `role`
+/// selects. `PrimaryConfig` and `SecondaryConfig` are distinct types with the
+/// same field names, so a macro (not a shared trait) keeps the two arms in one
+/// place and the schema types untouched.
+macro_rules! role_field {
+    ($common:expr, $role:expr, $field:ident) => {
+        match $role {
+            ServerRole::Primary => $common
+                .primary
+                .as_ref()
+                .and_then(|config| config.$field.as_ref()),
+            ServerRole::Secondary => $common
+                .secondary
+                .as_ref()
+                .and_then(|config| config.$field.as_ref()),
+        }
+    };
+}
+
+/// Per-role accessors. Each one replaces a
+/// `match role { Primary => common.primary..., Secondary => common.secondary... }`
+/// at the call site, and returns `None` both when the role block is absent and
+/// when the block does not set the field.
+impl Bind9ClusterCommonSpec {
+    /// The `replicas` count of the role block `role` selects.
+    ///
+    /// # Arguments
+    /// * `role` - Selects `spec.primary` or `spec.secondary`
+    ///
+    /// # Returns
+    /// The configured replica count, or `None` when the role block or its
+    /// `replicas` field is absent.
+    #[must_use]
+    pub fn role_replicas(&self, role: ServerRole) -> Option<i32> {
+        role_field!(self, role, replicas).copied()
+    }
+
+    /// The custom `labels` of the role block `role` selects.
+    ///
+    /// # Arguments
+    /// * `role` - Selects `spec.primary` or `spec.secondary`
+    ///
+    /// # Returns
+    /// The labels to propagate to that role's instances, or `None` when the
+    /// role block or its `labels` field is absent.
+    #[must_use]
+    pub fn role_labels(&self, role: ServerRole) -> Option<&BTreeMap<String, String>> {
+        role_field!(self, role, labels)
+    }
+
+    /// The `service` configuration of the role block `role` selects.
+    ///
+    /// # Arguments
+    /// * `role` - Selects `spec.primary` or `spec.secondary`
+    ///
+    /// # Returns
+    /// The role's Service customisation, or `None` when the role block or
+    /// its `service` field is absent.
+    #[must_use]
+    pub fn role_service(&self, role: ServerRole) -> Option<&ServiceConfig> {
+        role_field!(self, role, service)
+    }
+
+    /// The `placement` configuration of the role block `role` selects.
+    ///
+    /// # Arguments
+    /// * `role` - Selects `spec.primary` or `spec.secondary`
+    ///
+    /// # Returns
+    /// The role-level placement, or `None` when the role block or its
+    /// `placement` field is absent.
+    #[must_use]
+    pub fn role_placement(&self, role: ServerRole) -> Option<&PlacementConfig> {
+        role_field!(self, role, placement)
+    }
+
+    /// The `allowTransfer` ACL of the role block `role` selects.
+    ///
+    /// Returned as `&Vec<String>` (not a slice) to match the
+    /// `role_allow_transfer: Option<&Vec<String>>` parameter the ConfigMap
+    /// builders already take.
+    ///
+    /// # Arguments
+    /// * `role` - Selects `spec.primary` or `spec.secondary`
+    ///
+    /// # Returns
+    /// The role's allow-transfer address list, or `None` when the role block
+    /// or its `allowTransfer` field is absent.
+    #[must_use]
+    pub fn role_allow_transfer(&self, role: ServerRole) -> Option<&Vec<String>> {
+        role_field!(self, role, allow_transfer)
+    }
+
+    /// The `rndcKey` configuration of the role block `role` selects.
+    ///
+    /// # Arguments
+    /// * `role` - Selects `spec.primary` or `spec.secondary`
+    ///
+    /// # Returns
+    /// The role-level RNDC key configuration, or `None` when the role block
+    /// or its `rndcKey` field is absent.
+    #[must_use]
+    pub fn role_rndc_key(&self, role: ServerRole) -> Option<&RndcKeyConfig> {
+        role_field!(self, role, rndc_key)
+    }
+}
+
 /// `Bind9Cluster` - Namespace-scoped DNS cluster for tenant-managed infrastructure.
 ///
 /// A namespace-scoped cluster allows development teams to run their own isolated BIND9
@@ -3664,10 +3771,17 @@ pub enum ServerRole {
 }
 
 impl ServerRole {
+    /// Every role, primary first: iterate it to apply one per-role step to
+    /// both role blocks (e.g. validating `spec.primary.placement` and
+    /// `spec.secondary.placement`).
+    pub const ALL: &'static [Self] = &[Self::Primary, Self::Secondary];
+
     /// Convert `ServerRole` to its string representation.
     ///
     /// Returns the lowercase zone type string used in BIND9 configuration
-    /// and bindcar API calls.
+    /// and bindcar API calls. These are also exactly the values of the
+    /// `bindy.firestoned.io/role` label (`labels::ROLE_PRIMARY` and
+    /// `labels::ROLE_SECONDARY`), so this is the role-to-label mapping too.
     ///
     /// # Returns
     /// * `"primary"` for `ServerRole::Primary`

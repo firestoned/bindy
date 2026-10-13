@@ -473,7 +473,7 @@ let owner_ref = OwnerReference {
 
 #### 3. Bind9Instance → Kubernetes Resources
 
-**Location:** [`crates/bindy-bind9/src/bind9_resources.rs:188-197`](https://github.com/firestoned/bindy/blob/main/crates/bindy-bind9/src/bind9_resources.rs)
+**Location:** [`crates/bindy-bind9/src/bind9_resources/`](https://github.com/firestoned/bindy/blob/main/crates/bindy-bind9/src/bind9_resources/)
 
 ```rust
 pub fn build_owner_references(instance: &Bind9Instance) -> Vec<OwnerReference> {

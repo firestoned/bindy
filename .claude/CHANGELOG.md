@@ -1,3 +1,49 @@
+## [2026-10-13 18:00] - Zone, instance, cluster, bind9 and bootstrap restructuring
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/bindy-api/src/crd.rs`: role accessors on `Bind9ClusterCommonSpec` (`role_replicas`, `role_labels`, `role_service`, `role_placement`, `role_allow_transfer`, `role_rndc_key`) and `ServerRole::ALL`. One call replaces the `match role { Primary => .., Secondary => .. }` that was repeated across four crates. No schema change: the generated CRDs are byte-identical.
+- `crates/bindy-bind9/src/primary.rs`: `ZoneInstances` and `partition_zone_instances` read each instance's role once.
+
+### Changed
+- `crates/bindy-controller-zone` (non-test −426 lines):
+  - The zone's instances are partitioned once per reconcile and passed down, replacing about 6 role filters per reconcile. Deleted: `secondary.rs`, `calculate_expected_instance_counts` and the `primary_refs_cache` plumbing.
+  - The delete loop is written once and run per role.
+  - NS and glue records are written in one endpoint pass per nameserver (`Glue`, `glue_owner_name`).
+  - The `DiscoverableRecord` trait and its 9 impls are replaced by the SDK's `RecordKind` (new `spec_name()`).
+  - `hickory_record_type_for_kind` is replaced by `DNSRecordKind::to_hickory_record_type`.
+  - The nameserver map is one `match`.
+- `crates/bindy-bind9/src/bind9_resources.rs` (3,260 lines) is split into `bind9_resources/{named_conf,configmap,dnssec,meta,pod,sidecar,service}.rs`, with every public path re-exported.
+  - New shared builders: `restricted_security_context`, `env`/`secret_env`, `configmap_volume`, and probe timing.
+  - The cluster and instance `named.conf`/options builders are collapsed into one each. The new parity test `a_silent_instance_renders_its_clusters_files` pins identical output.
+  - The precedence chains use one `pick`. `placement.rs` uses the role accessors.
+- `crates/bindy-controller-cluster`, `crates/bindy-controller-instance`:
+  - The role accessors are used everywhere.
+  - One `scale_role` serves both roles; scale-up now creates in ascending index order (the same instances as before).
+  - One `desired_managed_spec`.
+  - The RNDC config resolution lost its dead parameters, and the default is defined once.
+  - 17 new tests (`bind9cluster/instances_tests.rs`).
+- `crates/bindy-bootstrap` (`bootstrap.rs` 2,208 to 1,908 lines):
+  - One generic `apply<K>` replaces 18 `apply_*` functions.
+  - One object list per command drives both `--dry-run` and apply. The `--dry-run` output is byte-identical (pinned).
+  - New RBAC builder helpers. `rbac_drift` passes.
+- Rustdoc: four public doc links to private items are fixed (one in bindy-controller-sdk, three in bindy-bootstrap); `cargo doc --workspace -D warnings` is clean.
+
+### Fixed
+- `bindy bootstrap mc`: a KUBECONFIG cluster with no `server` URL is an error asking for `--server`. Before, it silently became `https://kubernetes.default.svc`, which a child cluster cannot reach.
+- `bindy bootstrap`: a CRD with no `spec.versions` is an error instead of a silent no-op.
+- DNSZone NS/glue generation: a glue failure no longer aborts the remaining nameservers.
+
+### Why
+This continues the simplification review. The changes replace copies that had to be kept in step by hand: role matches, per-role loops, two config builders, and 18 apply functions.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (operator binary; no CRD change)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-12 20:00] - Shared SDK helpers; every controller moved onto them
 
 **Author:** Erick Bourgeois

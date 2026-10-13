@@ -153,7 +153,7 @@ graph TB
         BM_CMD[Zone Operations<br/>HTTP API & RNDC<br/>addzone, delzone,<br/>reload, freeze,<br/>thaw, notify]
     end
 
-    subgraph "Resource Builders (crates/bindy-bind9/src/bind9_resources.rs)"
+    subgraph "Resource Builders (crates/bindy-bind9/src/bind9_resources/)"
         RB_DEP[build_deployment]
         RB_CM[build_configmap]
         RB_SVC[build_service]

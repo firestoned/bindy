@@ -64,7 +64,7 @@ use crate::crd::{
     Bind9Cluster, Bind9Instance, ClusterBind9Provider, NodeInclusionPolicy, PlacementConfig,
     ServerRole, SpreadRule, SpreadScope, WhenUnsatisfiable,
 };
-use crate::labels::{BINDY_CLUSTER_LABEL, BINDY_ROLE_LABEL, ROLE_PRIMARY, ROLE_SECONDARY};
+use crate::labels::{BINDY_CLUSTER_LABEL, BINDY_ROLE_LABEL};
 
 // ============================================================================
 // Resolved output
@@ -73,7 +73,7 @@ use crate::labels::{BINDY_CLUSTER_LABEL, BINDY_ROLE_LABEL, ROLE_PRIMARY, ROLE_SE
 /// The Pod-spec field this module produces.
 ///
 /// Built by [`build_pod_placement`] and applied onto the Deployment's Pod
-/// template by `crate::bind9_resources::build_pod_spec`.
+/// template by `build_pod_spec` in `crate::bind9_resources`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ResolvedPlacement {
     /// Generated from `placement.spread` (or the operator default).
@@ -151,25 +151,10 @@ pub fn resolve_placement<'a>(
     // 2. Role level, then 3. cluster level — checked against the namespace-
     //    scoped cluster first, then the cluster-scoped provider. An instance
     //    only ever belongs to one of the two, so at most one arm contributes.
-    let role_level = match instance.spec.role {
-        ServerRole::Primary => cluster
-            .and_then(|c| c.spec.common.primary.as_ref())
-            .and_then(|p| p.placement.as_ref())
-            .or_else(|| {
-                cluster_provider
-                    .and_then(|p| p.spec.common.primary.as_ref())
-                    .and_then(|p| p.placement.as_ref())
-            }),
-        ServerRole::Secondary => cluster
-            .and_then(|c| c.spec.common.secondary.as_ref())
-            .and_then(|s| s.placement.as_ref())
-            .or_else(|| {
-                cluster_provider
-                    .and_then(|p| p.spec.common.secondary.as_ref())
-                    .and_then(|s| s.placement.as_ref())
-            }),
-    };
-    role_level
+    let role = instance.spec.role;
+    cluster
+        .and_then(|c| c.spec.common.role_placement(role))
+        .or_else(|| cluster_provider.and_then(|p| p.spec.common.role_placement(role)))
 }
 
 // ============================================================================
@@ -355,7 +340,7 @@ fn build_selector(scope: SpreadScope, ctx: &PlacementContext<'_>) -> LabelSelect
             if let Some(cluster) = ctx.cluster_name {
                 m.insert(BINDY_CLUSTER_LABEL.to_string(), cluster.to_string());
             }
-            m.insert(BINDY_ROLE_LABEL.to_string(), role_str(ctx.role).to_string());
+            m.insert(BINDY_ROLE_LABEL.to_string(), ctx.role.as_str().to_string());
             m
         }
         // Every DNS Pod of the cluster, both roles together.
@@ -371,13 +356,6 @@ fn build_selector(scope: SpreadScope, ctx: &PlacementContext<'_>) -> LabelSelect
     LabelSelector {
         match_labels: Some(match_labels),
         ..Default::default()
-    }
-}
-
-fn role_str(role: ServerRole) -> &'static str {
-    match role {
-        ServerRole::Primary => ROLE_PRIMARY,
-        ServerRole::Secondary => ROLE_SECONDARY,
     }
 }
 

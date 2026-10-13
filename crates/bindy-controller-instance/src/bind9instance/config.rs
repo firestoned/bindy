@@ -6,26 +6,41 @@
 //! Resolves RNDC key configuration from multiple sources following the precedence order:
 //! 1. Instance level (`Bind9InstanceSpec.rndc_key`)
 //! 2. Role level (`PrimaryConfig.rndc_key` or `SecondaryConfig.rndc_key`)
-//! 3. Global level (`Bind9Config.rndc_secret_ref` - deprecated)
+//! 3. Deprecated instance-level `rndc_secret_ref` (backward compatibility)
 //! 4. Default (auto-generated with defaults from constants)
 
 use crate::constants::DEFAULT_ROTATION_INTERVAL;
-use crate::crd::{RndcAlgorithm, RndcKeyConfig, RndcSecretRef, ServerRole};
+use crate::crd::{RndcAlgorithm, RndcKeyConfig, RndcSecretRef};
 
-/// Resolve RNDC configuration from multiple sources following precedence order.
+/// The RNDC configuration used when nothing is configured: an
+/// operator-generated key with no rotation.
+#[must_use]
+pub fn default_rndc_config() -> RndcKeyConfig {
+    RndcKeyConfig {
+        auto_rotate: false,
+        rotate_after: DEFAULT_ROTATION_INTERVAL.to_string(),
+        secret_ref: None,
+        secret: None,
+        algorithm: RndcAlgorithm::default(),
+    }
+}
+
+/// Resolve RNDC configuration from every source, following precedence order.
 ///
 /// # Precedence Order
 ///
 /// 1. **Instance level** - Highest priority (overrides all others)
 /// 2. **Role level** - Primary or Secondary role configuration
-/// 3. **Global level** - Cluster-wide configuration
-/// 4. **Default** - Auto-generated with default settings
+/// 3. **Deprecated `rndcSecretRef`** - converted to a non-rotating
+///    `RndcKeyConfig` for the user-managed secret it names
+/// 4. **Default** - [`default_rndc_config`]
 ///
 /// # Arguments
 ///
 /// * `instance_config` - Instance-level RNDC configuration (`Bind9InstanceSpec.rndc_key`)
 /// * `role_config` - Role-level RNDC configuration (`PrimaryConfig.rndc_key` or `SecondaryConfig.rndc_key`)
-/// * `global_config` - Global RNDC configuration (from `Bind9ClusterCommonSpec`)
+/// * `deprecated_secret_ref` - The deprecated `Bind9InstanceSpec.rndc_secret_ref`
+///   (backward compatibility); used only when neither new field is set
 ///
 /// # Returns
 ///
@@ -52,95 +67,22 @@ use crate::crd::{RndcAlgorithm, RndcKeyConfig, RndcSecretRef, ServerRole};
 pub fn resolve_rndc_config(
     instance_config: Option<&RndcKeyConfig>,
     role_config: Option<&RndcKeyConfig>,
-    global_config: Option<&RndcKeyConfig>,
+    deprecated_secret_ref: Option<&RndcSecretRef>,
 ) -> RndcKeyConfig {
-    // Precedence order: Instance > Role > Global > Default
-    if let Some(config) = instance_config {
+    if let Some(config) = instance_config.or(role_config) {
         return config.clone();
     }
 
-    if let Some(config) = role_config {
-        return config.clone();
-    }
-
-    if let Some(config) = global_config {
-        return config.clone();
-    }
-
-    // Default: auto-generated with no rotation
-    RndcKeyConfig {
-        auto_rotate: false,
-        rotate_after: DEFAULT_ROTATION_INTERVAL.to_string(),
-        secret_ref: None,
-        secret: None,
-        algorithm: RndcAlgorithm::default(),
-    }
-}
-
-/// Resolve RNDC configuration with backward compatibility for deprecated fields.
-///
-/// Handles migration from the deprecated `rndc_secret_ref` field to the new `rndc_keys` field.
-/// If both are present, `rndc_keys` takes precedence.
-///
-/// # Arguments
-///
-/// * `rndc_keys` - New RNDC configuration field (preferred)
-/// * `rndc_secret_ref` - Deprecated RNDC secret reference (for backward compatibility)
-/// * `role` - Server role (Primary or Secondary)
-///
-/// # Returns
-///
-/// Resolved `RndcKeyConfig`. If only the deprecated field is present, converts it to the new format.
-///
-/// # Examples
-///
-/// ```text
-/// use bindy::crd::{RndcKeyConfig, RndcSecretRef, RndcAlgorithm, ServerRole};
-/// use bindy::reconcilers::bind9instance::config::resolve_rndc_config_from_deprecated;
-///
-/// // New field takes precedence
-/// let new_config = Some(RndcKeyConfig {
-///     auto_rotate: true,
-///     rotate_after: "30d".to_string(),
-///     secret_ref: None,
-///     secret: None,
-///     algorithm: RndcAlgorithm::HmacSha256,
-/// });
-///
-/// let resolved = resolve_rndc_config_from_deprecated(new_config.as_ref(), None, ServerRole::Primary);
-/// assert!(resolved.auto_rotate);
-/// ```
-#[must_use]
-pub fn resolve_rndc_config_from_deprecated(
-    rndc_keys: Option<&RndcKeyConfig>,
-    rndc_secret_ref: Option<&RndcSecretRef>,
-    _role: ServerRole,
-) -> RndcKeyConfig {
-    // New field takes precedence
-    if let Some(config) = rndc_keys {
-        return config.clone();
-    }
-
-    // Fall back to deprecated field if present
-    if let Some(secret_ref) = rndc_secret_ref {
-        // Convert deprecated RndcSecretRef to new RndcKeyConfig
+    // Fall back to the deprecated field: a user-managed secret, never rotated
+    if let Some(secret_ref) = deprecated_secret_ref {
         return RndcKeyConfig {
-            auto_rotate: false, // No rotation for user-managed secrets
-            rotate_after: DEFAULT_ROTATION_INTERVAL.to_string(),
             secret_ref: Some(secret_ref.clone()),
-            secret: None,
             algorithm: secret_ref.algorithm.clone(),
+            ..default_rndc_config()
         };
     }
 
-    // Default: auto-generated with no rotation
-    RndcKeyConfig {
-        auto_rotate: false,
-        rotate_after: DEFAULT_ROTATION_INTERVAL.to_string(),
-        secret_ref: None,
-        secret: None,
-        algorithm: RndcAlgorithm::default(),
-    }
+    default_rndc_config()
 }
 
 #[cfg(test)]

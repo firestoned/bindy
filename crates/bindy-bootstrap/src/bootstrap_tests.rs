@@ -2577,3 +2577,500 @@ mod mc_revoke_tests {
         assert_eq!(err.to_string(), format!("Failed to delete Role/{NAME}"));
     }
 }
+
+#[cfg(test)]
+mod apply_tests {
+    use crate::bootstrap::{apply, build_service_account};
+    use k8s_openapi::api::core::v1::ServiceAccount;
+    use kube::Api;
+    use wiremock::matchers::{body_json, header, method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const NAMESPACE: &str = "bindy-system";
+    const SA_PATH: &str = "/api/v1/namespaces/bindy-system/serviceaccounts/bindy";
+    const FIELD_MANAGER: &str = "bindy-bootstrap";
+    const APPLY_PATCH_CONTENT_TYPE: &str = "application/apply-patch+yaml";
+    const HTTP_OK: u16 = 200;
+    const HTTP_INTERNAL_SERVER_ERROR: u16 = 500;
+
+    fn api_for(server: &MockServer) -> Api<ServiceAccount> {
+        let config = kube::Config::new(server.uri().parse().expect("mock server uri"));
+        let client = kube::Client::try_from(config).expect("client from mock config");
+        Api::namespaced(client, NAMESPACE)
+    }
+
+    fn applied_body() -> serde_json::Value {
+        serde_json::to_value(build_service_account(NAMESPACE)).expect("service account json")
+    }
+
+    #[tokio::test]
+    async fn server_side_applies_the_object_by_its_name_with_force() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path(SA_PATH))
+            .and(query_param("fieldManager", FIELD_MANAGER))
+            .and(query_param("force", "true"))
+            .and(header("content-type", APPLY_PATCH_CONTENT_TYPE))
+            .and(body_json(applied_body()))
+            .respond_with(ResponseTemplate::new(HTTP_OK).set_body_json(applied_body()))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        apply(
+            &api_for(&server),
+            &build_service_account(NAMESPACE),
+            FIELD_MANAGER,
+        )
+        .await
+        .expect("the object is applied");
+    }
+
+    #[tokio::test]
+    async fn a_missing_name_is_an_error_and_sends_nothing() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(HTTP_OK))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let mut sa = build_service_account(NAMESPACE);
+        sa.metadata.name = None;
+
+        let err = apply(&api_for(&server), &sa, FIELD_MANAGER)
+            .await
+            .expect_err("an object without a name cannot be applied");
+
+        assert_eq!(
+            err.to_string(),
+            "Cannot apply ServiceAccount: metadata.name is not set"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_server_error_names_the_object() {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path(SA_PATH))
+            .respond_with(
+                ResponseTemplate::new(HTTP_INTERNAL_SERVER_ERROR).set_body_json(
+                    serde_json::json!({
+                        "apiVersion": "v1",
+                        "kind": "Status",
+                        "status": "Failure",
+                        "message": "test",
+                        "reason": "InternalError",
+                        "code": HTTP_INTERNAL_SERVER_ERROR
+                    }),
+                ),
+            )
+            .mount(&server)
+            .await;
+
+        let err = apply(
+            &api_for(&server),
+            &build_service_account(NAMESPACE),
+            FIELD_MANAGER,
+        )
+        .await
+        .expect_err("a server error propagates");
+
+        assert_eq!(err.to_string(), "Failed to apply ServiceAccount/bindy");
+    }
+}
+
+#[cfg(test)]
+mod plan_tests {
+    use crate::bootstrap::{
+        build_all_crds, build_cluster_role_binding, build_deployment, build_namespace,
+        build_scout_cluster_role, build_scout_cluster_role_binding, build_scout_deployment,
+        build_scout_secrets_reader_role, build_scout_secrets_reader_role_binding,
+        build_scout_service_account, build_scout_writer_role, build_scout_writer_role_binding,
+        build_secrets_writer_role, build_secrets_writer_role_binding, build_service_account,
+        build_tokenreview_cluster_role_binding, operator_steps, parse_cluster_role, render_dry_run,
+        scout_steps, ScoutDeploymentOptions, Step, OPERATOR_CLUSTER_ROLE_YAMLS,
+        OPERATOR_DRY_RUN_BANNER, SCOUT_DRY_RUN_BANNER,
+    };
+
+    const NAMESPACE: &str = "team-dns";
+    const TAG: &str = "v9.9.9";
+    const REGISTRY: &str = "my.reg.io/org";
+    const SECRET: &str = "bindy-scout-remote-kubeconfig";
+    const ZONE: &str = "example.com";
+
+    fn ips() -> Vec<String> {
+        vec!["192.0.2.10".to_string()]
+    }
+
+    fn opts<'a>(ips: &'a [String], remote_secret: Option<&'a str>) -> ScoutDeploymentOptions<'a> {
+        ScoutDeploymentOptions {
+            image_tag: TAG,
+            registry: Some(REGISTRY),
+            cluster_name: "child-1",
+            default_ips: ips,
+            default_zone: Some(ZONE),
+            remote_secret,
+        }
+    }
+
+    /// The dry-run output exactly as the pre-refactor `run_*_dry_run`
+    /// functions printed it: banner, blank line, one `---` / `# label` /
+    /// YAML block per object, footer.
+    fn expected_dry_run(banner: &str, blocks: &[(String, String)]) -> String {
+        let mut out = format!("{banner}\n\n");
+        for (label, yaml) in blocks {
+            out.push_str(&format!("---\n# {label}\n{yaml}"));
+        }
+        out.push_str("# Dry-run complete \u{2014} no resources were applied\n");
+        out
+    }
+
+    fn yaml<T: serde::Serialize>(value: &T) -> String {
+        bindy_api::yaml::to_string(value).expect("yaml")
+    }
+
+    fn crd_blocks() -> Vec<(String, String)> {
+        build_all_crds()
+            .expect("crds")
+            .iter()
+            .map(|crd| {
+                let name = crd.metadata.name.clone().expect("crd name");
+                (format!("CustomResourceDefinition/{name}"), yaml(crd))
+            })
+            .collect()
+    }
+
+    fn applied_lines(steps: &[Step]) -> Vec<String> {
+        steps.iter().map(|s| s.applied.clone()).collect()
+    }
+
+    fn crd_applied_lines() -> Vec<String> {
+        build_all_crds()
+            .expect("crds")
+            .into_iter()
+            .map(|crd| format!("✓ CRD: {}", crd.metadata.name.expect("name")))
+            .collect()
+    }
+
+    #[test]
+    fn operator_dry_run_output_is_pinned() {
+        let mut blocks = vec![("Namespace".to_string(), yaml(&build_namespace(NAMESPACE)))];
+        blocks.extend(crd_blocks());
+        blocks.push((
+            "ServiceAccount".to_string(),
+            yaml(&build_service_account(NAMESPACE)),
+        ));
+        for role_yaml in OPERATOR_CLUSTER_ROLE_YAMLS {
+            let role = parse_cluster_role(role_yaml).expect("role");
+            let name = role.metadata.name.clone().expect("role name");
+            blocks.push((format!("ClusterRole ({name})"), yaml(&role)));
+        }
+        blocks.push((
+            "ClusterRoleBinding".to_string(),
+            yaml(&build_cluster_role_binding(NAMESPACE)),
+        ));
+        blocks.push((
+            "ClusterRoleBinding (bindcar-tokenreview)".to_string(),
+            yaml(&build_tokenreview_cluster_role_binding(NAMESPACE).expect("crb")),
+        ));
+        blocks.push((
+            "Role (secrets-writer)".to_string(),
+            yaml(&build_secrets_writer_role(NAMESPACE)),
+        ));
+        blocks.push((
+            "RoleBinding (secrets-writer)".to_string(),
+            yaml(&build_secrets_writer_role_binding(NAMESPACE)),
+        ));
+        blocks.push((
+            "Deployment".to_string(),
+            yaml(&build_deployment(NAMESPACE, TAG, Some(REGISTRY)).expect("deployment")),
+        ));
+
+        let steps = operator_steps(NAMESPACE, TAG, Some(REGISTRY)).expect("steps");
+        let rendered = render_dry_run(OPERATOR_DRY_RUN_BANNER, &steps).expect("render");
+
+        assert_eq!(
+            OPERATOR_DRY_RUN_BANNER,
+            "# Dry-run mode \u{2014} no resources will be applied"
+        );
+        assert_eq!(rendered, expected_dry_run(OPERATOR_DRY_RUN_BANNER, &blocks));
+    }
+
+    fn scout_blocks(with_secret: bool) -> Vec<(String, String)> {
+        let ips = ips();
+        let opts = opts(&ips, with_secret.then_some(SECRET));
+        let mut blocks = vec![("Namespace".to_string(), yaml(&build_namespace(NAMESPACE)))];
+        blocks.extend(crd_blocks());
+        blocks.push((
+            "ServiceAccount (scout)".to_string(),
+            yaml(&build_scout_service_account(NAMESPACE)),
+        ));
+        blocks.push((
+            "ClusterRole (scout)".to_string(),
+            yaml(&build_scout_cluster_role()),
+        ));
+        blocks.push((
+            "ClusterRoleBinding (scout)".to_string(),
+            yaml(&build_scout_cluster_role_binding(NAMESPACE)),
+        ));
+        blocks.push((
+            "Role (scout-writer)".to_string(),
+            yaml(&build_scout_writer_role(NAMESPACE)),
+        ));
+        blocks.push((
+            "RoleBinding (scout-writer)".to_string(),
+            yaml(&build_scout_writer_role_binding(NAMESPACE)),
+        ));
+        if with_secret {
+            blocks.push((
+                "Role (scout-secrets-reader)".to_string(),
+                yaml(&build_scout_secrets_reader_role(NAMESPACE, SECRET)),
+            ));
+            blocks.push((
+                "RoleBinding (scout-secrets-reader)".to_string(),
+                yaml(&build_scout_secrets_reader_role_binding(NAMESPACE)),
+            ));
+        }
+        blocks.push((
+            "Deployment (scout)".to_string(),
+            yaml(&build_scout_deployment(NAMESPACE, &opts).expect("deployment")),
+        ));
+        blocks
+    }
+
+    #[test]
+    fn scout_dry_run_output_is_pinned() {
+        let ips = ips();
+        let steps = scout_steps(NAMESPACE, &opts(&ips, None)).expect("steps");
+        let rendered = render_dry_run(SCOUT_DRY_RUN_BANNER, &steps).expect("render");
+
+        assert_eq!(
+            SCOUT_DRY_RUN_BANNER,
+            "# Dry-run mode (scout) \u{2014} no resources will be applied"
+        );
+        assert_eq!(
+            rendered,
+            expected_dry_run(SCOUT_DRY_RUN_BANNER, &scout_blocks(false))
+        );
+    }
+
+    #[test]
+    fn scout_dry_run_with_remote_secret_adds_the_secrets_reader() {
+        let ips = ips();
+        let steps = scout_steps(NAMESPACE, &opts(&ips, Some(SECRET))).expect("steps");
+        let rendered = render_dry_run(SCOUT_DRY_RUN_BANNER, &steps).expect("render");
+
+        assert_eq!(
+            rendered,
+            expected_dry_run(SCOUT_DRY_RUN_BANNER, &scout_blocks(true))
+        );
+    }
+
+    #[test]
+    fn operator_applied_lines_are_pinned() {
+        let steps = operator_steps(NAMESPACE, TAG, Some(REGISTRY)).expect("steps");
+        let mut expected = vec![format!("✓ Namespace: {NAMESPACE}")];
+        expected.extend(crd_applied_lines());
+        expected.extend([
+            format!("✓ ServiceAccount: bindy (namespace: {NAMESPACE})"),
+            "✓ ClusterRole: bindy-role".to_string(),
+            "✓ ClusterRole: bindy-admin-role".to_string(),
+            "✓ ClusterRole: bindcar-tokenreview".to_string(),
+            "✓ ClusterRoleBinding: bindy-rolebinding".to_string(),
+            format!("✓ ClusterRoleBinding: bindcar-tokenreview (subject namespace: {NAMESPACE})"),
+            format!("✓ Role: bindy-secrets-writer (namespace: {NAMESPACE})"),
+            format!("✓ RoleBinding: bindy-secrets-writer (namespace: {NAMESPACE})"),
+            format!("✓ Deployment: bindy (image: {REGISTRY}/bindy:{TAG})"),
+        ]);
+
+        assert_eq!(applied_lines(&steps), expected);
+    }
+
+    #[test]
+    fn scout_applied_lines_are_pinned() {
+        let ips = ips();
+        let steps = scout_steps(NAMESPACE, &opts(&ips, Some(SECRET))).expect("steps");
+        let mut expected = vec![format!("✓ Namespace: {NAMESPACE}")];
+        expected.extend(crd_applied_lines());
+        expected.extend([
+            format!("✓ ServiceAccount: bindy-scout (namespace: {NAMESPACE})"),
+            "✓ ClusterRole: bindy-scout".to_string(),
+            "✓ ClusterRoleBinding: bindy-scout".to_string(),
+            format!("✓ Role: bindy-scout-writer (namespace: {NAMESPACE})"),
+            format!("✓ RoleBinding: bindy-scout-writer (namespace: {NAMESPACE})"),
+            format!(
+                "✓ Role: bindy-scout-secrets-reader (namespace: {NAMESPACE}, secret: {SECRET})"
+            ),
+            format!("✓ RoleBinding: bindy-scout-secrets-reader (namespace: {NAMESPACE})"),
+            format!("✓ Deployment: bindy-scout (image: {REGISTRY}/bindy:{TAG})"),
+        ]);
+
+        assert_eq!(applied_lines(&steps), expected);
+    }
+}
+
+#[cfg(test)]
+mod builder_helper_tests {
+    use crate::bootstrap::{labels, mark_storage_version, role_ref, rule, sa_subject};
+    use k8s_openapi::api::rbac::v1::{ClusterRole, Role};
+    use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::{
+        CustomResourceDefinition, CustomResourceDefinitionVersion,
+    };
+
+    #[test]
+    fn labels_carry_the_app_name_and_component() {
+        let labels = labels("scout");
+        assert_eq!(labels.len(), 2);
+        assert_eq!(labels["app.kubernetes.io/name"], "bindy");
+        assert_eq!(labels["app.kubernetes.io/component"], "scout");
+    }
+
+    #[test]
+    fn sa_subject_is_a_core_group_service_account() {
+        let subject = sa_subject("bindy", "ns");
+        assert_eq!(subject.kind, "ServiceAccount");
+        assert_eq!(subject.name, "bindy");
+        assert_eq!(subject.namespace.as_deref(), Some("ns"));
+        assert_eq!(subject.api_group.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn role_ref_names_the_rbac_group_and_kind() {
+        let cluster = role_ref::<ClusterRole>("bindy-role");
+        assert_eq!(cluster.api_group, "rbac.authorization.k8s.io");
+        assert_eq!(cluster.kind, "ClusterRole");
+        assert_eq!(cluster.name, "bindy-role");
+        assert_eq!(role_ref::<Role>("r").kind, "Role");
+    }
+
+    #[test]
+    fn rule_copies_groups_resources_and_verbs_in_order() {
+        let r = rule(&[""], &["secrets", "configmaps"], &["get", "list"]);
+        assert_eq!(r.api_groups, Some(vec![String::new()]));
+        assert_eq!(
+            r.resources,
+            Some(vec!["secrets".to_string(), "configmaps".to_string()])
+        );
+        assert_eq!(r.verbs, vec!["get".to_string(), "list".to_string()]);
+        assert_eq!(r.resource_names, None);
+        assert_eq!(r.non_resource_urls, None);
+    }
+
+    #[test]
+    fn mark_storage_version_serves_and_stores_the_first_version() {
+        let mut crd = CustomResourceDefinition::default();
+        crd.spec.versions = vec![
+            CustomResourceDefinitionVersion {
+                name: "v1".to_string(),
+                ..Default::default()
+            },
+            CustomResourceDefinitionVersion {
+                name: "v2".to_string(),
+                ..Default::default()
+            },
+        ];
+
+        let crd = mark_storage_version(crd).expect("versions present");
+
+        assert!(crd.spec.versions[0].storage);
+        assert!(crd.spec.versions[0].served);
+        assert!(!crd.spec.versions[1].storage);
+        assert!(!crd.spec.versions[1].served);
+    }
+
+    #[test]
+    fn mark_storage_version_without_versions_is_an_error() {
+        let mut crd = CustomResourceDefinition::default();
+        crd.metadata.name = Some("things.example.com".to_string());
+
+        let err = mark_storage_version(crd).expect_err("no version to store");
+
+        assert_eq!(
+            err.to_string(),
+            "CRD things.example.com has no spec.versions to mark as served and stored"
+        );
+    }
+}
+
+#[cfg(test)]
+mod cluster_info_tests {
+    use crate::bootstrap::{cluster_info, resolve_server};
+    use kube::config::Kubeconfig;
+
+    const OVERRIDE: &str = "https://172.18.0.3:6443";
+
+    fn kubeconfig(cluster_body: &str) -> Kubeconfig {
+        Kubeconfig::from_yaml(&format!(
+            "apiVersion: v1
+kind: Config
+current-context: ctx
+contexts:
+- name: ctx
+  context:
+    cluster: queen
+    user: admin
+clusters:
+- name: queen
+  cluster:
+{cluster_body}
+users:
+- name: admin
+  user:
+    token: t
+"
+        ))
+        .expect("kubeconfig yaml")
+    }
+
+    #[test]
+    fn reads_the_server_and_inline_ca_of_the_current_context() {
+        let info = cluster_info(&kubeconfig(
+            "    server: https://queen.example:6443\n    certificate-authority-data: Q0E=",
+        ))
+        .expect("cluster info");
+
+        assert_eq!(info.name, "queen");
+        assert_eq!(info.server.as_deref(), Some("https://queen.example:6443"));
+        assert_eq!(info.ca_data_b64.as_deref(), Some("Q0E="));
+        assert_eq!(
+            resolve_server(None, &info).expect("server"),
+            "https://queen.example:6443"
+        );
+    }
+
+    #[test]
+    fn a_missing_server_is_an_error_without_an_override() {
+        let info =
+            cluster_info(&kubeconfig("    insecure-skip-tls-verify: true")).expect("cluster info");
+
+        assert_eq!(info.server, None);
+        let err = resolve_server(None, &info).expect_err("no server to write");
+        assert_eq!(
+            err.to_string(),
+            "KUBECONFIG cluster 'queen' has no server URL; pass --server <url> with an API \
+             server address reachable from the child cluster"
+        );
+    }
+
+    #[test]
+    fn the_override_wins_even_when_the_kubeconfig_has_no_server() {
+        let info =
+            cluster_info(&kubeconfig("    insecure-skip-tls-verify: true")).expect("cluster info");
+
+        assert_eq!(
+            resolve_server(Some(OVERRIDE), &info).expect("server"),
+            OVERRIDE
+        );
+    }
+
+    #[test]
+    fn the_override_wins_over_the_kubeconfig_server() {
+        let info = cluster_info(&kubeconfig("    server: https://queen.example:6443"))
+            .expect("cluster info");
+
+        assert_eq!(
+            resolve_server(Some(OVERRIDE), &info).expect("server"),
+            OVERRIDE
+        );
+    }
+}

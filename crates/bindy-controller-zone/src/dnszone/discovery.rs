@@ -41,6 +41,8 @@ use bindy_controller_sdk::pagination::list_all_paginated;
 /// * `client` - Kubernetes API client for querying DNS records
 /// * `dnszone` - The `DNSZone` resource with label selectors
 /// * `stores` - Context stores for resolving instances and creating `Bind9Manager`s
+/// * `primary_refs` - The zone's primary instances, where an unselected
+///   record's DNS data is deleted from
 /// * `retained` - Deleted records whose DNS cleanup is not confirmed yet (from
 ///   `cleanup::cleanup_stale_records`): kept in `status.records` so the
 ///   cleanup is retried, and not processed again here
@@ -61,6 +63,7 @@ pub async fn reconcile_zone_records(
     client: Client,
     dnszone: DNSZone,
     stores: &crate::context::Stores,
+    primary_refs: &[crate::crd::InstanceReference],
     retained: &[crate::crd::RecordReferenceWithTimestamp],
 ) -> Result<(Vec<crate::crd::RecordReferenceWithTimestamp>, bool)> {
     let namespace = dnszone.namespace().unwrap_or_default();
@@ -164,8 +167,6 @@ pub async fn reconcile_zone_records(
         .map(|s| s.records.clone())
         .unwrap_or_default();
 
-    // Lazily resolved (and cached) primary instances for this zone
-    let mut primary_refs_cache: Option<Vec<crate::crd::InstanceReference>> = None;
     // One resolver for every DNS deletion below (ADR-0015)
     let resolver = bindy_bind9::instances::InstanceResolver::for_kube(&client, stores);
 
@@ -205,7 +206,7 @@ pub async fn reconcile_zone_records(
             &dnszone,
             &namespace,
             &record_ref,
-            &mut primary_refs_cache,
+            primary_refs,
         )
         .await
         {
@@ -447,31 +448,6 @@ pub(crate) fn claimed_by_live_record<'a>(
     })
 }
 
-/// Maps a Kubernetes record kind (e.g., `"ARecord"`) to its hickory `RecordType`.
-///
-/// # Errors
-///
-/// Returns an error if the kind is not a known DNS record kind.
-fn hickory_record_type_for_kind(kind: &str) -> Result<hickory_proto::rr::RecordType> {
-    use crate::crd::DNSRecordKind;
-    use hickory_proto::rr::RecordType;
-
-    let record_kind = DNSRecordKind::try_from(kind)
-        .map_err(|e| anyhow::anyhow!("Unknown DNS record kind '{kind}': {e}"))?;
-
-    Ok(match record_kind {
-        DNSRecordKind::A => RecordType::A,
-        DNSRecordKind::AAAA => RecordType::AAAA,
-        DNSRecordKind::TXT => RecordType::TXT,
-        DNSRecordKind::CNAME => RecordType::CNAME,
-        DNSRecordKind::MX => RecordType::MX,
-        DNSRecordKind::NS => RecordType::NS,
-        DNSRecordKind::SRV => RecordType::SRV,
-        DNSRecordKind::CAA => RecordType::CAA,
-        DNSRecordKind::PTR => RecordType::PTR,
-    })
-}
-
 /// Builds a dynamic API client for a DNS record kind in the given namespace.
 fn dynamic_record_api(
     client: &Client,
@@ -507,7 +483,7 @@ fn dynamic_record_api(
 /// - The record resource no longer exists (its finalizer handles DNS cleanup)
 /// - The record has no `status.zoneRef` (it was never published to DNS)
 /// - The record's `status.zoneRef` points at a different zone (not ours to delete)
-/// - The zone has no instances or no primary instances (nowhere to delete from)
+/// - The zone has no primary instances (nowhere to delete from)
 ///
 /// # Arguments
 ///
@@ -517,12 +493,12 @@ fn dynamic_record_api(
 /// * `dnszone` - The zone that previously selected this record
 /// * `namespace` - Namespace of the record
 /// * `record_ref` - Reference to the unselected record
-/// * `primary_refs_cache` - Cache of the zone's primary instances (resolved once)
+/// * `primary_refs` - The zone's primary instances, read once per reconcile
 ///
 /// # Errors
 ///
 /// Returns an error if the record cannot be fetched (other than `NotFound`),
-/// primary instances cannot be resolved, or the DNS deletion fails. Callers
+/// its kind is unknown, or the DNS deletion fails. Callers
 /// must NOT untag the record in that case, so the cleanup is retried.
 async fn cleanup_unselected_record_dns(
     client: &Client,
@@ -531,7 +507,7 @@ async fn cleanup_unselected_record_dns(
     dnszone: &DNSZone,
     namespace: &str,
     record_ref: &crate::crd::RecordReferenceWithTimestamp,
-    primary_refs_cache: &mut Option<Vec<crate::crd::InstanceReference>>,
+    primary_refs: &[crate::crd::InstanceReference],
 ) -> Result<()> {
     let kind = record_ref.kind.as_str();
     let name = record_ref.name.as_str();
@@ -552,7 +528,7 @@ async fn cleanup_unselected_record_dns(
                 resolver,
                 dnszone,
                 record_ref,
-                primary_refs_cache,
+                primary_refs,
             )
             .await;
         }
@@ -590,29 +566,6 @@ async fn cleanup_unselected_record_dns(
         return Ok(());
     }
 
-    // Resolve this zone's primary instances once and cache across records
-    if primary_refs_cache.is_none() {
-        let Ok(instance_refs) =
-            crate::dnszone::validation::get_instances_from_zone(dnszone, &stores.bind9_instances)
-        else {
-            // Zone has no instances - there is nowhere the data could live
-            debug!(
-                "Zone {} has no instances, skipping DNS cleanup for {} {}/{}",
-                dnszone.spec.zone_name, kind, namespace, name
-            );
-            return Ok(());
-        };
-
-        let primaries = bindy_bind9::primary::filter_primary_instances_cached(
-            client,
-            &stores.bind9_instances,
-            &instance_refs,
-        )
-        .await?;
-        *primary_refs_cache = Some(primaries);
-    }
-
-    let primary_refs = primary_refs_cache.as_deref().unwrap_or_default();
     if primary_refs.is_empty() {
         debug!(
             "Zone {} has no primary instances, skipping DNS cleanup for {} {}/{}",
@@ -633,7 +586,7 @@ async fn cleanup_unselected_record_dns(
         })
         .unwrap_or(name);
 
-    let record_type_hickory = hickory_record_type_for_kind(kind)?;
+    let record_type_hickory = crate::crd::DNSRecordKind::try_from(kind)?.to_hickory_record_type();
 
     bindy_bind9::record_push::delete_record_from_primaries(
         client,
@@ -661,16 +614,16 @@ async fn cleanup_unselected_record_dns(
 ///
 /// # Errors
 ///
-/// Returns an error if the zone's primaries cannot be resolved, or if a pod
-/// that holds the zone was not reached or its deletion failed; the caller
-/// keeps tracking the record and retries.
+/// Returns an error if the record's kind is unknown, or if a pod that holds
+/// the zone was not reached or its deletion failed; the caller keeps
+/// tracking the record and retries.
 async fn delete_deleted_record_dns(
     client: &Client,
     stores: &crate::context::Stores,
     resolver: &bindy_bind9::instances::InstanceResolver,
     dnszone: &DNSZone,
     record_ref: &crate::crd::RecordReferenceWithTimestamp,
-    primary_refs_cache: &mut Option<Vec<crate::crd::InstanceReference>>,
+    primary_refs: &[crate::crd::InstanceReference],
 ) -> Result<()> {
     let Some(record_name) = record_ref.record_name.as_deref() else {
         debug!(
@@ -679,25 +632,11 @@ async fn delete_deleted_record_dns(
         );
         return Ok(());
     };
-    if primary_refs_cache.is_none() {
-        let Ok(instance_refs) =
-            crate::dnszone::validation::get_instances_from_zone(dnszone, &stores.bind9_instances)
-        else {
-            return Ok(());
-        };
-        let primaries = bindy_bind9::primary::filter_primary_instances_cached(
-            client,
-            &stores.bind9_instances,
-            &instance_refs,
-        )
-        .await?;
-        *primary_refs_cache = Some(primaries);
-    }
-    let primary_refs = primary_refs_cache.as_deref().unwrap_or_default();
     if primary_refs.is_empty() {
         return Ok(());
     }
-    let record_type_hickory = hickory_record_type_for_kind(&record_ref.kind)?;
+    let record_type_hickory =
+        crate::crd::DNSRecordKind::try_from(record_ref.kind.as_str())?.to_hickory_record_type();
     bindy_bind9::record_push::delete_record_from_primaries(
         client,
         stores,
@@ -838,159 +777,10 @@ async fn untag_record_from_zone(
     Ok(())
 }
 
-/// Trait for DNS record types that can be discovered by DNSZone controllers.
-///
-/// This trait provides the minimal interface needed for the generic record discovery
-/// function to work across all DNS record types.
-trait DiscoverableRecord:
-    kube::Resource<DynamicType = (), Scope = k8s_openapi::NamespaceResourceScope>
-    + Clone
-    + std::fmt::Debug
-    + serde::de::DeserializeOwned
-    + kube::ResourceExt
-{
-    /// Get the DNS record kind enum variant for this record type.
-    fn dns_record_kind() -> crate::crd::DNSRecordKind;
-
-    /// Get the record name from the spec (e.g., "www", "mail", "@").
-    fn spec_name(&self) -> &str;
-
-    /// Get the record status.
-    fn record_status(&self) -> Option<&crate::crd::RecordStatus>;
-}
-
-// Implementations of DiscoverableRecord for all DNS record types
-
-impl DiscoverableRecord for crate::crd::ARecord {
-    fn dns_record_kind() -> crate::crd::DNSRecordKind {
-        crate::crd::DNSRecordKind::A
-    }
-
-    fn spec_name(&self) -> &str {
-        &self.spec.name
-    }
-
-    fn record_status(&self) -> Option<&crate::crd::RecordStatus> {
-        self.status.as_ref()
-    }
-}
-
-impl DiscoverableRecord for crate::crd::AAAARecord {
-    fn dns_record_kind() -> crate::crd::DNSRecordKind {
-        crate::crd::DNSRecordKind::AAAA
-    }
-
-    fn spec_name(&self) -> &str {
-        &self.spec.name
-    }
-
-    fn record_status(&self) -> Option<&crate::crd::RecordStatus> {
-        self.status.as_ref()
-    }
-}
-
-impl DiscoverableRecord for crate::crd::TXTRecord {
-    fn dns_record_kind() -> crate::crd::DNSRecordKind {
-        crate::crd::DNSRecordKind::TXT
-    }
-
-    fn spec_name(&self) -> &str {
-        &self.spec.name
-    }
-
-    fn record_status(&self) -> Option<&crate::crd::RecordStatus> {
-        self.status.as_ref()
-    }
-}
-
-impl DiscoverableRecord for crate::crd::CNAMERecord {
-    fn dns_record_kind() -> crate::crd::DNSRecordKind {
-        crate::crd::DNSRecordKind::CNAME
-    }
-
-    fn spec_name(&self) -> &str {
-        &self.spec.name
-    }
-
-    fn record_status(&self) -> Option<&crate::crd::RecordStatus> {
-        self.status.as_ref()
-    }
-}
-
-impl DiscoverableRecord for crate::crd::MXRecord {
-    fn dns_record_kind() -> crate::crd::DNSRecordKind {
-        crate::crd::DNSRecordKind::MX
-    }
-
-    fn spec_name(&self) -> &str {
-        &self.spec.name
-    }
-
-    fn record_status(&self) -> Option<&crate::crd::RecordStatus> {
-        self.status.as_ref()
-    }
-}
-
-impl DiscoverableRecord for crate::crd::NSRecord {
-    fn dns_record_kind() -> crate::crd::DNSRecordKind {
-        crate::crd::DNSRecordKind::NS
-    }
-
-    fn spec_name(&self) -> &str {
-        &self.spec.name
-    }
-
-    fn record_status(&self) -> Option<&crate::crd::RecordStatus> {
-        self.status.as_ref()
-    }
-}
-
-impl DiscoverableRecord for crate::crd::SRVRecord {
-    fn dns_record_kind() -> crate::crd::DNSRecordKind {
-        crate::crd::DNSRecordKind::SRV
-    }
-
-    fn spec_name(&self) -> &str {
-        &self.spec.name
-    }
-
-    fn record_status(&self) -> Option<&crate::crd::RecordStatus> {
-        self.status.as_ref()
-    }
-}
-
-impl DiscoverableRecord for crate::crd::CAARecord {
-    fn dns_record_kind() -> crate::crd::DNSRecordKind {
-        crate::crd::DNSRecordKind::CAA
-    }
-
-    fn spec_name(&self) -> &str {
-        &self.spec.name
-    }
-
-    fn record_status(&self) -> Option<&crate::crd::RecordStatus> {
-        self.status.as_ref()
-    }
-}
-
-impl DiscoverableRecord for crate::crd::PTRRecord {
-    fn dns_record_kind() -> crate::crd::DNSRecordKind {
-        crate::crd::DNSRecordKind::PTR
-    }
-
-    fn spec_name(&self) -> &str {
-        &self.spec.name
-    }
-
-    fn record_status(&self) -> Option<&crate::crd::RecordStatus> {
-        self.status.as_ref()
-    }
-}
-
 /// Generic helper function to discover DNS records matching a label selector.
 ///
-/// This function eliminates duplication across the 9 record-type-specific discovery functions.
-/// It works for any record type implementing the `DiscoverableRecord` trait.
+/// One function for all nine record kinds: it works for any record type
+/// implementing [`bindy_controller_sdk::context::RecordKind`].
 ///
 /// # Type Parameters
 ///
@@ -1015,7 +805,7 @@ async fn discover_records_generic<T>(
     selector: &crate::crd::LabelSelector,
 ) -> Result<Vec<DiscoveredRecord>>
 where
-    T: DiscoverableRecord,
+    T: bindy_controller_sdk::context::RecordKind,
 {
     use std::collections::BTreeMap;
 
@@ -1035,7 +825,7 @@ where
 
         debug!(
             "Discovered {} record {}/{}",
-            T::dns_record_kind().as_str(),
+            T::KIND,
             namespace,
             record.name_any()
         );
@@ -1061,7 +851,7 @@ where
         record_refs.push(DiscoveredRecord {
             reference: crate::crd::RecordReferenceWithTimestamp {
                 api_version: "bindy.firestoned.io/v1beta1".to_string(),
-                kind: T::dns_record_kind().as_str().to_string(),
+                kind: T::KIND.to_string(),
                 name: record.name_any(),
                 namespace: namespace.clone(),
                 record_name: Some(record.spec_name().to_string()),
@@ -1087,6 +877,7 @@ where
 /// * `dnszone` - The DNSZone resource being reconciled
 /// * `status_updater` - Status updater for setting conditions and records
 /// * `stores` - Context stores for resolving instances and creating `Bind9Manager`s
+/// * `primary_refs` - The zone's primary instances
 /// * `retained` - Deleted records the stale cleanup keeps for a retry
 ///
 /// # Returns
@@ -1106,6 +897,7 @@ pub async fn discover_and_update_records(
     dnszone: &crate::crd::DNSZone,
     status_updater: &mut bindy_controller_sdk::status::DNSZoneStatusUpdater,
     stores: &crate::context::Stores,
+    primary_refs: &[crate::crd::InstanceReference],
     retained: &[crate::crd::RecordReferenceWithTimestamp],
 ) -> Result<(Vec<crate::crd::RecordReferenceWithTimestamp>, usize, bool)> {
     let spec = &dnszone.spec;
@@ -1121,7 +913,7 @@ pub async fn discover_and_update_records(
     // failure would break the record watch mapper until the next successful
     // discovery.
     let (record_refs, cleanup_pending) =
-        reconcile_zone_records(client.clone(), dnszone.clone(), stores, retained)
+        reconcile_zone_records(client.clone(), dnszone.clone(), stores, primary_refs, retained)
         .await
         .map_err(|e| {
             warn!(

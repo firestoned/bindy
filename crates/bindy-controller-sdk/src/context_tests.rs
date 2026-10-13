@@ -95,6 +95,16 @@ mod tests {
         object("DNSZone", name, ns, &[], spec)
     }
 
+    /// `spec_name` is the record's DNS name from its spec, the name record
+    /// discovery publishes in `status.records[].recordName`.
+    #[test]
+    fn spec_name_reads_the_record_spec_name() {
+        use super::super::RecordKind;
+
+        assert_eq!(a_record("web", "team", &[]).spec_name(), "www");
+        assert_eq!(ptr_record("rev", "team", &[]).spec_name(), "10");
+    }
+
     /// Stores with the given zones and A/PTR records; every other record kind
     /// registered but empty.
     fn stores(zones: Vec<DNSZone>, a: Vec<ARecord>, ptr: Vec<PTRRecord>) -> Stores {

@@ -177,6 +177,65 @@ mod store_role_tests {
     }
 
     #[tokio::test]
+    async fn cached_instances_partition_by_role_without_an_api_call() {
+        let store = store(vec![
+            instance("s1", "secondary"),
+            instance("p0", "primary"),
+            instance("s0", "secondary"),
+            instance("p1", "primary"),
+        ]);
+        let refs = vec![
+            reference("s1", "dns"),
+            reference("p0", "dns"),
+            reference("s0", "dns"),
+            reference("p1", "dns"),
+        ];
+
+        let zone_instances =
+            crate::primary::partition_zone_instances(&unreachable_client(), &store, refs.clone())
+                .await
+                .expect("cached instances need no API call");
+
+        assert_eq!(zone_instances.all, refs, "all keeps the input order");
+        assert_eq!(
+            zone_instances.primaries,
+            vec![reference("p0", "dns"), reference("p1", "dns")]
+        );
+        assert_eq!(
+            zone_instances.secondaries,
+            vec![reference("s1", "dns"), reference("s0", "dns")]
+        );
+    }
+
+    #[tokio::test]
+    async fn partition_of_no_instances_is_empty() {
+        let zone_instances =
+            crate::primary::partition_zone_instances(&unreachable_client(), &store(vec![]), vec![])
+                .await
+                .expect("nothing to read");
+
+        assert!(zone_instances.all.is_empty());
+        assert!(zone_instances.primaries.is_empty());
+        assert!(zone_instances.secondaries.is_empty());
+    }
+
+    /// An instance the store does not hold and the API server cannot be
+    /// asked about must fail the partition, not vanish from it.
+    #[tokio::test]
+    async fn partition_propagates_an_unreadable_uncached_instance() {
+        let store = store(vec![instance("p0", "primary")]);
+        let refs = vec![reference("p0", "dns"), reference("gone", "dns")];
+
+        let result =
+            crate::primary::partition_zone_instances(&unreachable_client(), &store, refs).await;
+
+        assert!(
+            result.is_err(),
+            "an unreadable instance must fail the partition, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn filter_primary_instances_cached_propagates_an_unreadable_instance() {
         let store = store(vec![instance("p0", "primary")]);
         let refs = vec![reference("p0", "dns"), reference("gone", "dns")];
@@ -252,6 +311,18 @@ mod instance_get_error_tests {
         kube::Client::try_from(config).expect("client from mock config")
     }
 
+    /// A synced single-shard `Bind9Instance` store holding `instances`.
+    fn store_of(instances: Vec<Bind9Instance>) -> crate::context::MultiStore<Bind9Instance> {
+        use kube::runtime::{reflector, watcher};
+        let (store, mut writer) = reflector::store();
+        writer.apply_watcher_event(&watcher::Event::Init);
+        for instance in instances {
+            writer.apply_watcher_event(&watcher::Event::InitApply(instance));
+        }
+        writer.apply_watcher_event(&watcher::Event::InitDone);
+        crate::context::MultiStore::new(vec![store])
+    }
+
     #[test]
     fn a_readable_instance_yields_its_role() {
         let instance: Bind9Instance =
@@ -302,6 +373,89 @@ mod instance_get_error_tests {
                 .expect("a deleted instance is skipped, not an error");
 
         assert_eq!(primaries, vec![reference("p0")]);
+    }
+
+    /// Uncached instances are read with one GET each and land in input
+    /// order among the cached ones; a deleted (404) one is in no list.
+    #[tokio::test]
+    async fn partition_reads_uncached_roles_once_and_skips_a_deleted_instance() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("{INSTANCE_PATH_PREFIX}/p1")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(instance_json("p1", "primary")))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("{INSTANCE_PATH_PREFIX}/s1")))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(instance_json("s1", "secondary")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("{INSTANCE_PATH_PREFIX}/gone")))
+            .respond_with(
+                ResponseTemplate::new(bindy_api::constants::HTTP_NOT_FOUND).set_body_json(
+                    status_json(bindy_api::constants::HTTP_NOT_FOUND, "NotFound"),
+                ),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let cached: Bind9Instance =
+            serde_json::from_value(instance_json("p0", "primary")).expect("valid fixture");
+        let store = store_of(vec![cached]);
+
+        let zone_instances = crate::primary::partition_zone_instances(
+            &client_for(&server),
+            &store,
+            vec![
+                reference("s1"),
+                reference("gone"),
+                reference("p0"),
+                reference("p1"),
+            ],
+        )
+        .await
+        .expect("a deleted instance is skipped, not an error");
+
+        assert_eq!(
+            zone_instances.all,
+            vec![reference("s1"), reference("p0"), reference("p1")]
+        );
+        assert_eq!(
+            zone_instances.primaries,
+            vec![reference("p0"), reference("p1")]
+        );
+        assert_eq!(zone_instances.secondaries, vec![reference("s1")]);
+    }
+
+    #[tokio::test]
+    async fn partition_propagates_a_server_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("{INSTANCE_PATH_PREFIX}/p1")))
+            .respond_with(
+                ResponseTemplate::new(HTTP_INTERNAL_SERVER_ERROR)
+                    .set_body_json(status_json(HTTP_INTERNAL_SERVER_ERROR, "InternalError")),
+            )
+            .mount(&server)
+            .await;
+        let store = store_of(vec![]);
+
+        let result = crate::primary::partition_zone_instances(
+            &client_for(&server),
+            &store,
+            vec![reference("p1")],
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "an instance that returned 500 must not silently drop out: {result:?}"
+        );
     }
 
     #[tokio::test]

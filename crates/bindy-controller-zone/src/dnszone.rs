@@ -14,7 +14,6 @@ pub mod cleanup;
 pub mod discovery;
 pub mod helpers;
 pub use bindy_bind9::primary;
-pub mod secondary;
 pub mod status_helpers;
 pub mod transfer_peers;
 pub mod types;
@@ -366,7 +365,6 @@ async fn handle_duplicate_zone(
 /// # Errors
 ///
 /// Returns an error if Kubernetes API operations fail or BIND9 zone operations fail.
-#[allow(clippy::too_many_lines)]
 pub async fn reconcile_dnszone(
     ctx: Arc<crate::context::Context>,
     dnszone: DNSZone,
@@ -468,6 +466,29 @@ pub async fn reconcile_dnszone(
         }
     }
 
+    // Every instance's role, read once for the whole reconcile: the cleanup,
+    // configuration, discovery, replay and status passes below all use this
+    // partition instead of asking again. An instance deleted since it was
+    // selected (404) is in no list.
+    let instances = match primary::partition_zone_instances(
+        &client,
+        bind9_instances_store,
+        instance_refs,
+    )
+    .await
+    {
+        Ok(instances) => instances,
+        Err(e) => {
+            bind9_config::set_failure_conditions(
+                &mut status_updater,
+                bind9_config::REASON_PRIMARY_FAILED,
+                &format!("Failed to find the zone's instances: {e}"),
+            );
+            status_updater.apply(&client).await?;
+            return Err(e);
+        }
+    };
+
     // CRITICAL: We CANNOT skip reconciliation, even if spec and instances haven't changed.
     // Reconciliation may be triggered by ARecord/AAAA/TXT/etc changes via watches, and we MUST
     // run record discovery to tag newly created records with status.zoneRef.
@@ -481,6 +502,7 @@ pub async fn reconcile_dnszone(
         &dnszone,
         &mut status_updater,
         &ctx.stores,
+        &instances.primaries,
     )
     .await
     {
@@ -527,7 +549,7 @@ pub async fn reconcile_dnszone(
         ctx.clone(),
         &dnszone,
         &mut status_updater,
-        &instance_refs,
+        &instances,
     )
     .await?;
 
@@ -538,6 +560,7 @@ pub async fn reconcile_dnszone(
             &dnszone,
             &mut status_updater,
             &ctx.stores,
+            &instances.primaries,
             &retained_records,
         )
         .await?;
@@ -564,7 +587,7 @@ pub async fn reconcile_dnszone(
         &ctx,
         &dnszone,
         &mut status_updater,
-        &instance_refs,
+        &instances.primaries,
         &record_refs,
         primary_outcome.zones_created + secondary_outcome.zones_created,
     )
@@ -575,15 +598,7 @@ pub async fn reconcile_dnszone(
     // record reports its own Ready condition, and BIND9 notifies secondaries
     // itself when a primary's serial advances (ADR-0015).
 
-    // Calculate expected counts and finalize status
-    let (expected_primary_count, expected_secondary_count) =
-        status_helpers::calculate_expected_instance_counts(
-            &client,
-            bind9_instances_store,
-            &instance_refs,
-        )
-        .await?;
-
+    // Every primary and every secondary is expected to serve the zone
     status_helpers::finalize_zone_status(
         &mut status_updater,
         &client,
@@ -592,8 +607,8 @@ pub async fn reconcile_dnszone(
         &name,
         primary_outcome,
         secondary_outcome,
-        expected_primary_count,
-        expected_secondary_count,
+        instances.primaries.len(),
+        instances.secondaries.len(),
         records_count,
         dnszone.metadata.generation,
     )
@@ -640,20 +655,20 @@ const REASON_RECORDS_RESYNC_PENDING: &str = "RecordsResyncPending";
 /// * `ctx` - Application context (Kubernetes client and reflector stores)
 /// * `dnszone` - The zone being reconciled
 /// * `status_updater` - Status updater collecting in-memory condition changes
-/// * `instance_refs` - All instances assigned to the zone
+/// * `primary_refs` - The zone's primary instances, where records are written
 /// * `record_refs` - The records just discovered for the zone
 /// * `zones_created` - Number of endpoints where the zone was newly created
 ///
 /// # Errors
 ///
-/// Returns an error if the PRIMARY instances cannot be determined. Individual
-/// record push failures are reported through the `Degraded` condition and
+/// Returns an error if the replay intent cannot be written to the zone's
+/// status. Individual record push failures are reported through the `Degraded` condition and
 /// retried on the next reconciliation rather than aborting the zone reconcile.
 async fn replay_records_if_zone_was_recreated(
     ctx: &Arc<crate::context::Context>,
     dnszone: &DNSZone,
     status_updater: &mut bindy_controller_sdk::status::DNSZoneStatusUpdater,
-    instance_refs: &[crate::crd::InstanceReference],
+    primary_refs: &[crate::crd::InstanceReference],
     record_refs: &[crate::crd::RecordReferenceWithTimestamp],
     zones_created: usize,
 ) -> Result<()> {
@@ -712,13 +727,6 @@ async fn replay_records_if_zone_was_recreated(
 
     // Records are written to PRIMARY servers only; secondaries pull the zone
     // via AXFR once the primary's serial advances.
-    let primary_refs = bindy_bind9::primary::filter_primary_instances_cached(
-        &client,
-        &ctx.stores.bind9_instances,
-        instance_refs,
-    )
-    .await?;
-
     if primary_refs.is_empty() {
         let message = format!(
             "Zone {zone_name} must replay {} record(s) but has no primary instances to write them to",
@@ -734,7 +742,7 @@ async fn replay_records_if_zone_was_recreated(
         &ctx.stores,
         zone_name,
         record_refs,
-        &primary_refs,
+        primary_refs,
     )
     .await;
 
@@ -1053,6 +1061,76 @@ fn zone_dnssec_policy(
     )
 }
 
+/// `namespace/name` of each instance, for log and error messages.
+fn instance_names(refs: &[crate::crd::InstanceReference]) -> Vec<String> {
+    refs.iter()
+        .map(|i| format!("{}/{}", i.namespace, i.name))
+        .collect()
+}
+
+/// The legacy `nameServerIps` map for a zone that names no nameservers:
+/// `ns1.`, `ns2.`, ... generated from the instances' IPs, primaries first,
+/// then secondaries ([`generate_nameserver_ips`]).
+///
+/// A failure only logs a warning: the zone is then created without glue.
+///
+/// # Arguments
+/// * `client` - Kubernetes API client
+/// * `dnszone` - The zone being configured
+/// * `instances` - The zone's instances by role
+///
+/// # Returns
+/// The generated map, or `None` when no instance has an IP (or the lookup
+/// failed).
+async fn generated_name_server_ips(
+    client: &Client,
+    dnszone: &DNSZone,
+    instances: &primary::ZoneInstances,
+) -> Option<HashMap<String, String>> {
+    let namespace = dnszone.namespace().unwrap_or_default();
+    let name = dnszone.name_any();
+    debug!(
+        "DNSZone {}/{} has no explicit nameServers - auto-generating from {} instance(s)",
+        namespace,
+        name,
+        instances.all.len()
+    );
+
+    let ordered_instances: Vec<crate::crd::InstanceReference> = instances
+        .primaries
+        .iter()
+        .chain(&instances.secondaries)
+        .cloned()
+        .collect();
+
+    match generate_nameserver_ips(client, &dnszone.spec.zone_name, &ordered_instances).await {
+        Ok(Some(generated_ips)) => {
+            debug!(
+                "Auto-generated {} nameserver(s) for DNSZone {}/{}: {:?}",
+                generated_ips.len(),
+                namespace,
+                name,
+                generated_ips
+            );
+            Some(generated_ips)
+        }
+        Ok(None) => {
+            warn!(
+                "Failed to auto-generate nameserver IPs for DNSZone {}/{} - no IPs available",
+                namespace, name
+            );
+            None
+        }
+        Err(e) => {
+            warn!(
+                "Error auto-generating nameserver IPs for DNSZone {}/{}: {}",
+                namespace, name, e
+            );
+            None
+        }
+    }
+}
+
 /// Adds a DNS zone to all primary instances.
 ///
 /// Builds a store-backed [`bindy_bind9::instances::InstanceResolver`] and
@@ -1064,8 +1142,8 @@ fn zone_dnssec_policy(
 /// * `ctx` - Controller context (client and reflector stores)
 /// * `dnszone` - The `DNSZone` resource
 /// * `status_updater` - Collects the in-memory status changes
-/// * `instance_refs` - Every instance the zone selects (primaries are filtered
-///   from these)
+/// * `instances` - The zone's instances by role (the zone is added to the
+///   primaries; the generated nameservers name primaries, then secondaries)
 /// * `peers` - The zone's transfer peers, applied to a zone created here
 ///   (ADR-0019)
 ///
@@ -1085,22 +1163,14 @@ pub async fn add_dnszone(
     ctx: Arc<crate::context::Context>,
     dnszone: DNSZone,
     status_updater: &mut bindy_controller_sdk::status::DNSZoneStatusUpdater,
-    instance_refs: &[crate::crd::InstanceReference],
+    instances: &primary::ZoneInstances,
     peers: &crate::crd::ZoneTransferPeers,
 ) -> Result<types::ZoneConfigOutcome> {
     // One resolver for every BIND9 write this function makes: each primary's
     // RNDC key and endpoints are read once, endpoints from the shared store
     // (ADR-0015, ADR-0016).
     let resolver = bindy_bind9::instances::InstanceResolver::for_kube(&ctx.client, &ctx.stores);
-    add_dnszone_with_resolver(
-        ctx,
-        dnszone,
-        status_updater,
-        instance_refs,
-        peers,
-        &resolver,
-    )
-    .await
+    add_dnszone_with_resolver(ctx, dnszone, status_updater, instances, peers, &resolver).await
 }
 
 /// [`add_dnszone`] through a caller-supplied resolver.
@@ -1108,7 +1178,7 @@ pub async fn add_dnszone(
 /// The zones-loaded readiness gate passes a resolver that addresses one pod
 /// only, so the zone, its NS and glue records are configured on the pod being
 /// admitted exactly as the zone reconcile configures every pod (ADR-0017).
-/// `instance_refs` must still be every instance the zone selects: the
+/// `instances` must still be every instance the zone selects: the
 /// generated nameservers are derived from them. A zone created here gets the
 /// secondaries of `peers` as `allow-transfer` and its NOTIFY targets as
 /// `also-notify` (ADR-0019); a zone that already exists is left as it is, its
@@ -1123,7 +1193,7 @@ pub(crate) async fn add_dnszone_with_resolver(
     ctx: Arc<crate::context::Context>,
     dnszone: DNSZone,
     status_updater: &mut bindy_controller_sdk::status::DNSZoneStatusUpdater,
-    instance_refs: &[crate::crd::InstanceReference],
+    instances: &primary::ZoneInstances,
     peers: &crate::crd::ZoneTransferPeers,
     resolver: &bindy_bind9::instances::InstanceResolver,
 ) -> Result<types::ZoneConfigOutcome> {
@@ -1138,31 +1208,17 @@ pub(crate) async fn add_dnszone_with_resolver(
         "DNSZone {}/{} will be added to {} instance(s): {:?}",
         namespace,
         name,
-        instance_refs.len(),
-        instance_refs
-            .iter()
-            .map(|i| format!("{}/{}", i.namespace, i.name))
-            .collect::<Vec<_>>()
+        instances.all.len(),
+        instance_names(&instances.all)
     );
 
-    // Filter to only PRIMARY instances, roles from the Bind9Instance store
-    // (ADR-0016)
-    let primary_instance_refs = primary::filter_primary_instances_cached(
-        &client,
-        &ctx.stores.bind9_instances,
-        instance_refs,
-    )
-    .await?;
-
+    let primary_instance_refs = &instances.primaries;
     if primary_instance_refs.is_empty() {
         return Err(anyhow!(
             "DNSZone {}/{} has no PRIMARY instances assigned. Instances: {:?}",
             namespace,
             name,
-            instance_refs
-                .iter()
-                .map(|i| format!("{}/{}", i.namespace, i.name))
-                .collect::<Vec<_>>()
+            instance_names(&instances.all)
         ));
     }
 
@@ -1173,12 +1229,9 @@ pub(crate) async fn add_dnszone_with_resolver(
         name
     );
 
-    // The secondaries (for nameserver ordering) and their transfer peers:
-    // allow-transfer names the secondary pods, also-notify their Services
-    // (ADR-0019), both computed by the caller from the stores.
-    let secondary_instance_refs =
-        secondary::filter_secondary_instances(&client, &ctx.stores.bind9_instances, instance_refs)
-            .await?;
+    // The transfer peers: allow-transfer names the secondary pods,
+    // also-notify their Services (ADR-0019), both computed by the caller from
+    // the stores.
     let secondary_ips = peers.secondaries.clone();
     let notify_targets = peers.notify.clone();
 
@@ -1200,75 +1253,28 @@ pub(crate) async fn add_dnszone_with_resolver(
     // Get effective nameservers (supports both new `nameServers` and deprecated `nameServerIps`)
     let effective_name_servers = get_effective_name_servers(spec);
 
-    // Generate legacy nameserver IPs format for backward compatibility with bindcar API
-    // If user didn't provide either field, auto-generate from instance IPs
-    let name_server_ips = if effective_name_servers.is_none() {
-        debug!(
-            "DNSZone {}/{} has no explicit nameServers - auto-generating from {} instance(s)",
-            namespace,
-            name,
-            instance_refs.len()
-        );
-
-        // Build ordered list: primaries first, then secondaries
-        let mut ordered_instances = primary_instance_refs.clone();
-        ordered_instances.extend(secondary_instance_refs.clone());
-
-        match generate_nameserver_ips(&client, &spec.zone_name, &ordered_instances).await {
-            Ok(Some(generated_ips)) => {
-                debug!(
-                    "Auto-generated {} nameserver(s) for DNSZone {}/{}: {:?}",
-                    generated_ips.len(),
-                    namespace,
-                    name,
-                    generated_ips
-                );
-                Some(generated_ips)
-            }
-            Ok(None) => {
-                warn!(
-                    "Failed to auto-generate nameserver IPs for DNSZone {}/{} - no IPs available",
-                    namespace, name
-                );
-                None
-            }
-            Err(e) => {
-                warn!(
-                    "Error auto-generating nameserver IPs for DNSZone {}/{}: {}",
-                    namespace, name, e
-                );
-                None
-            }
-        }
-    } else {
-        // Convert effective_name_servers to HashMap<String, String> for bindcar API compatibility
-        // Only include IPv4 addresses (bindcar doesn't support IPv6 glue records in this field)
-        // SAFETY: We know effective_name_servers is Some because we're in the else block
-        let name_server_map: HashMap<String, String> =
-            if let Some(ref ns_list) = effective_name_servers {
-                ns_list
-                    .iter()
-                    .filter_map(|ns| {
-                        ns.ipv4_address
-                            .as_ref()
-                            .map(|ip| (ns.hostname.clone(), ip.clone()))
-                    })
-                    .collect()
-            } else {
-                HashMap::new()
-            };
-
-        debug!(
-            "Using explicit nameServers for DNSZone {}/{} ({} with IPv4 glue records)",
-            namespace,
-            name,
-            name_server_map.len()
-        );
-
-        if name_server_map.is_empty() {
-            None
-        } else {
-            Some(name_server_map)
+    // Legacy nameserver IPs format for backward compatibility with the
+    // bindcar API: explicit nameservers give their IPv4 glue (bindcar does
+    // not take IPv6 glue in this field); without any, they are generated
+    // from the instances' IPs.
+    let name_server_ips = match effective_name_servers.as_deref() {
+        None => generated_name_server_ips(&client, &dnszone, instances).await,
+        Some(ns_list) => {
+            let name_server_map: HashMap<String, String> = ns_list
+                .iter()
+                .filter_map(|ns| {
+                    ns.ipv4_address
+                        .as_ref()
+                        .map(|ip| (ns.hostname.clone(), ip.clone()))
+                })
+                .collect();
+            debug!(
+                "Using explicit nameServers for DNSZone {}/{} ({} with IPv4 glue records)",
+                namespace,
+                name,
+                name_server_map.len()
+            );
+            (!name_server_map.is_empty()).then_some(name_server_map)
         }
     };
 
@@ -1301,7 +1307,7 @@ pub(crate) async fn add_dnszone_with_resolver(
     // policy its primary instance renders (instance config over cluster
     // global). Inheriting is what the CRD documents; without it a cluster
     // with signing enabled would sign nothing.
-    let resolved_dnssec_policy = zone_dnssec_policy(&ctx, spec, &primary_instance_refs);
+    let resolved_dnssec_policy = zone_dnssec_policy(&ctx, spec, primary_instance_refs);
     let dnssec_policy = resolved_dnssec_policy.as_deref();
     if let Some(policy) = dnssec_policy {
         debug!(
@@ -1335,7 +1341,7 @@ pub(crate) async fn add_dnszone_with_resolver(
     // present): the per-INSTANCE success signal used for readiness.
     let mut instances_configured = 0_usize;
 
-    for instance_ref in &primary_instance_refs {
+    for instance_ref in primary_instance_refs {
         // Per instance, not the shared startup manager: only this carries the
         // instance's TLS configuration. See zone_manager_for_instance.
         let zone_manager =
@@ -1523,32 +1529,22 @@ pub(crate) async fn add_dnszone_with_resolver(
         primary_instance_refs.len()
     );
 
-    // Auto-generate NS records and glue records from nameServers field
-    if let Some(ref name_servers) = effective_name_servers {
-        if !name_servers.is_empty() {
-            debug!(
-                "Auto-generating NS records for {} nameserver(s) in zone {}",
-                name_servers.len(),
-                spec.zone_name
-            );
-
-            if let Err(e) = auto_generate_ns_records(
-                resolver,
-                name_servers,
-                &spec.zone_name,
-                spec.ttl,
-                &primary_instance_refs,
-            )
-            .await
-            {
-                warn!(
-                    "Failed to auto-generate some NS records for zone {}: {}. \
-                     Zone is functional but may have incomplete NS records.",
-                    spec.zone_name, e
-                );
-                // Don't fail reconciliation - zone is functional even without all NS records
-            }
-        }
+    // Auto-generate NS records and glue records from nameServers field. Don't
+    // fail reconciliation: the zone is functional even without all of them.
+    if let Err(e) = auto_generate_ns_records(
+        resolver,
+        effective_name_servers.as_deref().unwrap_or_default(),
+        &spec.zone_name,
+        spec.ttl,
+        primary_instance_refs,
+    )
+    .await
+    {
+        warn!(
+            "Failed to auto-generate some NS records for zone {}: {}. \
+             Zone is functional but may have incomplete NS records.",
+            spec.zone_name, e
+        );
     }
 
     // Note: We don't need to reload after addzone because:
@@ -1634,7 +1630,7 @@ pub struct SecondaryConfigOutcome {
 /// * `dnszone` - The `DNSZone` resource
 /// * `primary_ips` - The transfer sources (admitted primary pod IPs)
 /// * `status_updater` - Status updater for per-instance status
-/// * `instance_refs` - Every instance the zone selects
+/// * `secondary_instance_refs` - The zone's secondary instances
 /// * `replace_existing` - Whether the transfer sources changed since they
 ///   were last pushed
 ///
@@ -1650,7 +1646,7 @@ pub async fn add_dnszone_to_secondaries(
     dnszone: DNSZone,
     primary_ips: &[String],
     status_updater: &mut bindy_controller_sdk::status::DNSZoneStatusUpdater,
-    instance_refs: &[crate::crd::InstanceReference],
+    secondary_instance_refs: &[crate::crd::InstanceReference],
     replace_existing: bool,
 ) -> Result<SecondaryConfigOutcome> {
     // One resolver for every secondary's RNDC key and endpoints (ADR-0016)
@@ -1660,7 +1656,7 @@ pub async fn add_dnszone_to_secondaries(
         dnszone,
         primary_ips,
         status_updater,
-        instance_refs,
+        secondary_instance_refs,
         replace_existing,
         &resolver,
     )
@@ -1687,13 +1683,12 @@ pub(crate) async fn add_dnszone_to_secondaries_with_resolver(
     dnszone: DNSZone,
     primary_ips: &[String],
     status_updater: &mut bindy_controller_sdk::status::DNSZoneStatusUpdater,
-    instance_refs: &[crate::crd::InstanceReference],
+    secondary_instance_refs: &[crate::crd::InstanceReference],
     replace_existing: bool,
     resolver: &bindy_bind9::instances::InstanceResolver,
 ) -> Result<SecondaryConfigOutcome> {
     use crate::bind9::zone_ops::ZonePresence;
 
-    let client = ctx.client.clone();
     let namespace = dnszone.namespace().unwrap_or_default();
     let name = dnszone.name_any();
     let spec = &dnszone.spec;
@@ -1710,11 +1705,6 @@ pub(crate) async fn add_dnszone_to_secondaries_with_resolver(
         "Adding DNSZone {}/{} to secondary instances with primaries: {:?} (replace existing: {})",
         namespace, name, primary_ips, replace_existing
     );
-
-    // Filter to only SECONDARY instances, roles from the Bind9Instance store
-    let secondary_instance_refs =
-        secondary::filter_secondary_instances(&client, &ctx.stores.bind9_instances, instance_refs)
-            .await?;
 
     if secondary_instance_refs.is_empty() {
         info!(
@@ -1737,7 +1727,7 @@ pub(crate) async fn add_dnszone_to_secondaries_with_resolver(
     // Instances where every endpoint has the zone loaded.
     let mut instances_configured = 0_usize;
 
-    for instance_ref in &secondary_instance_refs {
+    for instance_ref in secondary_instance_refs {
         let zone_manager =
             zone_manager_for_instance(&ctx, &instance_ref.name, &instance_ref.namespace);
 
@@ -1944,6 +1934,11 @@ pub(crate) async fn add_dnszone_to_secondaries_with_resolver(
     })
 }
 
+/// Name of the primaries in the zone deletion's log lines.
+const ROLE_LABEL_PRIMARY: &str = "primary";
+/// Name of the secondaries in the zone deletion's log lines.
+const ROLE_LABEL_SECONDARY: &str = "secondary";
+
 /// Deletes a DNS zone and its associated zone files.
 ///
 /// # Arguments
@@ -1981,70 +1976,77 @@ pub async fn delete_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZone)
         }
     };
 
-    // Filter to primary and secondary instances, roles from the
-    // Bind9Instance store (ADR-0016)
-    let primary_instance_refs =
-        primary::filter_primary_instances_cached(&client, bind9_instances_store, &instance_refs)
-            .await?;
-    let secondary_instance_refs =
-        secondary::filter_secondary_instances(&client, bind9_instances_store, &instance_refs)
-            .await?;
+    // Roles from the Bind9Instance store (ADR-0016)
+    let instances =
+        primary::partition_zone_instances(&client, bind9_instances_store, instance_refs).await?;
 
     // One resolver for every endpoint this deletion addresses (ADR-0015)
     let resolver = bindy_bind9::instances::InstanceResolver::for_kube(&client, &ctx.stores);
 
-    // Namespace per instance name, for the deletion callbacks below.
-    let primary_ns_by_name: std::collections::HashMap<String, String> = primary_instance_refs
-        .iter()
-        .map(|r| (r.name.clone(), r.namespace.clone()))
-        .collect();
-
-    // Delete from all primary instances.
+    // Delete from the primaries, then from the secondaries, one pass per role
+    // so a role whose every endpoint fails still fails the deletion.
     // Deletion cleanup uses SkipUnavailable: an instance whose data is gone
     // (instance deleted, pods gone) must not block finalizer removal. A pod
     // that still holds the zone but cannot be reached right now (a container
     // restarting) fails the deletion, which is retried with backoff: removing
     // the finalizer then left the zone served from the pod's surviving
-    // emptyDir (chaos suite). Real API errors still propagate.
-    if !primary_instance_refs.is_empty() {
-        let (_first_endpoint, total_endpoints) = helpers::for_each_instance_endpoint_with_policy(
+    // emptyDir (chaos suite); a secondary left with the zone would serve it
+    // until expiry. Real API errors still propagate.
+    for (role, role_refs) in [
+        (ROLE_LABEL_PRIMARY, &instances.primaries),
+        (ROLE_LABEL_SECONDARY, &instances.secondaries),
+    ] {
+        if role_refs.is_empty() {
+            continue;
+        }
+
+        // Namespace per instance name: the callback only names the instance,
+        // so recover its namespace from the refs being iterated to build the
+        // per-instance manager.
+        let ns_by_name: HashMap<String, String> = role_refs
+            .iter()
+            .map(|r| (r.name.clone(), r.namespace.clone()))
+            .collect();
+
+        let (_first_endpoint, endpoints_deleted) = helpers::for_each_instance_endpoint_with_policy(
             &resolver,
-            &primary_instance_refs,
+            role_refs,
             false,  // with_rndc_key = false for zone deletion
             "http", // Use HTTP API port for zone deletion via bindcar API
             helpers::EndpointFailurePolicy::SkipUnavailable,
             |pod_endpoint, instance_name, _rndc_key| {
                 let zone_name = spec.zone_name.clone();
-                // The callback only names the instance, so recover its namespace
-                // from the refs being iterated to build the per-instance manager.
-                let instance_namespace = primary_ns_by_name
+                let instance_namespace = ns_by_name
                     .get(instance_name.as_str())
                     .cloned()
                     .unwrap_or_else(|| namespace.clone());
+                // Per instance, not the shared startup manager: only this
+                // carries the instance's TLS configuration.
                 let zone_manager =
                     zone_manager_for_instance(&ctx, &instance_name, &instance_namespace);
 
                 async move {
                     debug!(
-                        "Deleting zone {} from endpoint {} (instance: {})",
-                        zone_name, pod_endpoint, instance_name
+                        "Deleting zone {} from {} endpoint {} (instance: {})",
+                        zone_name, role, pod_endpoint, instance_name
                     );
 
-                    // An absent zone counts as deleted. A failure is reported:
-                    // tolerated for a pod that no longer holds the zone,
-                    // retried for one that does (coverage check). Each call
-                    // gives up within DELETE_RETRY_BUDGET, so an endpoint that
-                    // is gone cannot hold this reconcile for minutes.
+                    // An absent zone counts as deleted. A failure is
+                    // reported: tolerated for a pod that no longer holds
+                    // the zone, retried for one that does (coverage
+                    // check). Each call gives up within
+                    // DELETE_RETRY_BUDGET, so an endpoint that is gone
+                    // cannot hold this reconcile for minutes.
                     if let Err(e) = zone_manager.delete_zone(&zone_name, &pod_endpoint).await {
                         warn!(
-                            "Failed to delete zone {} from endpoint {} (instance: {}): {:#}",
-                            zone_name, pod_endpoint, instance_name, e
+                            "Failed to delete zone {} from {} endpoint {} (instance: {}): {:#}",
+                            zone_name, role, pod_endpoint, instance_name, e
                         );
                         return Err(e);
                     }
                     debug!(
-                        "Successfully deleted zone {} from endpoint {} (instance: {})",
-                        zone_name, pod_endpoint, instance_name
+                        "Successfully deleted zone {} from {} endpoint {} (instance: {})",
+                        zone_name, role, pod_endpoint, instance_name
                     );
                     Ok(())
                 }
@@ -2053,58 +2055,8 @@ pub async fn delete_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZone)
         .await?;
 
         info!(
-            "Successfully deleted zone {} from {} primary endpoint(s)",
-            spec.zone_name, total_endpoints
-        );
-    }
-
-    // Delete from all secondary instances, with the same rule: skipped when
-    // its data is gone, retried while a pod that holds the zone cannot be
-    // reached (a secondary left with the zone would serve it until expiry).
-    if !secondary_instance_refs.is_empty() {
-        let secondary_ns_by_name: std::collections::HashMap<String, String> =
-            secondary_instance_refs
-                .iter()
-                .map(|r| (r.name.clone(), r.namespace.clone()))
-                .collect();
-        let (_first_endpoint, secondary_endpoints_deleted) =
-            helpers::for_each_instance_endpoint_with_policy(
-                &resolver,
-                &secondary_instance_refs,
-                false, // with_rndc_key = false for zone deletion
-                "http",
-                helpers::EndpointFailurePolicy::SkipUnavailable,
-                |pod_endpoint, instance_name, _rndc_key| {
-                    let zone_name = spec.zone_name.clone();
-                    let instance_namespace = secondary_ns_by_name
-                        .get(instance_name.as_str())
-                        .cloned()
-                        .unwrap_or_else(|| namespace.clone());
-                    // Per instance, not the shared startup manager: only this
-                    // carries the instance's TLS configuration.
-                    let zone_manager =
-                        zone_manager_for_instance(&ctx, &instance_name, &instance_namespace);
-                    async move {
-                        if let Err(e) = zone_manager.delete_zone(&zone_name, &pod_endpoint).await {
-                            warn!(
-                                "Failed to delete zone {} from secondary endpoint {} (instance: {}): {:#}",
-                                zone_name, pod_endpoint, instance_name, e
-                            );
-                            return Err(e);
-                        }
-                        debug!(
-                            "Successfully deleted zone {} from secondary endpoint {} (instance: {})",
-                            zone_name, pod_endpoint, instance_name
-                        );
-                        Ok(())
-                    }
-                },
-            )
-            .await?;
-
-        info!(
-            "Successfully deleted zone {} from {} secondary endpoint(s)",
-            spec.zone_name, secondary_endpoints_deleted
+            "Successfully deleted zone {} from {} {} endpoint(s)",
+            spec.zone_name, endpoints_deleted, role
         );
     }
 
@@ -2115,11 +2067,71 @@ pub async fn delete_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZone)
     Ok(())
 }
 
-/// Auto-generates NS records for all nameservers in the zone.
+/// The Service port the NS and glue records are written through (RFC 2136
+/// dynamic updates over DNS TCP).
+const DNS_TCP_PORT_NAME: &str = "dns-tcp";
+
+/// The owner name of the zone apex, where the NS records go.
+const ZONE_APEX: &str = "@";
+
+/// A glue address of an in-zone nameserver.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Glue<'a> {
+    /// An IPv4 address, written as an A record.
+    V4(&'a str),
+    /// An IPv6 address, written as an AAAA record.
+    V6(&'a str),
+}
+
+/// The owner name of an in-zone nameserver's glue records, relative to the
+/// zone: `ns2.example.com.` in `example.com` is `ns2`. Trailing dots on
+/// either name are ignored.
+///
+/// # Arguments
+/// * `hostname` - The nameserver's hostname
+/// * `zone_name` - The zone's DNS name
+///
+/// # Returns
+/// The relative owner name, or `None` for a nameserver outside the zone
+/// (which needs no glue).
+pub(crate) fn glue_owner_name<'a>(hostname: &'a str, zone_name: &str) -> Option<&'a str> {
+    let zone_suffix = format!(".{}", zone_name.trim_end_matches('.'));
+    hostname
+        .trim_end_matches('.')
+        .strip_suffix(zone_suffix.as_str())
+}
+
+/// The glue addresses a nameserver declares: its IPv4 address, then its IPv6
+/// address.
+///
+/// # Arguments
+/// * `nameserver` - The nameserver
+///
+/// # Returns
+/// One [`Glue`] per address set, A before AAAA.
+pub(crate) fn glue_addresses(nameserver: &crate::crd::NameServer) -> Vec<Glue<'_>> {
+    nameserver
+        .ipv4_address
+        .as_deref()
+        .map(Glue::V4)
+        .into_iter()
+        .chain(nameserver.ipv6_address.as_deref().map(Glue::V6))
+        .collect()
+}
+
+/// Auto-generates NS records, and glue for in-zone nameservers, for all
+/// nameservers in the zone.
 ///
 /// This function is called after zone creation to add NS records for secondary nameservers
 /// specified in the `nameServers` field. The primary nameserver NS record is already created
 /// by bindcar during zone initialization (from SOA).
+///
+/// One pass per nameserver over every primary endpoint writes the NS record
+/// at the apex and, for an in-zone nameserver, its A / AAAA glue. A primary
+/// without an RNDC key or reachable endpoints is skipped
+/// ([`helpers::EndpointFailurePolicy::SkipUnavailable`]), so it does not keep
+/// the records off the others. Every nameserver is attempted, whatever failed
+/// before it.
 ///
 /// # Arguments
 /// * `resolver` - Per-reconcile resolver for instance RNDC keys and endpoints
@@ -2129,11 +2141,12 @@ pub async fn delete_dnszone(ctx: Arc<crate::context::Context>, dnszone: DNSZone)
 /// * `primary_instance_refs` - List of primary instances to update
 ///
 /// # Returns
-/// Result indicating success or failure
+/// `Ok(())` when every record reached every primary endpoint, or there was
+/// nothing to write
 ///
 /// # Errors
-/// Returns error if NS record or glue record addition fails
-#[allow(clippy::too_many_lines)]
+/// Returns an error naming each nameserver whose records were not all
+/// written. The zone is functional without them; the caller only reports it.
 async fn auto_generate_ns_records(
     resolver: &bindy_bind9::instances::InstanceResolver,
     effective_name_servers: &[crate::crd::NameServer],
@@ -2151,97 +2164,68 @@ async fn auto_generate_ns_records(
         zone_name
     );
 
+    let mut errors: Vec<String> = Vec::new();
     for nameserver in effective_name_servers {
-        // Add NS record at zone apex (@)
+        let hostname = nameserver.hostname.as_str();
+        let glue_owner = glue_owner_name(hostname, zone_name);
+        let glue = match glue_owner {
+            Some(_) => glue_addresses(nameserver),
+            None => {
+                debug!(
+                    "Skipping glue records for out-of-zone nameserver {} (not in zone {})",
+                    hostname, zone_name
+                );
+                Vec::new()
+            }
+        };
         debug!(
-            "Adding NS record: {} IN NS {}",
-            zone_name, nameserver.hostname
+            "Adding NS record: {} IN NS {} (glue: {:?})",
+            zone_name, hostname, glue
         );
 
-        for instance_ref in primary_instance_refs {
-            // Load RNDC key for this instance
-            let key_data = match resolver
-                .rndc_key(&instance_ref.namespace, &instance_ref.name)
-                .await
-            {
-                Ok(key) => key,
-                Err(e) => {
-                    warn!(
-                        "Failed to load RNDC key for instance {}/{}: {}. Skipping NS record addition.",
-                        instance_ref.namespace, instance_ref.name, e
-                    );
-                    continue;
-                }
-            };
-
-            // Get endpoints for this instance
-            let endpoints = match resolver
-                .endpoints(&instance_ref.namespace, &instance_ref.name, "dns-tcp")
-                .await
-            {
-                Ok(eps) => eps,
-                Err(e) => {
-                    warn!(
-                        "Failed to get endpoints for instance {}/{}: {}. Skipping NS record addition.",
-                        instance_ref.namespace, instance_ref.name, e
-                    );
-                    continue;
-                }
-            };
-
-            // Add NS record to all endpoints of this instance
-            for endpoint in &endpoints {
-                let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
-
-                if let Err(e) = crate::bind9::records::ns::add_ns_record(
-                    zone_name,
-                    "@", // Zone apex
-                    &nameserver.hostname,
-                    ttl,
-                    &pod_endpoint,
-                    &key_data,
-                )
-                .await
-                {
-                    warn!(
-                        "Failed to add NS record for {} to endpoint {} (instance {}/{}): {}",
-                        nameserver.hostname,
-                        pod_endpoint,
-                        instance_ref.namespace,
-                        instance_ref.name,
+        let written = helpers::for_each_instance_endpoint_with_policy(
+            resolver,
+            primary_instance_refs,
+            true, // with_rndc_key: dynamic updates are signed
+            DNS_TCP_PORT_NAME,
+            helpers::EndpointFailurePolicy::SkipUnavailable,
+            |pod_endpoint, instance_name, rndc_key| {
+                let glue = &glue;
+                async move {
+                    let key = rndc_key
+                        .ok_or_else(|| anyhow!("no RNDC key loaded for instance {instance_name}"))?;
+                    write_ns_and_glue(
+                        zone_name,
+                        hostname,
+                        glue_owner,
+                        glue,
+                        ttl,
+                        &pod_endpoint,
+                        &key,
+                    )
+                    .await
+                    .map_err(|e| {
+                        warn!(
+                            "Failed to write NS/glue records for {} to endpoint {} (instance {}): {:#}",
+                            hostname, pod_endpoint, instance_name, e
+                        );
                         e
-                    );
-                    // Continue with other endpoints - partial success is acceptable
+                    })
                 }
-            }
-        }
+            },
+        )
+        .await;
 
-        // Add glue records if IPs provided (for in-zone nameservers)
-        if let Some(ref ipv4) = nameserver.ipv4_address {
-            add_glue_record(
-                resolver,
-                zone_name,
-                &nameserver.hostname,
-                ipv4,
-                hickory_proto::rr::RecordType::A,
-                ttl,
-                primary_instance_refs,
-            )
-            .await?;
+        if let Err(e) = written {
+            errors.push(format!("{hostname}: {e:#}"));
         }
+    }
 
-        if let Some(ref ipv6) = nameserver.ipv6_address {
-            add_glue_record(
-                resolver,
-                zone_name,
-                &nameserver.hostname,
-                ipv6,
-                hickory_proto::rr::RecordType::AAAA,
-                ttl,
-                primary_instance_refs,
-            )
-            .await?;
-        }
+    if !errors.is_empty() {
+        return Err(anyhow!(
+            "NS or glue records not written for {}",
+            errors.join("; ")
+        ));
     }
 
     debug!(
@@ -2252,166 +2236,90 @@ async fn auto_generate_ns_records(
     Ok(())
 }
 
-/// Adds a glue record (A or AAAA) for an in-zone nameserver.
+/// Writes one nameserver's NS record at the zone apex, and its glue records,
+/// to one endpoint.
 ///
-/// Glue records provide IP addresses for nameservers within the zone's own domain.
-/// This is necessary to avoid circular dependencies when resolving the nameserver itself.
+/// Every record is attempted even when an earlier one failed.
 ///
 /// # Arguments
-/// * `resolver` - Per-reconcile resolver for instance RNDC keys and endpoints
 /// * `zone_name` - The DNS zone name
-/// * `hostname` - Full nameserver hostname (e.g., "ns2.example.com.")
-/// * `ip_address` - IP address (IPv4 or IPv6)
-/// * `record_type` - Type of glue record (A or AAAA)
-/// * `ttl` - TTL for the glue record
-/// * `primary_instance_refs` - List of primary instances to update
-///
-/// # Returns
-/// Result indicating success or failure
+/// * `hostname` - The nameserver's hostname (the NS record's target)
+/// * `glue_owner` - The glue records' owner name ([`glue_owner_name`]),
+///   `None` for an out-of-zone nameserver
+/// * `glue` - The glue addresses ([`glue_addresses`])
+/// * `ttl` - TTL for the records
+/// * `pod_endpoint` - The endpoint, `ip:port`
+/// * `key` - The instance's RNDC key, signing the updates
 ///
 /// # Errors
-/// Returns error if glue record addition fails on all instances
-#[allow(clippy::too_many_lines)]
-async fn add_glue_record(
-    resolver: &bindy_bind9::instances::InstanceResolver,
+/// Returns an error listing every record that failed.
+async fn write_ns_and_glue(
     zone_name: &str,
     hostname: &str,
-    ip_address: &str,
-    record_type: hickory_proto::rr::RecordType,
+    glue_owner: Option<&str>,
+    glue: &[Glue<'_>],
     ttl: Option<i32>,
-    primary_instance_refs: &[crate::crd::InstanceReference],
+    pod_endpoint: &str,
+    key: &crate::bind9::RndcKeyData,
 ) -> Result<()> {
-    // Extract record name from hostname
-    // Example: "ns2.example.com." in zone "example.com" → name = "ns2"
-    let name = hostname
-        .trim_end_matches('.')
-        .strip_suffix(&format!(".{}", zone_name.trim_end_matches('.')))
-        .unwrap_or_else(|| hostname.trim_end_matches('.'));
+    let mut failures: Vec<String> = Vec::new();
 
-    // Check if this is actually an in-zone nameserver
-    if name == hostname.trim_end_matches('.') {
-        // Hostname doesn't end with zone name - this is an out-of-zone nameserver
-        // No glue record needed
-        debug!(
-            "Skipping glue record for out-of-zone nameserver {} (not in zone {})",
-            hostname, zone_name
-        );
-        return Ok(());
+    if let Err(e) = crate::bind9::records::ns::add_ns_record(
+        zone_name,
+        ZONE_APEX,
+        hostname,
+        ttl,
+        pod_endpoint,
+        key,
+    )
+    .await
+    {
+        failures.push(format!("NS {hostname}: {e:#}"));
     }
 
-    debug!(
-        "Adding {} glue record: {} IN {} {}",
-        if record_type == hickory_proto::rr::RecordType::A {
-            "A"
-        } else {
-            "AAAA"
-        },
-        name,
-        if record_type == hickory_proto::rr::RecordType::A {
-            "A"
-        } else {
-            "AAAA"
-        },
-        ip_address
-    );
+    let Some(owner) = glue_owner else {
+        return failures_to_result(failures);
+    };
 
-    let mut success_count = 0;
-    let mut errors = Vec::new();
-
-    for instance_ref in primary_instance_refs {
-        // Load RNDC key for this instance
-        let key_data = match resolver
-            .rndc_key(&instance_ref.namespace, &instance_ref.name)
-            .await
-        {
-            Ok(key) => key,
-            Err(e) => {
-                warn!(
-                    "Failed to load RNDC key for instance {}/{}: {}. Skipping glue record addition.",
-                    instance_ref.namespace, instance_ref.name, e
-                );
-                continue;
+    for address in glue {
+        let written = match address {
+            Glue::V4(ip) => {
+                crate::bind9::records::a::add_a_record(
+                    zone_name,
+                    owner,
+                    &[(*ip).to_string()],
+                    ttl,
+                    pod_endpoint,
+                    key,
+                )
+                .await
+            }
+            Glue::V6(ip) => {
+                crate::bind9::records::a::add_aaaa_record(
+                    zone_name,
+                    owner,
+                    &[(*ip).to_string()],
+                    ttl,
+                    pod_endpoint,
+                    key,
+                )
+                .await
             }
         };
-
-        // Get endpoints for this instance
-        let endpoints = match resolver
-            .endpoints(&instance_ref.namespace, &instance_ref.name, "dns-tcp")
-            .await
-        {
-            Ok(eps) => eps,
-            Err(e) => {
-                warn!(
-                    "Failed to get endpoints for instance {}/{}: {}. Skipping glue record addition.",
-                    instance_ref.namespace, instance_ref.name, e
-                );
-                continue;
-            }
-        };
-
-        // Add glue record to all endpoints of this instance
-        for endpoint in &endpoints {
-            let pod_endpoint = format!("{}:{}", endpoint.ip, endpoint.port);
-
-            let result = match record_type {
-                hickory_proto::rr::RecordType::A => {
-                    crate::bind9::records::a::add_a_record(
-                        zone_name,
-                        name,
-                        &[ip_address.to_string()],
-                        ttl,
-                        &pod_endpoint,
-                        &key_data,
-                    )
-                    .await
-                }
-                hickory_proto::rr::RecordType::AAAA => {
-                    crate::bind9::records::a::add_aaaa_record(
-                        zone_name,
-                        name,
-                        &[ip_address.to_string()],
-                        ttl,
-                        &pod_endpoint,
-                        &key_data,
-                    )
-                    .await
-                }
-                _ => {
-                    return Err(anyhow::anyhow!(
-                        "Invalid record type for glue record: {:?}",
-                        record_type
-                    ))
-                }
-            };
-
-            match result {
-                Ok(()) => {
-                    success_count += 1;
-                }
-                Err(e) => {
-                    warn!(
-                        "Failed to add glue record {} to endpoint {} (instance {}/{}): {}",
-                        name, pod_endpoint, instance_ref.namespace, instance_ref.name, e
-                    );
-                    errors.push(format!(
-                        "endpoint {} (instance {}/{}): {}",
-                        pod_endpoint, instance_ref.namespace, instance_ref.name, e
-                    ));
-                }
-            }
+        if let Err(e) = written {
+            failures.push(format!("glue {owner} {address:?}: {e:#}"));
         }
     }
 
-    // Accept partial success - at least one endpoint updated
-    if success_count > 0 {
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!(
-            "Failed to add glue record {} to all instances. Errors: {}",
-            name,
-            errors.join("; ")
-        ))
+    failures_to_result(failures)
+}
+
+/// `Ok(())` for no failures, otherwise an error listing them.
+fn failures_to_result(failures: Vec<String>) -> Result<()> {
+    if failures.is_empty() {
+        return Ok(());
     }
+    Err(anyhow!(failures.join("; ")))
 }
 
 /// Whether an instance is serving a zone, given per-endpoint results of

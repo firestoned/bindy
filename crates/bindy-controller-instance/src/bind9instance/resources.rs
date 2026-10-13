@@ -28,13 +28,14 @@ use bindy_controller_sdk::resources::{create_or_apply, delete_if_present};
 
 /// Resolve RNDC configuration from instance and cluster levels.
 ///
-/// Applies the precedence order: Instance > Role > Default
+/// Applies the precedence order: Instance > Role > deprecated instance
+/// `rndcSecretRef` > Default. RNDC keys have no cluster-wide (global) level.
 ///
 /// # Arguments
 ///
 /// * `instance` - The `Bind9Instance` being reconciled
-/// * `cluster` - Optional `Bind9Cluster` (namespace-scoped)
-/// * `cluster_provider` - Optional `ClusterBind9Provider` (cluster-scoped)
+/// * `cluster` - Optional `Bind9Cluster` (namespace-scoped) whose role block
+///   for the instance's role may set `rndcKey`
 ///
 /// # Returns
 ///
@@ -42,53 +43,17 @@ use bindy_controller_sdk::resources::{create_or_apply, delete_if_present};
 pub(super) fn resolve_full_rndc_config(
     instance: &Bind9Instance,
     cluster: Option<&Bind9Cluster>,
-    _cluster_provider: Option<&crate::crd::ClusterBind9Provider>,
 ) -> crate::crd::RndcKeyConfig {
-    use super::config::{resolve_rndc_config, resolve_rndc_config_from_deprecated};
+    use super::config::resolve_rndc_config;
 
-    // Extract instance-level config
     let instance_config = instance.spec.rndc_key.as_ref();
+    let role_config = cluster.and_then(|c| c.spec.common.role_rndc_key(instance.spec.role));
 
-    // Extract role-level config (from cluster primary/secondary config)
-    // Note: Although serde flattens, the Rust struct still has the common field
-    let role_config = cluster.and_then(|c| match instance.spec.role {
-        crate::crd::ServerRole::Primary => c
-            .spec
-            .common
-            .primary
-            .as_ref()
-            .and_then(|p| p.rndc_key.as_ref()),
-        crate::crd::ServerRole::Secondary => c
-            .spec
-            .common
-            .secondary
-            .as_ref()
-            .and_then(|s| s.rndc_key.as_ref()),
-    });
-
-    // No global-level RNDC config is supported in the current design
-    // RNDC keys are instance-specific or role-specific only
-
-    // Handle backward compatibility with deprecated fields
+    // The deprecated field only applies when neither new field is present
     #[allow(deprecated)]
     let deprecated_instance_ref = instance.spec.rndc_secret_ref.as_ref();
 
-    // First, resolve from new fields (no global level for RNDC keys)
-    let resolved = resolve_rndc_config(instance_config, role_config, None);
-
-    // Then, apply backward compatibility if needed
-    if instance_config.is_none() && role_config.is_none() {
-        // Only use deprecated fields if no new fields are present
-        if deprecated_instance_ref.is_some() {
-            return resolve_rndc_config_from_deprecated(
-                None,
-                deprecated_instance_ref,
-                instance.spec.role,
-            );
-        }
-    }
-
-    resolved
+    resolve_rndc_config(instance_config, role_config, deprecated_instance_ref)
 }
 
 /// What [`create_or_update_resources`] applied, for the status update.
@@ -192,8 +157,7 @@ pub(super) async fn create_or_update_resources(
         .context("user-supplied Pod shape rejected")?;
 
     // Resolve RNDC configuration with proper precedence
-    let rndc_config =
-        resolve_full_rndc_config(instance, cluster.as_ref(), cluster_provider.as_ref());
+    let rndc_config = resolve_full_rndc_config(instance, cluster.as_ref());
     debug!(
         "Resolved RNDC config: auto_rotate={}, rotate_after={}",
         rndc_config.auto_rotate, rndc_config.rotate_after
@@ -830,20 +794,8 @@ pub(super) fn desired_configmap_for_instance(
 
     // Standalone: role-specific allow-transfer from a namespace-scoped
     // cluster, if one was passed in.
-    let role_allow_transfer = cluster.and_then(|c| match instance.spec.role {
-        crate::crd::ServerRole::Primary => c
-            .spec
-            .common
-            .primary
-            .as_ref()
-            .and_then(|p| p.allow_transfer.as_ref()),
-        crate::crd::ServerRole::Secondary => c
-            .spec
-            .common
-            .secondary
-            .as_ref()
-            .and_then(|s| s.allow_transfer.as_ref()),
-    });
+    let role_allow_transfer =
+        cluster.and_then(|c| c.spec.common.role_allow_transfer(instance.spec.role));
     build_configmap(name, namespace, instance, cluster, role_allow_transfer).map(Some)
 }
 
@@ -1605,38 +1557,11 @@ async fn create_or_update_service(
     cluster_provider: Option<&crate::crd::ClusterBind9Provider>,
 ) -> Result<()> {
     // Get custom service spec based on instance role from cluster (namespace-scoped or global)
+    let role = instance.spec.role;
     let custom_spec = cluster
-        .and_then(|c| match instance.spec.role {
-            crate::crd::ServerRole::Primary => c
-                .spec
-                .common
-                .primary
-                .as_ref()
-                .and_then(|p| p.service.as_ref()),
-            crate::crd::ServerRole::Secondary => c
-                .spec
-                .common
-                .secondary
-                .as_ref()
-                .and_then(|s| s.service.as_ref()),
-        })
-        .or_else(|| {
-            // Fall back to global cluster if no namespace-scoped cluster
-            cluster_provider.and_then(|gc| match instance.spec.role {
-                crate::crd::ServerRole::Primary => gc
-                    .spec
-                    .common
-                    .primary
-                    .as_ref()
-                    .and_then(|p| p.service.as_ref()),
-                crate::crd::ServerRole::Secondary => gc
-                    .spec
-                    .common
-                    .secondary
-                    .as_ref()
-                    .and_then(|s| s.service.as_ref()),
-            })
-        });
+        .and_then(|c| c.spec.common.role_service(role))
+        // Fall back to the global cluster if the namespace-scoped one sets none
+        .or_else(|| cluster_provider.and_then(|gc| gc.spec.common.role_service(role)));
 
     // The same merged bindcar configuration the Deployment's sidecar is
     // built from, so the `http` port targets the port it listens on and a
@@ -1778,7 +1703,7 @@ pub(super) async fn delete_resources(client: &Client, instance: &Bind9Instance) 
 
     // 4. The RNDC Secret, only when the operator generated it
     // ([`generated_rndc_secret`]).
-    let instance_rndc = resolve_full_rndc_config(instance, None, None);
+    let instance_rndc = resolve_full_rndc_config(instance, None);
     if let Some(secret_name) =
         generated_rndc_secret(name, mounted_secret.as_deref(), &instance_rndc)
     {
@@ -1953,14 +1878,10 @@ fn validate_user_pod_shape(
         let (Some(label), Some(common)) = (label, common) else {
             continue;
         };
-        crate::placement::validate_optional_placement(
-            common.primary.as_ref().and_then(|p| p.placement.as_ref()),
-        )
-        .with_context(|| format!("{label} spec.primary.placement"))?;
-        crate::placement::validate_optional_placement(
-            common.secondary.as_ref().and_then(|s| s.placement.as_ref()),
-        )
-        .with_context(|| format!("{label} spec.secondary.placement"))?;
+        for &role in crate::crd::ServerRole::ALL {
+            crate::placement::validate_optional_placement(common.role_placement(role))
+                .with_context(|| format!("{label} spec.{}.placement", role.as_str()))?;
+        }
     }
 
     // Instance-level fields.
