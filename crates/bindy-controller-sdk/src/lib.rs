@@ -18,6 +18,8 @@
 //! - [`status`] - Status condition helpers
 //! - [`pagination`] - Paginated LIST helpers
 //! - [`resources`] - Create-or-update, delete-if-present and owner-reference helpers
+//! - [`rrset_claim`] - Whether an RRset is still claimed by another live record
+//!   (bug-211, ADR-0022)
 //! - [`rate_limit`] - The client-side rate-limited Kubernetes client (ADR-0005)
 //! - [`request_timeout`] - The deadline on non-watch Kubernetes API requests (ADR-0014)
 //! - [`namespace_scope`] - Cluster-wide or per-namespace watch scope
@@ -43,6 +45,7 @@ pub mod reconcile;
 pub mod request_timeout;
 pub mod resources;
 pub mod retry;
+pub mod rrset_claim;
 pub mod shutdown;
 pub mod status;
 pub mod watch;

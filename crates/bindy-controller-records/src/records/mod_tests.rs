@@ -170,3 +170,87 @@ mod rejected_write_key_tests {
         assert_eq!(rejected_write_key(&ptr), "PTRRecord/team/web");
     }
 }
+
+/// `rrset_claimant`: the finalizer and the rename path must not delete an
+/// RRset another live record of the zone still declares (ADR-0022 Decision 5).
+#[cfg(test)]
+mod rrset_claimant_tests {
+    use super::super::rrset_claimant;
+    use crate::crd::{ARecord, ZoneReference};
+    use serde_json::json;
+    use std::sync::Arc;
+
+    const ZONE: &str = "example-com";
+
+    fn zone_ref() -> ZoneReference {
+        ZoneReference {
+            api_version: "bindy.firestoned.io/v1beta1".to_string(),
+            kind: "DNSZone".to_string(),
+            name: ZONE.to_string(),
+            namespace: "dns".to_string(),
+            zone_name: "example.com".to_string(),
+            last_reconciled_at: None,
+        }
+    }
+
+    /// An `ARecord` `team/<name>` declaring `dns_name` in the zone, being
+    /// deleted when `deleting`.
+    fn a_record(name: &str, dns_name: &str, deleting: bool) -> Arc<ARecord> {
+        let mut value = json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1",
+            "kind": "ARecord",
+            "metadata": {"name": name, "namespace": "team"},
+            "spec": {"name": dns_name, "ipv4Addresses": ["192.0.2.1"]},
+            "status": {"zoneRef": zone_ref(), "publishedName": dns_name},
+        });
+        if deleting {
+            value["metadata"]["deletionTimestamp"] = json!("2026-10-13T00:00:00Z");
+        }
+        Arc::new(serde_json::from_value(value).expect("valid fixture"))
+    }
+
+    #[test]
+    fn a_deletion_another_live_record_still_declares_sends_no_delete() {
+        let gone = a_record("old", "www", true);
+        let live = vec![Arc::clone(&gone), a_record("new", "www", false)];
+
+        let claimant = rrset_claimant(gone.as_ref(), &zone_ref(), "www", &live)
+            .expect("www is still declared by team/new");
+
+        assert_eq!(claimant.metadata.name.as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn a_deletion_nobody_else_declares_still_deletes() {
+        let gone = a_record("old", "www", true);
+        let live = vec![Arc::clone(&gone), a_record("api", "api", false)];
+
+        assert!(rrset_claimant(gone.as_ref(), &zone_ref(), "www", &live).is_none());
+    }
+
+    #[test]
+    fn a_claimant_that_is_being_deleted_too_does_not_keep_the_rrset() {
+        let gone = a_record("old", "www", true);
+        let live = vec![Arc::clone(&gone), a_record("also-leaving", "www", true)];
+
+        assert!(rrset_claimant(gone.as_ref(), &zone_ref(), "www", &live).is_none());
+    }
+
+    #[test]
+    fn a_rename_keeps_the_old_name_another_record_declares() {
+        // team/web moved from `www` to `web`; team/other still declares `www`.
+        let renamed = a_record("web", "web", false);
+        let live = vec![Arc::clone(&renamed), a_record("other", "WWW", false)];
+
+        assert!(rrset_claimant(renamed.as_ref(), &zone_ref(), "www", &live).is_some());
+    }
+
+    #[test]
+    fn a_rename_deletes_an_old_name_nobody_declares() {
+        // The renamed record itself declares only its new name.
+        let renamed = a_record("web", "web", false);
+        let live = vec![Arc::clone(&renamed)];
+
+        assert!(rrset_claimant(renamed.as_ref(), &zone_ref(), "www", &live).is_none());
+    }
+}

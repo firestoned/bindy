@@ -2,6 +2,63 @@
 
 This document collects the breaking-change migrations for Bindy, newest first.
 
+## Scout records gain a source-kind label and new names (ADR-0022)
+
+Scout's five source kinds now share one reconcile pipeline. No CRD, RBAC or
+flag change.
+
+- **Upgrade the operator before Scout.** The new operator keeps a DNS name
+  served while two records declare it and one is deleted (ADR-0022, Decision
+  5). An older operator deletes the shared RRset with the old record, and the
+  name stays off the air until the new record next changes.
+
+- **Every Scout `ARecord` is renamed once, on the first reconcile after the
+  upgrade.** Names change from `scout-{cluster}-{namespace}-{name}-{index}`
+  (`scout-{cluster}-{namespace}-{service}` for a Service) to
+  `scout-{cluster}-{namespace}-{name}-{hash}-{index}`, where `{hash}` is 8
+  hex characters derived from the cluster, kind, namespace and name. Each
+  record also gains the `bindy.firestoned.io/source-kind` label (`Ingress`,
+  `Service`, `HTTPRoute`, `TLSRoute` or `TCPRoute`). Scout applies the new
+  record first and deletes the old one only once the operator reports the
+  new one bound to its zone (`status.zoneRef`) and `Ready`, rechecking every
+  10 seconds until then, so the name keeps resolving throughout. Every source
+  reconciles when Scout starts, so the migration completes shortly after
+  startup; a source whose new record never becomes `Ready` keeps its old
+  record, and `kubectl get arecords -l '!bindy.firestoned.io/source-kind'`
+  lists what is still waiting.
+- **The published DNS names do not change.** Only the `ARecord` object
+  names do; `spec.name`, the addresses and the TTL are the same.
+- **Tools that select Scout records by name pattern must use the labels.**
+  Select by `bindy.firestoned.io/managed-by=scout` plus `source-cluster`,
+  `source-kind`, `source-namespace` and `source-name`, for example
+  `kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-kind=Ingress,bindy.firestoned.io/source-name=web`.
+- **Same-named sources of different kinds no longer share records.** An
+  `Ingress` and an `HTTPRoute` both called `web` in one namespace used to
+  overwrite each other's `ARecord`, and releasing a same-named `Service`
+  deleted them all. Each now owns its own records. If two kinds shared a
+  name before the upgrade, the first to reconcile removes the shared legacy
+  record and the other recreates its own on its next reconcile.
+- **An invalid TTL annotation now stops publication for that source.** A
+  `bindy.firestoned.io/ttl` that is not a positive integer (`"abc"`, `"0"`,
+  `"-5"`) used to be ignored (or, if negative, accepted). Scout now logs a
+  warning, publishes nothing for that resource and retries every 30s, like
+  an invalid `record-name` override; records already published stay. An
+  invalid `record-name` override on an Ingress or route also no longer
+  deletes the resource's existing records.
+- **A misconfigured Scout fails at startup.** A setting that is present but
+  empty (`BINDY_SCOUT_DEFAULT_ZONE=""`), a malformed `--gateway-service` /
+  `BINDY_SCOUT_GATEWAY_SERVICES` entry, or a non-IPv4 `--default-ips` entry
+  now stops Scout with an error naming the setting, instead of being
+  silently ignored. Check the Scout Deployment's `env` and `args` before
+  upgrading.
+- **Status addresses that are not IPv4 are skipped.** An IPv6 address in an
+  Ingress or Service `status.loadBalancer`, or in a Gateway's
+  `status.addresses`, is no longer written into an `ARecord`.
+- **A Gateway or Service lookup that fails (other than 404) is retried.**
+  Before, the failure was logged at debug level and Scout fell back to
+  `--default-ips`; now the reconcile fails and retries, so a transient API
+  error cannot publish the fallback IP.
+
 ## `bindy bootstrap mc` writes the kubeconfig Secret to a file
 
 The Secret holds the remote ServiceAccount token, so `bindy bootstrap mc` no

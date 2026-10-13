@@ -399,8 +399,14 @@ pub(crate) async fn discover_selected_records_detailed(
 /// When a record resource is deleted or unselected while another live record
 /// of the zone declares the same name and type, most commonly the same record
 /// renamed (old resource deleted, new one created), that RRset is still
-/// wanted and must stay. Owner names compare case-insensitively; a resource
-/// never counts as its own claimant.
+/// wanted and must stay. The rule is
+/// [`bindy_controller_sdk::rrset_claim::claims_rrset`], shared with the
+/// record finalizer (ADR-0022 Decision 5): same kind, same DNS name
+/// (case-insensitive), another object.
+///
+/// Every reference here comes from this zone's own selection, so the zone
+/// matches by construction; `live` lists records that exist, so none is
+/// treated as being deleted.
 ///
 /// # Arguments
 ///
@@ -415,13 +421,30 @@ pub(crate) fn claimed_by_live_record<'a>(
     gone: &crate::crd::RecordReferenceWithTimestamp,
     live: &'a [crate::crd::RecordReferenceWithTimestamp],
 ) -> Option<&'a crate::crd::RecordReferenceWithTimestamp> {
-    let gone_dns_name = gone.record_name.as_deref()?;
+    let gone_claim = zone_selection_claim(gone)?;
     live.iter().find(|r| {
-        r.kind == gone.kind
-            && !(r.namespace == gone.namespace && r.name == gone.name)
-            && r.record_name
-                .as_deref()
-                .is_some_and(|n| n.eq_ignore_ascii_case(gone_dns_name))
+        zone_selection_claim(r).is_some_and(|candidate| {
+            bindy_controller_sdk::rrset_claim::claims_rrset(&candidate, &gone_claim)
+        })
+    })
+}
+
+/// The RRset claim of a record reference from this zone's selection, or
+/// `None` when it carries no DNS name.
+///
+/// The zone fields are left empty: every reference passed to
+/// [`claimed_by_live_record`] belongs to the same zone, so they compare equal.
+fn zone_selection_claim(
+    record_ref: &crate::crd::RecordReferenceWithTimestamp,
+) -> Option<bindy_controller_sdk::rrset_claim::RrsetClaim<'_>> {
+    Some(bindy_controller_sdk::rrset_claim::RrsetClaim {
+        kind: &record_ref.kind,
+        namespace: &record_ref.namespace,
+        name: &record_ref.name,
+        zone_namespace: "",
+        zone_name: "",
+        dns_name: record_ref.record_name.as_deref()?,
+        deleting: false,
     })
 }
 

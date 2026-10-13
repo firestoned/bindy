@@ -1,3 +1,45 @@
+## [2026-10-13 16:00] - Scout sources share one pipeline (ADR-0022); a shared DNS name survives one record's deletion
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0022-scout-sources-share-one-pipeline.md` (Accepted).
+- `crates/bindy-scout/src/pipeline.rs`: the `ScoutSource` trait and one `reconcile_source<K>` for Ingress, Service, HTTPRoute, TLSRoute and TCPRoute.
+  - It applies the same order everywhere: excluded namespace, deletion with grace period, opt-in and publishability, then the namespace LIST, finalizer, zone, TTL, record-name override, zone authorization, IPs, apply, then prune, legacy and stale-cluster cleanup.
+  - Shared `error_policy`, controller spawn, finalizer and cleanup helpers.
+- `crates/bindy-controller-sdk/src/rrset_claim.rs`: `claims_rrset`, `claim_of` and `live_claimant`, one rule for "another live record still declares this RRset".
+
+### Changed
+- Every Scout `ARecord` carries `bindy.firestoned.io/source-kind`, and every Scout selector includes it.
+- Names are `scout-{cluster}-{namespace}-{name}-{hash}-{index}`, with an 8-hex SHA-256 of the NUL-joined (cluster, kind, namespace, name). The name is truncated without a trailing `-`.
+- Existing records are renamed once on upgrade. Each source applies its new records first, and deletes its own unlabelled legacy records (and records of a previous `--cluster-name` in the zone) only once every new record reports `status.zoneRef` and `Ready=True`, rechecking every 10 s (`handover_step`, `arecord_served`, `HANDOVER_RECHECK_SECS`). The published DNS names do not change and stay served throughout.
+- Fail fast in the pipeline:
+  - non-IPv4 status addresses are skipped;
+  - a TTL annotation that is not a positive integer publishes nothing for that source and requeues;
+  - an invalid record-name override no longer prunes the source's existing records;
+  - malformed `--gateway-service` entries, non-IPv4 `--default-ips` and empty flag or env values fail Scout at startup;
+  - a Gateway or Service lookup error other than 404 fails the reconcile;
+  - the opt-in check runs before the namespace LIST.
+- `scout.rs` goes from 4,923 to 2,367 lines (the bindy-scout crate as a whole from 4,944 to 3,313).
+- Record finalizer and rename path (`crates/bindy-controller-records/src/records/mod.rs`): an RRset another live record of the same kind in the zone still declares is no longer deleted. Both paths re-push the survivor through one `repush_claimant` (compared by value first); a failed re-push keeps the finalizer, or on a rename keeps `status.publishedName`, so it is retried. The zone's stale-record cleanup uses the same rule.
+- Docs:
+  - `docs/src/guide/scout.md` and `docs/src/installation/scout.md`: names, labels, TTL and startup validation;
+  - `docs/src/operations/migration-guide.md`: a new entry (upgrade the operator before Scout);
+  - `docs/src/security/threat-model.md`: v1.25 (M-63, M-64, accepted risk 20 closed);
+  - roadmap 30 and `ROADMAPS.md`.
+
+- `tests/e2e/scout_test.sh`: expects the hashed names (computed independently in the script) and the `source-kind` label, and checks that after a `--cluster-name` change the old record is kept until the new one is served, then deleted.
+
+### Fixed
+- Scout: same-named sources of different kinds overwrote and pruned each other's records, and `team-a`/`web` collided with `team`/`a-web` (threat-model accepted risk 20).
+- Operator: when two records published the same DNS name and one was deleted, the survivor's data was removed from BIND9 and nothing re-pushed it (no periodic resync since ADR-0016).
+
+### Impact
+- [x] Breaking change: Scout `ARecord` object names change once, and tools that select them by name pattern must use the labels (migration guide). An invalid TTL annotation now stops publication for that source; a misconfigured Scout fails at startup.
+- [x] Requires cluster rollout (operator and scout binaries)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-13 22:00] - Record kinds declared once (ADR-0020); an RRset replaced in one DNS UPDATE (ADR-0021)
 
 **Author:** Erick Bourgeois
