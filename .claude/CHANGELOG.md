@@ -1,3 +1,17 @@
+## [2026-10-14 18:00] - Roadmap 30 complete
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `.github/community/30-code-simplification.md`: status complete (PRs 1 to 7 merged, #544 to #551); PR 7 marked merged; follow-ups added for the TSIG BADKEY log noise during a key roll and the stale `spec.global.rndcSecretRef` rustdoc, next to the retry-loop merge and the field-manager ownership already recorded.
+- `ROADMAPS.md`: row 30 is done.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
 ## [2026-10-14 14:00] - Sweep: one ACL grammar, quieter bindcar transport, typed HTTP method (roadmap 30 PR 7)
 
 **Author:** Erick Bourgeois
