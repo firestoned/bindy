@@ -8,12 +8,12 @@
 use super::types::RndcKeyData;
 use anyhow::{Context, Result};
 use bindcar::{CreateZoneRequest, SoaRecord, ZoneConfig};
-use reqwest::{Client as HttpClient, StatusCode};
+use reqwest::{Client as HttpClient, Method, StatusCode};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use crate::constants::{DEFAULT_DNS_RECORD_TTL_SECS, DNS_CONTAINER_PORT};
 use bindy_controller_sdk::retry::{http_backoff, is_retryable_http_status, ExponentialBackoff};
@@ -160,7 +160,7 @@ pub(crate) fn build_api_url_with_scheme(server: &str, tls: bool) -> String {
 /// # Arguments
 /// * `client` - HTTP client
 /// * `token` - Optional authentication token (None if auth disabled)
-/// * `method` - HTTP method (GET, POST, DELETE)
+/// * `method` - HTTP method
 /// * `url` - Full URL to the bindcar API endpoint
 /// * `body` - Optional JSON body for POST requests
 ///
@@ -170,7 +170,7 @@ pub(crate) fn build_api_url_with_scheme(server: &str, tls: bool) -> String {
 pub(crate) async fn bindcar_request<T: Serialize + std::fmt::Debug>(
     client: &HttpClient,
     token: Option<&str>,
-    method: &str,
+    method: Method,
     url: &str,
     body: Option<&T>,
 ) -> Result<String> {
@@ -190,7 +190,7 @@ pub(crate) async fn bindcar_request<T: Serialize + std::fmt::Debug>(
 pub(crate) async fn bindcar_request_within<T: Serialize + std::fmt::Debug>(
     client: &HttpClient,
     token: Option<&str>,
-    method: &str,
+    method: Method,
     url: &str,
     body: Option<&T>,
     budget: Duration,
@@ -203,7 +203,7 @@ pub(crate) async fn bindcar_request_within<T: Serialize + std::fmt::Debug>(
 async fn bindcar_request_with_backoff<T: Serialize + std::fmt::Debug>(
     client: &HttpClient,
     token: Option<&str>,
-    method: &str,
+    method: Method,
     url: &str,
     body: Option<&T>,
     mut backoff: ExponentialBackoff,
@@ -214,7 +214,7 @@ async fn bindcar_request_with_backoff<T: Serialize + std::fmt::Debug>(
     loop {
         attempt += 1;
 
-        let result = bindcar_request_internal(client, token, method, url, body).await;
+        let result = bindcar_request_internal(client, token, method.clone(), url, body).await;
 
         match result {
             Ok(response) => {
@@ -230,22 +230,12 @@ async fn bindcar_request_with_backoff<T: Serialize + std::fmt::Debug>(
                 return Ok(response);
             }
             Err(e) => {
-                // Determine if the error is retryable by checking the error type
-                let mut is_retryable = false;
+                let is_retryable = is_retryable_bindcar_error(&e);
 
-                // Check if this is an HttpError (which contains the actual status code)
-                if let Some(http_err) = e.downcast_ref::<HttpError>() {
-                    is_retryable = is_retryable_http_status(http_err.status);
-                } else {
-                    // For non-HTTP errors, check if it's a network error
-                    let error_msg = e.to_string();
-                    if error_msg.contains("Failed to send") || error_msg.contains("connection") {
-                        is_retryable = true;
-                    }
-                }
-
+                // The caller decides what a non-retryable answer means (a
+                // 404 or 409 is often expected) and logs it there.
                 if !is_retryable {
-                    error!(
+                    debug!(
                         method = %method,
                         url = %url,
                         error = %e,
@@ -257,7 +247,7 @@ async fn bindcar_request_with_backoff<T: Serialize + std::fmt::Debug>(
                 // Check if we've exceeded max elapsed time
                 if let Some(max_elapsed) = backoff.max_elapsed_time {
                     if start_time.elapsed() >= max_elapsed {
-                        error!(
+                        warn!(
                             method = %method,
                             url = %url,
                             attempt = attempt,
@@ -289,7 +279,7 @@ async fn bindcar_request_with_backoff<T: Serialize + std::fmt::Debug>(
                         .map_or(duration, |max| max.saturating_sub(start_time.elapsed()));
                     tokio::time::sleep(duration.min(remaining)).await;
                 } else {
-                    error!(
+                    warn!(
                         method = %method,
                         url = %url,
                         attempt = attempt,
@@ -304,6 +294,22 @@ async fn bindcar_request_with_backoff<T: Serialize + std::fmt::Debug>(
     }
 }
 
+/// Whether a failed bindcar call is worth retrying, judged by the error's
+/// type anywhere in its chain, never by its message text.
+///
+/// * a bindcar [`HttpError`]: its status (429 and 5xx retry);
+/// * a `reqwest` transport error: a connection failure or a timeout retries;
+///   a request that could not be built (an invalid URL, say) does not;
+/// * anything else: not retryable.
+fn is_retryable_bindcar_error(e: &anyhow::Error) -> bool {
+    if let Some(http) = e.chain().find_map(|c| c.downcast_ref::<HttpError>()) {
+        return is_retryable_http_status(http.status);
+    }
+    e.chain()
+        .find_map(|c| c.downcast_ref::<reqwest::Error>())
+        .is_some_and(|r| r.is_connect() || r.is_timeout())
+}
+
 /// Internal implementation of bindcar API requests without retry logic.
 ///
 /// This function handles the actual HTTP communication. It should not be called directly;
@@ -312,7 +318,7 @@ async fn bindcar_request_with_backoff<T: Serialize + std::fmt::Debug>(
 /// # Arguments
 /// * `client` - HTTP client
 /// * `token` - Optional authentication token (None if auth disabled)
-/// * `method` - HTTP method (GET, POST, DELETE)
+/// * `method` - HTTP method
 /// * `url` - Full URL to the bindcar API endpoint
 /// * `body` - Optional JSON body for POST requests
 ///
@@ -322,7 +328,7 @@ async fn bindcar_request_with_backoff<T: Serialize + std::fmt::Debug>(
 async fn bindcar_request_internal<T: Serialize + std::fmt::Debug>(
     client: &HttpClient,
     token: Option<&str>,
-    method: &str,
+    method: Method,
     url: &str,
     body: Option<&T>,
 ) -> Result<String> {
@@ -335,26 +341,10 @@ async fn bindcar_request_internal<T: Serialize + std::fmt::Debug>(
         "HTTP API request to bindcar"
     );
 
-    // Build the HTTP request
-    let mut request = match method {
-        "GET" => client.get(url),
-        "POST" => {
-            let mut req = client.post(url);
-            if let Some(body_data) = body {
-                req = req.json(body_data);
-            }
-            req
-        }
-        "PATCH" => {
-            let mut req = client.patch(url);
-            if let Some(body_data) = body {
-                req = req.json(body_data);
-            }
-            req
-        }
-        "DELETE" => client.delete(url),
-        _ => anyhow::bail!("Unsupported HTTP method: {method}"),
-    };
+    let mut request = client.request(method.clone(), url);
+    if let Some(body_data) = body {
+        request = request.json(body_data);
+    }
 
     // Add Authorization header only if token is provided (auth enabled)
     if let Some(token_value) = token {
@@ -375,7 +365,8 @@ async fn bindcar_request_internal<T: Serialize + std::fmt::Debug>(
             .text()
             .await
             .unwrap_or_else(|_| "Unknown error".to_string());
-        error!(
+        // Logged once, by whoever decides what the status means.
+        debug!(
             method = %method,
             url = %url,
             status = %status,
@@ -420,7 +411,7 @@ pub async fn retransfer_zone(
     let base_url = build_api_url(server);
     let url = format!("{base_url}/api/v1/zones/{zone_name}/retransfer");
 
-    bindcar_request(client, token, "POST", &url, None::<&()>)
+    bindcar_request(client, token, Method::POST, &url, None::<&()>)
         .await
         .context("Failed to retransfer zone")?;
 
@@ -441,7 +432,7 @@ pub async fn zone_status(
     let base_url = build_api_url(server);
     let url = format!("{base_url}/api/v1/zones/{zone_name}/status");
 
-    let status = bindcar_request(client, token, "GET", &url, None::<&()>)
+    let status = bindcar_request(client, token, Method::GET, &url, None::<&()>)
         .await
         .context("Failed to get zone status")?;
 
@@ -587,7 +578,7 @@ pub async fn zone_presence(
     let error = match bindcar_request_within(
         client,
         token,
-        "GET",
+        Method::GET,
         &url,
         None::<&()>,
         ZONE_STATUS_RETRY_BUDGET,
@@ -643,10 +634,9 @@ pub async fn zone_exists(
             debug!("Zone {zone_name} exists on {server} ({presence:?})");
             Ok(true)
         }
-        Err(e) => {
-            error!("Error checking if zone {zone_name} exists on {server}: {e:#}");
-            Err(e).context("Failed to check zone existence")
-        }
+        Err(e) => Err(e).with_context(|| {
+            format!("Failed to check whether zone {zone_name} exists on {server}")
+        }),
     }
 }
 
@@ -755,7 +745,7 @@ pub async fn add_primary_zone(
         update_key_name: Some(key_data.name.clone()),
     };
 
-    match bindcar_request(client, token, "POST", &url, Some(&request)).await {
+    match bindcar_request(client, token, Method::POST, &url, Some(&request)).await {
         Ok(_) => {
             if let Some(ips) = secondary_ips {
                 info!(
@@ -857,7 +847,7 @@ pub async fn update_primary_zone(
     info!("Updating zone {zone_name} on {server}: dnssec-policy {dnssec_policy:?}");
 
     // Use PATCH to update only the specified fields
-    match bindcar_request(client, token, "PATCH", &url, Some(&update_request)).await {
+    match bindcar_request(client, token, Method::PATCH, &url, Some(&update_request)).await {
         Ok(_) => {
             info!(
                 "Successfully updated zone {zone_name} on {server} (dnssec-policy {dnssec_policy:?})"
@@ -944,7 +934,7 @@ pub async fn update_primary_transfer_peers(
     let first_error = match bindcar_request_within(
         client,
         token,
-        "PATCH",
+        Method::PATCH,
         &url,
         Some(&full),
         NOTIFY_PEER_UPDATE_RETRY_BUDGET,
@@ -968,7 +958,7 @@ pub async fn update_primary_transfer_peers(
     match bindcar_request_within(
         client,
         token,
-        "PATCH",
+        Method::PATCH,
         &url,
         Some(&acl_only),
         PEER_UPDATE_RETRY_BUDGET,
@@ -1098,7 +1088,7 @@ pub async fn add_secondary_zone(
         update_key_name: Some(key_data.name.clone()),
     };
 
-    match bindcar_request(client, token, "POST", &url, Some(&request)).await {
+    match bindcar_request(client, token, Method::POST, &url, Some(&request)).await {
         Ok(_) => {
             info!(
                 "Added secondary zone {zone_name} on {server} with primaries: {:?}",
@@ -1254,7 +1244,8 @@ pub(crate) async fn delete_zone_within(
 
     // Is the zone there at all? A missing zone is already deleted.
     let status_url = format!("{base_url}/api/v1/zones/{zone_name}/status");
-    match bindcar_request_within(client, token, "GET", &status_url, None::<&()>, budget).await {
+    match bindcar_request_within(client, token, Method::GET, &status_url, None::<&()>, budget).await
+    {
         Ok(_) => {}
         Err(e) if is_http_not_found(&e) => {
             debug!("Zone {zone_name} is not on {server}; nothing to delete");
@@ -1270,7 +1261,7 @@ pub(crate) async fn delete_zone_within(
     }
 
     let url = format!("{base_url}/api/v1/zones/{zone_name}");
-    match bindcar_request_within(client, token, "DELETE", &url, None::<&()>, budget).await {
+    match bindcar_request_within(client, token, Method::DELETE, &url, None::<&()>, budget).await {
         Ok(_) => {
             info!("Deleted zone {zone_name} from {server}");
             Ok(())
@@ -1298,7 +1289,7 @@ pub async fn notify_zone(
     let base_url = build_api_url(server);
     let url = format!("{base_url}/api/v1/zones/{zone_name}/notify");
 
-    bindcar_request(client, token, "POST", &url, None::<&()>)
+    bindcar_request(client, token, Method::POST, &url, None::<&()>)
         .await
         .context("Failed to notify zone")?;
 

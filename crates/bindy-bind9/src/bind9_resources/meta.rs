@@ -261,11 +261,10 @@ pub fn default_rndc_secret_name(instance_name: &str) -> String {
 /// (or adopts) this Secret, the Deployment mounts it, and the drift check
 /// looks for it.
 ///
-/// * `rndcKey.secretRef` names an existing Secret: that one, never created
-///   by bindy.
 /// * An inline `rndcKey.secret` is created under its `metadata.name`.
-/// * Otherwise bindy generates `{instance}-rndc-key`
-///   ([`default_rndc_secret_name`]).
+/// * Otherwise `{instance}-rndc-key` ([`default_rndc_secret_name`]): a key
+///   bindy generates, or the mirror of a `rndcKey.secretRef` (ADR-0023);
+///   the referenced Secret itself is never mounted.
 ///
 /// # Arguments
 ///
@@ -281,8 +280,8 @@ pub fn rndc_secret_name(
     instance: &Bind9Instance,
     rndc_config: &crate::crd::RndcKeyConfig,
 ) -> String {
-    if let Some(secret_ref) = rndc_config.secret_ref.as_ref() {
-        return secret_ref.name.clone();
+    if rndc_config.secret_ref.is_some() {
+        return default_rndc_secret_name(&instance.name_any());
     }
     if let Some(secret) = rndc_config.secret.as_ref() {
         return secret.metadata.name.clone();

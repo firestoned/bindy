@@ -45,9 +45,6 @@ pub struct Context {
     /// opening their own watches (ADR-0009 §3).
     pub watch: Arc<WatchSet>,
 
-    /// HTTP client for bindcar zone synchronization API calls
-    pub http_client: reqwest::Client,
-
     /// The set of namespaces this operator watches and manages.
     ///
     /// Drives how every controller builds its `Api` handles: [`NamespaceScope::All`]
@@ -64,9 +61,6 @@ pub struct Context {
     /// [`ShutdownSignal::wait`]: crate::shutdown::ShutdownSignal::wait
     pub shutdown: crate::shutdown::ShutdownSignal,
 }
-
-/// Timeout for one HTTP call to a bindcar sidecar.
-const BINDCAR_HTTP_TIMEOUT_SECS: u64 = 10;
 
 impl Context {
     /// Build the shared context: the `WatchSet` with every kind the operator
@@ -146,10 +140,6 @@ impl Context {
         let bind9_pods =
             watch.register_selected::<Pod>("Pod", bindy_api::labels::BIND9_POD_SELECTOR);
 
-        let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(BINDCAR_HTTP_TIMEOUT_SECS))
-            .build()?;
-
         tracing::info!("Shared context initialized with one watch per cached kind");
 
         Ok(Self {
@@ -165,7 +155,6 @@ impl Context {
                 records,
             },
             watch: Arc::new(watch),
-            http_client,
             namespace_scope: scope,
             shutdown,
         })

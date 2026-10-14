@@ -25,6 +25,10 @@
 #                      Unit tests assert selector text and wiremock echoes it
 #                      back; only a real API server evaluating a real selector
 #                      against real records can show the scoping actually holds.
+#   e2e-rndc-secretref an RNDC key from rndcKey.secretRef under custom entry
+#                      names is mirrored into {instance}-rndc-key, a source
+#                      change rolls the pods, a foreign name is refused, and a
+#                      deleted source keeps DNS up (ADR-0023)
 #   e2e-regression     admission policies + operand pod shape + liveness
 #                      (bindcar 0.7.x Mode B contract)
 #   e2e-zone-spread    spec.placement topology spread; needs its own three-zone
@@ -164,6 +168,10 @@ jobs:
           - target: e2e-scout
             name: Scout zone-scoped stale cleanup (kind)
             cluster: kind-bindy-e2e-scout
+            needs_rust: false
+          - target: e2e-rndc-secretref
+            name: RNDC key from secretRef (kind)
+            cluster: kind-bindy-e2e-rndc-secretref
             needs_rust: false
           - target: e2e-regression
             name: Regression, admission policies + pod shape (kind)

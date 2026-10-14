@@ -2,6 +2,45 @@
 
 This document collects the breaking-change migrations for Bindy, newest first.
 
+## RNDC `secretRef` keys are mirrored; their Secret must start with `bindy-` (ADR-0023)
+
+Applies to every instance whose RNDC key comes from `rndcKey.secretRef` (on
+the instance or its cluster's `primary` / `secondary` role) or from the
+deprecated `rndcSecretRef`. Instances with an operator-generated key are
+unaffected.
+
+- **Rename the referenced Secret to start with `bindy-` before upgrading.**
+  A reference to any other name is rejected by the
+  `bindy-pod-shape-validation` admission policy and refused by the operator.
+  Such an instance keeps its running pods but stops reconciling until the
+  reference is fixed. Copy the Secret under a `bindy-` name, point the
+  `secretRef` at it, then delete the old one:
+
+  ```sh
+  kubectl get secret my-rndc -n bindy-system -o json \
+    | jq '.metadata |= {name: "bindy-my-rndc", namespace: .namespace}' \
+    | kubectl apply -f -
+  ```
+
+  To find what needs changing:
+  `kubectl get bind9instances,bind9clusters,clusterbind9providers -A -o yaml | grep -A1 -E 'secretRef:|rndcSecretRef:'`.
+- **The pods now mount `{instance}-rndc-key`, the operator's mirror of the
+  referenced key.** Each such instance rolls its pods once after the upgrade.
+  The referenced Secret is no longer mounted.
+- **`secretKey` now works; `keyNameKey` is deprecated.** The key is read
+  from the `secretKey` entry (the algorithm from the Secret's `algorithm`
+  entry, else `secretRef.algorithm`), or from the `rndc.key` entry when it is
+  absent. In BIND9 the key is always named `bindy-operator`, the only name
+  the shared `named.conf` control channel accepts, so a `rndc.key` under any
+  other name now works too (it used to crash-loop `named`). An external tool
+  that signs updates with the same key must use the name `bindy-operator`.
+- **Editing the referenced Secret rolls the pods.** Before, the operator
+  switched to the new key at once while the pods kept the old one, and every
+  write failed until the pods were restarted by hand.
+- **A missing or invalid referenced Secret stops reconciliation but keeps
+  DNS up.** The mirror is left in place, so the running pods keep their key.
+  A key that is not standard base64 is refused.
+
 ## Scout records gain a source-kind label and new names (ADR-0022)
 
 Scout's five source kinds now share one reconcile pipeline. No CRD, RBAC or

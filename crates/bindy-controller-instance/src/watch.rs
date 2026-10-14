@@ -170,6 +170,61 @@ pub(crate) fn instances_for_configmap(
     wake
 }
 
+/// The instances a change to `secret` must wake (ADR-0023).
+///
+/// An instance's own `{instance}-rndc-key` carries an owner reference to it,
+/// which is what `.owns` mapped. A `rndcKey.secretRef` source Secret is the
+/// user's and has no owner, so it also maps to every instance in its
+/// namespace whose resolved RNDC configuration (instance, then its
+/// cluster's role, then the deprecated `rndcSecretRef`) names it: their
+/// mirror must follow the source. Pure: no I/O (ADR-0009 §5).
+///
+/// # Arguments
+///
+/// * `instances` - Every instance in the store
+/// * `clusters` - Every `Bind9Cluster` in the store
+/// * `secret` - The Secret that changed or was deleted
+///
+/// # Returns
+///
+/// References to the instances to reconcile.
+pub(crate) fn instances_for_secret(
+    instances: &[Arc<Bind9Instance>],
+    clusters: &[Arc<Bind9Cluster>],
+    secret: &Secret,
+) -> Vec<ObjectRef<Bind9Instance>> {
+    let Some(namespace) = secret.namespace() else {
+        return vec![];
+    };
+    let name = secret.name_any();
+
+    let mut wake: Vec<ObjectRef<Bind9Instance>> = secret
+        .owner_references()
+        .iter()
+        .filter(|owner| owner.kind == KIND_BIND9_INSTANCE)
+        .map(|owner| ObjectRef::new(&owner.name).within(&namespace))
+        .collect();
+
+    wake.extend(
+        instances
+            .iter()
+            .filter(|instance| instance.namespace().as_deref() == Some(namespace.as_str()))
+            .filter(|instance| {
+                let cluster = clusters.iter().find(|c| {
+                    c.name_any() == instance.spec.cluster_ref
+                        && c.namespace().as_deref() == Some(namespace.as_str())
+                });
+                let config = crate::bind9instance::resources::resolve_full_rndc_config(
+                    instance,
+                    cluster.map(AsRef::as_ref),
+                );
+                config.secret_ref.is_some_and(|r| r.name == name)
+            })
+            .map(|instance| ObjectRef::from_obj(instance.as_ref())),
+    );
+    wake
+}
+
 /// The instances that reference the cluster-scoped `provider`. A provider's
 /// instances can live in any namespace, so only the name is matched.
 pub(crate) fn instances_of_provider(
@@ -246,6 +301,7 @@ async fn run_bind9instance_controller(
     let stores_for_cluster_watch = ctx.stores.clone();
     let stores_for_provider_watch = ctx.stores.clone();
     let stores_for_configmap_watch = ctx.stores.clone();
+    let stores_for_secret_watch = ctx.stores.clone();
 
     // An instance's status.zones lists the zones in its own namespace that
     // selected it, so only this namespace's zones matter, and only when the
@@ -322,9 +378,18 @@ async fn run_bind9instance_controller(
         scoped_namespaced_api::<ServiceAccount>(&client, target.as_deref()),
         watcher::Config::default(),
     )
-    .owns(
+    // The same Secret watch `.owns` ran, with a mapper that also wakes the
+    // instances whose rndcKey.secretRef names the Secret (ADR-0023).
+    .watches(
         scoped_namespaced_api::<Secret>(&client, target.as_deref()),
         watcher::Config::default(),
+        move |secret| {
+            instances_for_secret(
+                &stores_for_secret_watch.bind9_instances.state(),
+                &stores_for_secret_watch.bind9_clusters.state(),
+                &secret,
+            )
+        },
     )
     // The same ConfigMap watch `.owns` ran, with a mapper that also wakes
     // the instances mounting a cluster-level ConfigMap (ADR-0016).

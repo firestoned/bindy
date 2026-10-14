@@ -1,3 +1,58 @@
+## [2026-10-14 14:00] - Sweep: one ACL grammar, quieter bindcar transport, typed HTTP method (roadmap 30 PR 7)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/bindy-bind9/src/bind9_acl.rs`: validation and parsing walked the same grammar twice; `parse_acl_entry` is now the one parser and `validate_acl_entry` wraps it (185 to 147 lines, behaviour unchanged, review finding 19).
+- `crates/bindy-bind9/src/bind9/zone_ops.rs`: a non-2xx bindcar answer and a non-retryable error are logged at `debug!` in the transport, since the caller decides what they mean (an expected 404 or 409 used to log `error!` up to three times); giving up after retries logs `warn!`; `zone_exists` no longer logs before propagating (review finding 11).
+- `crates/bindy-bind9/src/bind9/zone_ops.rs`: the bindcar request takes a `reqwest::Method` instead of a `&str` matched by hand, so an unsupported method cannot reach runtime (review finding 12).
+- `crates/bindy-bind9/src/bind9/zone_ops.rs`: `is_retryable_bindcar_error` decides retries by the error's type anywhere in its chain (a bindcar `HttpError` by status; a `reqwest` error only for a connection failure or timeout). It used to retry anything whose text said "Failed to send" or "connection", our own context string, so a request that could never be built (an invalid URL) was retried for two minutes (review finding 7, fail-fast half).
+- `crates/bindy-bind9/src/bind9/mod.rs`: every `Bind9Manager` shares one bindcar HTTP client and connection pool (`SHARED_HTTP_CLIENT`); a manager is created per instance per reconcile and each built its own client. The unused `Context.http_client` in the SDK is removed.
+
+- `Cargo.lock`: `rustls` 0.23.45 to 0.23.46 (RUSTSEC-2026-0346, -0347, -0348 and -0349, published 2026-10-14; `cargo audit` failed CI on them). Lock-file only.
+
+### Why
+Roadmap 30 PR 7: duplication and log noise from the original review.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-10-14 12:00] - RNDC secretRef keys are mirrored into {instance}-rndc-key and must name a bindy- Secret (ADR-0023)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0023-secretref-rndc-key-mirrored.md` (Accepted).
+- `crates/bindy-bind9/src/bind9/rndc.rs`: `rndc_key_from_source_secret` (the `secretKey` entry, the Secret's `algorithm` entry else `secretRef.algorithm`, else the `rndc.key` file) and `create_rndc_mirror_secret`. The mirrored key is always named `bindy-operator` (`RNDC_OPERATOR_KEY_NAME`, now shared with `named.conf`'s control channel and generated keys): that block is rendered once per cluster and accepts no other name, which the kind e2e showed by crash-looping `named` on a key named otherwise. `keyNameKey` is deprecated and ignored. The key must be standard base64, since the mirror re-renders `rndc.key`, which `named.conf` includes; no error message carries the key. `parse_rndc_algorithm` is shared with `parse_rndc_secret_data`.
+- `crates/bindy-bind9/src/safe_volume.rs`: `validate_rndc_key_secret_name` (`bindy-` prefix, as bug-021 did for DNSSEC keys). The user-volume allow-list is now a true allow-list: the set source fields are read from the serialized volume, and a volume must set exactly one of `emptyDir`, `secret`, `configMap`, `persistentVolumeClaim` (new `VolumeRejection::MultipleSources`; `ForbiddenSource.kind` is now the field's name). It used to return on the first allowed source, so `emptyDir` plus an unlisted source such as `image` passed; 25 hand-written deny checks are gone (roadmap 30 PR 7, review finding 18).
+- `crates/bindy-api/src/constants.rs`: `ANNOTATION_RNDC_SOURCE_SECRET` (`bindy.firestoned.io/rndc-source-secret`).
+- `crates/bindy-controller-instance`: `mirror_step`, `validate_rndc_secret_ref`, `mirror_secret_ref_key`; the Secret watch maps a source Secret to every instance whose resolved RNDC config names it (`instances_for_secret`). The reconcile fast path treats a mirror behind its source, or a missing or unusable source, as drift (`secret_ref_mirror_stale`): the kind e2e showed a source change woke the instance but the fast path skipped the rewrite.
+- `deploy/admission-policies/07-bindy-pod-shape-policy.yaml`: rule 5, every `rndcKey.secretRef.name` and `rndcSecretRef.name` must start with `bindy-`; fixtures `accept-bind9instance-rndc-bindy-secret.yaml`, `reject-bind9instance-rndc-foreign-secret.yaml`, `reject-bind9cluster-rndc-foreign-secret.yaml`.
+- `tests/e2e/rndc_secretref_test.sh`, `make e2e-rndc-secretref`, and its CI job: a custom-entry `secretRef` is mirrored and served, a source key change rolls the pods and writes keep working, a foreign name is refused, a deleted source keeps DNS up, and switching back to a generated key rolls the pods with a fresh key.
+- CALM: the RNDC key source Secret and the operator-owned RNDC key Secret, with their relationships.
+
+### Changed
+- Every BIND9 pod mounts `{instance}-rndc-key` in every RNDC mode (`rndc_secret_name`); a `secretRef` is mirrored into it and never rotated.
+- Any replacement of an existing `{instance}-rndc-key` (a mirror change, a mode switch, a generated key recreated after an algorithm change) drops the cached key and rolls the pods; the rollout patch tolerates a Deployment that does not exist yet.
+- A GET of the RNDC Secret that fails with anything but 404 fails the reconcile; it used to be treated as "absent", which deleted and regenerated a working key.
+- `RndcSecretRef` and `rndcKey.secretRef` rustdoc (CRD descriptions) describe the mirror, the entry precedence and the prefix rule; CRDs regenerated.
+- Docs: `docs/src/guide/rndc-key-rotation.md` (Mode 2; the guessed `algorithmKey` field removed), `docs/src/reference/bind9cluster-spec.md` (`RndcSecretRef` fields; `hmac-sha1` is rejected, not supported), `docs/src/operations/rndc-key-rotation-migration.md` (`bindy-` names), `docs/src/operations/migration-guide.md` (new entry), `docs/src/security/threat-model.md` (full pass), roadmap 30 and `ROADMAPS.md` (PR 6 merged as #550, PR 7 in progress).
+
+### Fixed
+- `rndcKey.secretRef.secretKey` was read nowhere: a Secret holding the key under a custom entry name, without `rndc.key`, never worked.
+- A `secretRef` Secret whose `rndc.key` named the key anything but `bindy-operator` crash-looped `named` (the shared `controls` block accepts only that name); the mirror now always uses it.
+- Editing a referenced RNDC Secret switched the operator to the new key while the pods kept the old one, so every write failed until a manual restart.
+- A generated key recreated in place (algorithm change, malformed Secret) never reached the running pods.
+
+### Impact
+- [x] Breaking change: an RNDC `secretRef` (or `rndcSecretRef`) must name a Secret starting with `bindy-`; instances on a `secretRef` roll once on upgrade (migration guide).
+- [x] Requires cluster rollout (operator; admission policies)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-13 16:00] - Scout sources share one pipeline (ADR-0022); a shared DNS name survives one record's deletion
 
 **Author:** Erick Bourgeois

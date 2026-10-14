@@ -193,9 +193,20 @@ spec:
 
 ### Mode 2: User-Managed Secret Reference
 
-Reference an existing Secret that you manage:
+Reference a Secret that you manage. Its name must start with `bindy-`, and
+it must live in the instance's namespace:
 
 ```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: bindy-corp-rndc
+  namespace: bindy-system
+type: Opaque
+stringData:
+  corp-key: "base64EncodedSecretKeyMaterial=="
+  # Optional: algorithm: hmac-sha256 (else secretRef.algorithm is used)
+---
 apiVersion: bindy.firestoned.io/v1beta1
 kind: Bind9Instance
 metadata:
@@ -205,17 +216,31 @@ spec:
   role: primary
   rndcKey:
     secretRef:
-      name: my-rndc-secret  # Reference existing Secret
-      keyNameKey: key-name
-      algorithmKey: algorithm
-      secretKey: secret
+      name: bindy-corp-rndc   # must start with bindy-
+      secretKey: corp-key         # default: secret
+      algorithm: hmac-sha256
     # autoRotate is IGNORED for secretRef
 ```
 
-**Behavior:**
+A Secret holding a BIND9 key file under `rndc.key` (and no `secretKey`
+entry) works too. In BIND9 the key is always named `bindy-operator`, the
+only name the cluster-shared `named.conf` control channel accepts; the name
+in the Secret is not used, and `keyNameKey` is deprecated and ignored.
 
-- Operator uses the referenced Secret
-- **No automatic rotation** - you must rotate manually
+**Behavior (ADR-0023):**
+
+- The operator reads the key from the referenced Secret and mirrors it into
+  `{instance}-rndc-key` (annotated `bindy.firestoned.io/rndc-source-secret`),
+  which is what the BIND9 pods mount. The referenced Secret itself is never
+  mounted.
+- **No automatic rotation**: rotate the referenced Secret yourself. The
+  operator watches it, rewrites the mirror, and rolls the pods.
+- If the referenced Secret is deleted or holds no usable key, the instance
+  stops reconciling but keeps its mirror, so DNS keeps working while you fix
+  it.
+- A `secretRef` without the `bindy-` prefix, or naming
+  `{instance}-rndc-key` itself, is refused (by the `bindy-pod-shape-validation`
+  admission policy, and by the operator).
 - Useful for externally managed secrets (e.g., HashiCorp Vault, AWS Secrets Manager)
 
 **Use When:**

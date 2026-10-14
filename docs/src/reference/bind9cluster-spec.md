@@ -290,12 +290,18 @@ spec:
 - Keys are shared across all instances in the cluster
 
 **RndcSecretRef Fields**:
-- `name` (string, required) - Name of the Kubernetes Secret
-- `algorithm` (RndcAlgorithm, optional) - HMAC algorithm (defaults to hmac-sha256)
-  - Supported: `hmac-sha1`, `hmac-sha224`, `hmac-sha256`, `hmac-sha384`, `hmac-sha512`
-  - `hmac-md5` is rejected: RFC 8945 §10 deprecates it and the CRD schema no longer accepts it.
-- `keyNameKey` (string, optional) - Key in secret for key name (defaults to "key-name")
-- `secretKey` (string, optional) - Key in secret for secret value (defaults to "secret")
+- `name` (string, required) - Name of the Kubernetes Secret; for an RNDC key
+  (`rndcKey.secretRef`, `rndcSecretRef`) it must start with `bindy-`
+- `algorithm` (RndcAlgorithm, optional) - HMAC algorithm (defaults to hmac-sha256),
+  used when the Secret has no `algorithm` entry
+  - Supported: `hmac-sha224`, `hmac-sha256`, `hmac-sha384`, `hmac-sha512`
+  - `hmac-md5` and `hmac-sha1` are rejected (RFC 8945 section 10).
+- `keyNameKey` (string, optional) - Deprecated and ignored for RNDC keys: BIND9 always names the key `bindy-operator` (ADR-0023)
+- `secretKey` (string, optional) - Entry of the Secret holding the base64 key (defaults to "secret")
+
+The operator reads the key from the `secretKey` entry (or, when it is
+absent, from the Secret's `rndc.key` file) and mirrors it into the operator-owned
+`{instance}-rndc-key` Secret the pods mount (ADR-0023).
 
 ### acls
 **Type**: object (map of string arrays)

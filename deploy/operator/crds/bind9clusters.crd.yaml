@@ -1115,7 +1115,9 @@ spec:
                     properties:
                       algorithm:
                         default: hmac-sha256
-                        description: HMAC algorithm for this key
+                        description: |-
+                          HMAC algorithm of the key, used when the Secret has no `algorithm`
+                          entry (default: `hmac-sha256`)
                         enum:
                         - hmac-sha1
                         - hmac-sha224
@@ -1125,14 +1127,18 @@ spec:
                         type: string
                       keyNameKey:
                         default: key-name
-                        description: "Key within the secret for the key name (default: \"key-name\")"
+                        description: |-
+                          Deprecated and ignored: the key is always named `bindy-operator` in
+                          BIND9 (ADR-0023). Kept so existing resources still validate.
                         type: string
                       name:
-                        description: Name of the Kubernetes Secret containing RNDC credentials
+                        description: |-
+                          Name of the Secret holding the key, in the instance's namespace. Must
+                          start with `bindy-`.
                         type: string
                       secretKey:
                         default: secret
-                        description: "Key within the secret for the secret value (default: \"secret\")"
+                        description: "Entry of the Secret holding the base64 key (default: `secret`)"
                         type: string
                     required:
                     - name
@@ -1590,23 +1596,29 @@ spec:
                         type: object
                       secretRef:
                         description: |-
-                          Reference to an existing Kubernetes Secret containing RNDC credentials.
+                          Reference to a user-managed Secret holding the RNDC key.
 
-                          When specified, the operator uses this existing Secret instead of auto-generating
-                          one. The Secret must contain the `rndc.key` field with BIND9 key file content.
+                          When specified, the operator reads the key from that Secret (its
+                          `secretKey` entry, or its `rndc.key` file) and
+                          mirrors it into `{instance}-rndc-key`, which the pods mount; a change
+                          to the Secret rolls the pods (ADR-0023). The name must start with
+                          `bindy-`.
 
                           **Mutually exclusive with `secret`** - if both are specified, `secret_ref` takes
                           precedence and `secret` is ignored.
 
                           **Rotation note**: User-managed Secrets (via `secret_ref`) are NOT automatically
-                          rotated even if `auto_rotate` is `true`. You must rotate these manually.
+                          rotated even if `auto_rotate` is `true`. Rotate the Secret yourself; the
+                          operator follows it.
 
                           Default: `None` (auto-generate key)
                         nullable: true
                         properties:
                           algorithm:
                             default: hmac-sha256
-                            description: HMAC algorithm for this key
+                            description: |-
+                              HMAC algorithm of the key, used when the Secret has no `algorithm`
+                              entry (default: `hmac-sha256`)
                             enum:
                             - hmac-sha1
                             - hmac-sha224
@@ -1616,14 +1628,18 @@ spec:
                             type: string
                           keyNameKey:
                             default: key-name
-                            description: "Key within the secret for the key name (default: \"key-name\")"
+                            description: |-
+                              Deprecated and ignored: the key is always named `bindy-operator` in
+                              BIND9 (ADR-0023). Kept so existing resources still validate.
                             type: string
                           name:
-                            description: Name of the Kubernetes Secret containing RNDC credentials
+                            description: |-
+                              Name of the Secret holding the key, in the instance's namespace. Must
+                              start with `bindy-`.
                             type: string
                           secretKey:
                             default: secret
-                            description: "Key within the secret for the secret value (default: \"secret\")"
+                            description: "Entry of the Secret holding the base64 key (default: `secret`)"
                             type: string
                         required:
                         - name
@@ -1642,7 +1658,9 @@ spec:
                     properties:
                       algorithm:
                         default: hmac-sha256
-                        description: HMAC algorithm for this key
+                        description: |-
+                          HMAC algorithm of the key, used when the Secret has no `algorithm`
+                          entry (default: `hmac-sha256`)
                         enum:
                         - hmac-sha1
                         - hmac-sha224
@@ -1652,14 +1670,18 @@ spec:
                         type: string
                       keyNameKey:
                         default: key-name
-                        description: "Key within the secret for the key name (default: \"key-name\")"
+                        description: |-
+                          Deprecated and ignored: the key is always named `bindy-operator` in
+                          BIND9 (ADR-0023). Kept so existing resources still validate.
                         type: string
                       name:
-                        description: Name of the Kubernetes Secret containing RNDC credentials
+                        description: |-
+                          Name of the Secret holding the key, in the instance's namespace. Must
+                          start with `bindy-`.
                         type: string
                       secretKey:
                         default: secret
-                        description: "Key within the secret for the secret value (default: \"secret\")"
+                        description: "Entry of the Secret holding the base64 key (default: `secret`)"
                         type: string
                     required:
                     - name
@@ -1857,25 +1879,61 @@ spec:
                   for authenticated zone transfers (AXFR/IXFR) between primary and secondary servers.
                 items:
                   description: |-
-                    Reference to a Kubernetes Secret containing RNDC/TSIG credentials.
+                    Reference to a user-managed Kubernetes Secret holding an RNDC/TSIG key.
 
-                    This allows you to use an existing external Secret for RNDC authentication instead
-                    of having the operator auto-generate one. The Secret is mounted as a directory at
-                    `/etc/bind/keys/` in the BIND9 container, and BIND9 uses the `rndc.key` file.
+                    The operator reads the key from this Secret and mirrors it into the
+                    operator-owned `{instance}-rndc-key` Secret, which is what the BIND9 pods
+                    mount (ADR-0023). The referenced Secret itself is never mounted, and it is
+                    never rotated by the operator: rotate it yourself, and the operator rewrites
+                    the mirror and rolls the pods.
 
-                    # External (User-Managed) Secrets
+                    The Secret must live in the instance's namespace and its name must start
+                    with `bindy-`.
 
-                    For external secrets, you ONLY need to provide the `rndc.key` field containing
-                    the complete BIND9 key file content. The other fields (`key-name`, `algorithm`,
-                    `secret`) are optional metadata used by operator-generated secrets.
+                    # Where the key is read from
 
-                    ## Minimal External Secret Example
+                    1. The `secretKey` entry. The algorithm is the Secret's `algorithm` entry
+                       when present, else `algorithm` below.
+                    2. Otherwise the `rndc.key` entry, a BIND9 key file (its algorithm and
+                       key).
+
+                    The key must be standard base64. In BIND9 the key is always named
+                    `bindy-operator`, the only name the cluster-shared `named.conf` control
+                    channel accepts; the source's own key name is not used.
+
+                    ## Custom entry names
 
                     ```yaml
                     apiVersion: v1
                     kind: Secret
                     metadata:
-                      name: my-rndc-key
+                      name: bindy-corp-rndc
+                      namespace: bindy-system
+                    type: Opaque
+                    stringData:
+                      corp-key: "base64EncodedSecretKeyMaterial=="
+                    ---
+                    apiVersion: bindy.firestoned.io/v1beta1
+                    kind: Bind9Instance
+                    metadata:
+                      name: production-dns-primary-0
+                    spec:
+                      clusterRef: production-dns
+                      role: primary
+                      rndcKey:
+                        secretRef:
+                          name: bindy-corp-rndc
+                          secretKey: corp-key
+                          algorithm: hmac-sha256
+                    ```
+
+                    ## A BIND9 key file
+
+                    ```yaml
+                    apiVersion: v1
+                    kind: Secret
+                    metadata:
+                      name: bindy-rndc-key
                       namespace: bindy-system
                     type: Opaque
                     stringData:
@@ -1886,59 +1944,18 @@ spec:
                         };
                     ```
 
-                    # Auto-Generated (Operator-Managed) Secrets
+                    # The mirror
 
-                    When the operator auto-generates a Secret (no `rndcSecretRef` specified), it
-                    creates a Secret with all 4 fields for internal metadata tracking:
-
-                    ```yaml
-                    apiVersion: v1
-                    kind: Secret
-                    metadata:
-                      name: bind9-instance-rndc
-                      namespace: bindy-system
-                    type: Opaque
-                    stringData:
-                      key-name: "bindy-operator"     # Operator metadata
-                      algorithm: "hmac-sha256"       # Operator metadata
-                      secret: "randomBase64Key=="    # Operator metadata
-                      rndc.key: |                    # Used by BIND9
-                        key "bindy-operator" {
-                            algorithm hmac-sha256;
-                            secret "randomBase64Key==";
-                        };
-                    ```
-
-                    # Using with `Bind9Instance`
-
-                    ```yaml
-                    apiVersion: bindy.firestoned.io/v1beta1
-                    kind: Bind9Instance
-                    metadata:
-                      name: production-dns-primary-0
-                    spec:
-                      clusterRef: production-dns
-                      role: primary
-                      rndcSecretRef:
-                        name: my-rndc-key
-                        algorithm: hmac-sha256
-                    ```
-
-                    # How It Works
-
-                    When the Secret is mounted at `/etc/bind/keys/`, Kubernetes creates individual
-                    files for each Secret key:
-                    - `/etc/bind/keys/rndc.key` (the BIND9 key file) ← **This is what BIND9 uses**
-                    - `/etc/bind/keys/key-name` (optional metadata for operator-generated secrets)
-                    - `/etc/bind/keys/algorithm` (optional metadata for operator-generated secrets)
-                    - `/etc/bind/keys/secret` (optional metadata for operator-generated secrets)
-
-                    The `rndc.conf` file includes `/etc/bind/keys/rndc.key`, so BIND9 only needs
-                    that one file to exist
+                    `{instance}-rndc-key` holds the key in the operator's format (`key-name`,
+                    `algorithm`, `secret`, `rndc.key`), is owned by the instance, and carries
+                    the `bindy.firestoned.io/rndc-source-secret` annotation. It is mounted at
+                    `/etc/bind/keys/`, and `rndc.conf` includes `/etc/bind/keys/rndc.key`.
                   properties:
                     algorithm:
                       default: hmac-sha256
-                      description: HMAC algorithm for this key
+                      description: |-
+                        HMAC algorithm of the key, used when the Secret has no `algorithm`
+                        entry (default: `hmac-sha256`)
                       enum:
                       - hmac-sha1
                       - hmac-sha224
@@ -1948,14 +1965,18 @@ spec:
                       type: string
                     keyNameKey:
                       default: key-name
-                      description: "Key within the secret for the key name (default: \"key-name\")"
+                      description: |-
+                        Deprecated and ignored: the key is always named `bindy-operator` in
+                        BIND9 (ADR-0023). Kept so existing resources still validate.
                       type: string
                     name:
-                      description: Name of the Kubernetes Secret containing RNDC credentials
+                      description: |-
+                        Name of the Secret holding the key, in the instance's namespace. Must
+                        start with `bindy-`.
                       type: string
                     secretKey:
                       default: secret
-                      description: "Key within the secret for the secret value (default: \"secret\")"
+                      description: "Entry of the Secret holding the base64 key (default: `secret`)"
                       type: string
                   required:
                   - name
@@ -2390,23 +2411,29 @@ spec:
                         type: object
                       secretRef:
                         description: |-
-                          Reference to an existing Kubernetes Secret containing RNDC credentials.
+                          Reference to a user-managed Secret holding the RNDC key.
 
-                          When specified, the operator uses this existing Secret instead of auto-generating
-                          one. The Secret must contain the `rndc.key` field with BIND9 key file content.
+                          When specified, the operator reads the key from that Secret (its
+                          `secretKey` entry, or its `rndc.key` file) and
+                          mirrors it into `{instance}-rndc-key`, which the pods mount; a change
+                          to the Secret rolls the pods (ADR-0023). The name must start with
+                          `bindy-`.
 
                           **Mutually exclusive with `secret`** - if both are specified, `secret_ref` takes
                           precedence and `secret` is ignored.
 
                           **Rotation note**: User-managed Secrets (via `secret_ref`) are NOT automatically
-                          rotated even if `auto_rotate` is `true`. You must rotate these manually.
+                          rotated even if `auto_rotate` is `true`. Rotate the Secret yourself; the
+                          operator follows it.
 
                           Default: `None` (auto-generate key)
                         nullable: true
                         properties:
                           algorithm:
                             default: hmac-sha256
-                            description: HMAC algorithm for this key
+                            description: |-
+                              HMAC algorithm of the key, used when the Secret has no `algorithm`
+                              entry (default: `hmac-sha256`)
                             enum:
                             - hmac-sha1
                             - hmac-sha224
@@ -2416,14 +2443,18 @@ spec:
                             type: string
                           keyNameKey:
                             default: key-name
-                            description: "Key within the secret for the key name (default: \"key-name\")"
+                            description: |-
+                              Deprecated and ignored: the key is always named `bindy-operator` in
+                              BIND9 (ADR-0023). Kept so existing resources still validate.
                             type: string
                           name:
-                            description: Name of the Kubernetes Secret containing RNDC credentials
+                            description: |-
+                              Name of the Secret holding the key, in the instance's namespace. Must
+                              start with `bindy-`.
                             type: string
                           secretKey:
                             default: secret
-                            description: "Key within the secret for the secret value (default: \"secret\")"
+                            description: "Entry of the Secret holding the base64 key (default: `secret`)"
                             type: string
                         required:
                         - name
@@ -2442,7 +2473,9 @@ spec:
                     properties:
                       algorithm:
                         default: hmac-sha256
-                        description: HMAC algorithm for this key
+                        description: |-
+                          HMAC algorithm of the key, used when the Secret has no `algorithm`
+                          entry (default: `hmac-sha256`)
                         enum:
                         - hmac-sha1
                         - hmac-sha224
@@ -2452,14 +2485,18 @@ spec:
                         type: string
                       keyNameKey:
                         default: key-name
-                        description: "Key within the secret for the key name (default: \"key-name\")"
+                        description: |-
+                          Deprecated and ignored: the key is always named `bindy-operator` in
+                          BIND9 (ADR-0023). Kept so existing resources still validate.
                         type: string
                       name:
-                        description: Name of the Kubernetes Secret containing RNDC credentials
+                        description: |-
+                          Name of the Secret holding the key, in the instance's namespace. Must
+                          start with `bindy-`.
                         type: string
                       secretKey:
                         default: secret
-                        description: "Key within the secret for the secret value (default: \"secret\")"
+                        description: "Entry of the Secret holding the base64 key (default: `secret`)"
                         type: string
                     required:
                     - name

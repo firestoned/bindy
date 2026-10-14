@@ -4697,13 +4697,15 @@ mod shared_names_tests {
     }
 
     #[test]
-    fn test_rndc_secret_name_uses_secret_ref() {
+    fn test_rndc_secret_name_mounts_the_mirror_for_a_secret_ref() {
+        // ADR-0023: a secretRef is mirrored into {instance}-rndc-key, which
+        // the pods mount; the referenced Secret itself is never mounted.
         let inst = instance("primary-0", "", Some("uid-1"));
         let config = rndc_config(serde_json::json!({
-            "secretRef": { "name": "corp-rndc" },
+            "secretRef": { "name": "bindy-corp-rndc" },
             "secret": { "metadata": { "name": "ignored-inline" } },
         }));
-        assert_eq!(rndc_secret_name(&inst, &config), "corp-rndc");
+        assert_eq!(rndc_secret_name(&inst, &config), "primary-0-rndc-key");
     }
 
     #[test]

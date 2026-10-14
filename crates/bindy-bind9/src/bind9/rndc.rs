@@ -76,21 +76,8 @@ pub fn parse_rndc_secret_data(data: &BTreeMap<String, Vec<u8>>) -> Result<RndcKe
         data.get("secret"),
     ) {
         let name = std::str::from_utf8(name_bytes)?.to_string();
-        let algorithm_str = std::str::from_utf8(algo_bytes)?;
+        let algorithm = parse_rndc_algorithm(std::str::from_utf8(algo_bytes)?)?;
         let secret = std::str::from_utf8(secret_bytes)?.to_string();
-
-        let algorithm = match algorithm_str {
-            "hmac-md5" | "hmac-sha1" => anyhow::bail!(
-                "{algorithm_str} is rejected: MD5 and SHA-1 are deprecated for HMAC \
-                 use (RFC 8945 §10) and are refused by bindcar 0.7.0. Rotate to \
-                 hmac-sha256 or stronger."
-            ),
-            "hmac-sha224" => crate::crd::RndcAlgorithm::HmacSha224,
-            "hmac-sha256" => crate::crd::RndcAlgorithm::HmacSha256,
-            "hmac-sha384" => crate::crd::RndcAlgorithm::HmacSha384,
-            "hmac-sha512" => crate::crd::RndcAlgorithm::HmacSha512,
-            _ => anyhow::bail!("Unsupported RNDC algorithm '{algorithm_str}'. Supported algorithms: hmac-sha224, hmac-sha256, hmac-sha384, hmac-sha512"),
-        };
 
         return Ok(RndcKeyData {
             name,
@@ -109,6 +96,148 @@ pub fn parse_rndc_secret_data(data: &BTreeMap<String, Vec<u8>>) -> Result<RndcKe
         "Secret must contain either (key-name, algorithm, secret) or rndc.key field. \
          For external secrets, provide only 'rndc.key' with the BIND9 key file content."
     )
+}
+
+/// Parse an RNDC/TSIG algorithm name.
+///
+/// # Errors
+///
+/// Returns an error for HMAC-MD5 and HMAC-SHA1 (deprecated, RFC 8945
+/// section 10) and for any name that is not a supported algorithm.
+fn parse_rndc_algorithm(algorithm: &str) -> Result<crate::crd::RndcAlgorithm> {
+    match algorithm {
+        "hmac-md5" | "hmac-sha1" => anyhow::bail!(
+            "{algorithm} is rejected: MD5 and SHA-1 are deprecated for HMAC \
+             use (RFC 8945 §10) and are refused by bindcar 0.7.0. Rotate to \
+             hmac-sha256 or stronger."
+        ),
+        "hmac-sha224" => Ok(crate::crd::RndcAlgorithm::HmacSha224),
+        "hmac-sha256" => Ok(crate::crd::RndcAlgorithm::HmacSha256),
+        "hmac-sha384" => Ok(crate::crd::RndcAlgorithm::HmacSha384),
+        "hmac-sha512" => Ok(crate::crd::RndcAlgorithm::HmacSha512),
+        _ => anyhow::bail!("Unsupported RNDC algorithm '{algorithm}'. Supported algorithms: hmac-sha224, hmac-sha256, hmac-sha384, hmac-sha512"),
+    }
+}
+
+/// Entry of an RNDC Secret holding the key's algorithm.
+const RNDC_ALGORITHM_ENTRY: &str = "algorithm";
+
+/// Entry of an RNDC Secret holding the BIND9 key file.
+const RNDC_KEY_FILE_ENTRY: &str = "rndc.key";
+
+/// Checks that a key read from a source Secret is safe to mirror: non-empty
+/// standard base64, since the mirror writes it into `rndc.key`, which
+/// `named.conf` includes.
+///
+/// # Errors
+///
+/// Returns an error when the key is not non-empty standard base64. The
+/// message never contains the key.
+fn validate_source_secret(secret: &str) -> Result<()> {
+    if secret.is_empty() || BASE64.decode(secret).is_err() {
+        anyhow::bail!("the RNDC key is not valid: it must be non-empty standard base64");
+    }
+    Ok(())
+}
+
+/// Builds the RNDC key held by a `rndcKey.secretRef` source Secret
+/// (ADR-0023).
+///
+/// In order:
+/// 1. the `secretKey` entry; the algorithm is the Secret's `algorithm` entry
+///    when present, else `secret_ref.algorithm`;
+/// 2. the `rndc.key` entry, parsed as a BIND9 key file (its algorithm and
+///    key).
+///
+/// The key is always named [`crate::constants::RNDC_OPERATOR_KEY_NAME`]: the
+/// only name `named.conf`'s control channel accepts, rendered once for every
+/// instance of a cluster. The source's own key name, and `keyNameKey`, are
+/// not used.
+///
+/// # Arguments
+///
+/// * `data` - The source Secret's data
+/// * `secret_ref` - The reference naming the entries
+///
+/// # Errors
+///
+/// Returns an error when the Secret holds neither form (naming the entries
+/// looked for), an entry is not UTF-8, the algorithm is deprecated or
+/// unsupported, or the key is not standard base64. No message contains the
+/// key.
+pub fn rndc_key_from_source_secret(
+    data: &BTreeMap<String, Vec<u8>>,
+    secret_ref: &crate::crd::RndcSecretRef,
+) -> Result<RndcKeyData> {
+    let (algorithm, secret) = if let Some(secret) = data.get(&secret_ref.secret_key) {
+        let algorithm = match data.get(RNDC_ALGORITHM_ENTRY) {
+            Some(algorithm) => parse_rndc_algorithm(
+                std::str::from_utf8(algorithm).context("the algorithm entry is not UTF-8")?,
+            )?,
+            None => secret_ref.algorithm.clone(),
+        };
+        let secret = std::str::from_utf8(secret)
+            .with_context(|| format!("entry '{}' is not UTF-8", secret_ref.secret_key))?
+            .to_string();
+        (algorithm, secret)
+    } else if let Some(file) = data.get(RNDC_KEY_FILE_ENTRY) {
+        let parsed = parse_rndc_key_file(
+            std::str::from_utf8(file).context("the rndc.key entry is not UTF-8")?,
+        )?;
+        (parsed.algorithm, parsed.secret)
+    } else {
+        anyhow::bail!(
+            "RNDC Secret '{}' holds neither the '{}' entry nor '{RNDC_KEY_FILE_ENTRY}'",
+            secret_ref.name,
+            secret_ref.secret_key
+        );
+    };
+    validate_source_secret(&secret)?;
+    Ok(RndcKeyData {
+        name: crate::constants::RNDC_OPERATOR_KEY_NAME.to_string(),
+        algorithm,
+        secret,
+    })
+}
+
+/// Builds the operator-owned mirror of a `rndcKey.secretRef` key
+/// (ADR-0023): the operator's four-entry format, annotated with its source
+/// and never rotated.
+///
+/// # Arguments
+///
+/// * `namespace` - The instance's namespace
+/// * `name` - The mirror's name (`{instance}-rndc-key`)
+/// * `key_data` - The key, from [`rndc_key_from_source_secret`]
+/// * `source` - The source Secret's name
+#[must_use]
+pub fn create_rndc_mirror_secret(
+    namespace: &str,
+    name: &str,
+    key_data: &RndcKeyData,
+    source: &str,
+) -> k8s_openapi::api::core::v1::Secret {
+    use k8s_openapi::api::core::v1::Secret;
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
+    use k8s_openapi::ByteString;
+
+    let data = create_rndc_secret_data(key_data)
+        .into_iter()
+        .map(|(k, v)| (k, ByteString(v.into_bytes())))
+        .collect();
+    Secret {
+        metadata: ObjectMeta {
+            name: Some(name.to_string()),
+            namespace: Some(namespace.to_string()),
+            annotations: Some(BTreeMap::from([(
+                crate::constants::ANNOTATION_RNDC_SOURCE_SECRET.to_string(),
+                source.to_string(),
+            )])),
+            ..Default::default()
+        },
+        data: Some(data),
+        ..Default::default()
+    }
 }
 
 /// Start delimiter of a C-style block comment in BIND9 configuration files.

@@ -307,3 +307,153 @@ mod configmap_wake_tests {
         assert!(instances_for_configmap(&instances, &unlabelled).is_empty());
     }
 }
+
+/// The Secret mapper (ADR-0023): an instance's own `{instance}-rndc-key` is
+/// owned by it, as `.owns` mapped; a `rndcKey.secretRef` source Secret has no
+/// owner, so a change to it now wakes every instance whose resolved RNDC
+/// configuration references it, from the instance or its cluster's role.
+#[cfg(test)]
+mod secret_wake_tests {
+    use super::super::instances_for_secret;
+    use crate::crd::{Bind9Cluster, Bind9Instance};
+    use k8s_openapi::api::core::v1::Secret;
+    use k8s_openapi::apimachinery::pkg::apis::meta::v1::OwnerReference;
+    use kube::api::ObjectMeta;
+    use std::sync::Arc;
+
+    const SOURCE: &str = "bindy-corp-rndc";
+
+    fn instance(namespace: &str, name: &str, spec: serde_json::Value) -> Arc<Bind9Instance> {
+        let mut spec = spec;
+        spec["role"] = serde_json::json!("primary");
+        if spec.get("clusterRef").is_none() {
+            spec["clusterRef"] = serde_json::json!("");
+        }
+        Arc::new(
+            serde_json::from_value(serde_json::json!({
+                "apiVersion": "bindy.firestoned.io/v1beta1",
+                "kind": "Bind9Instance",
+                "metadata": {"name": name, "namespace": namespace},
+                "spec": spec,
+            }))
+            .expect("valid Bind9Instance"),
+        )
+    }
+
+    fn cluster(namespace: &str, name: &str, primary: serde_json::Value) -> Arc<Bind9Cluster> {
+        Arc::new(
+            serde_json::from_value(serde_json::json!({
+                "apiVersion": "bindy.firestoned.io/v1beta1",
+                "kind": "Bind9Cluster",
+                "metadata": {"name": name, "namespace": namespace},
+                "spec": {"primary": primary},
+            }))
+            .expect("valid Bind9Cluster"),
+        )
+    }
+
+    fn secret(namespace: &str, name: &str, owner: Option<&str>) -> Secret {
+        Secret {
+            metadata: ObjectMeta {
+                name: Some(name.to_string()),
+                namespace: Some(namespace.to_string()),
+                owner_references: owner.map(|owner_name| {
+                    vec![OwnerReference {
+                        api_version: "bindy.firestoned.io/v1beta1".to_string(),
+                        kind: "Bind9Instance".to_string(),
+                        name: owner_name.to_string(),
+                        uid: "uid".to_string(),
+                        controller: Some(true),
+                        block_owner_deletion: Some(true),
+                    }]
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    fn names(refs: Vec<kube::runtime::reflector::ObjectRef<Bind9Instance>>) -> Vec<String> {
+        let mut names: Vec<String> = refs.into_iter().map(|r| r.name).collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn an_owned_rndc_secret_wakes_its_owner() {
+        let instances = vec![instance("dns", "solo", serde_json::json!({}))];
+        assert_eq!(
+            names(instances_for_secret(
+                &instances,
+                &[],
+                &secret("dns", "solo-rndc-key", Some("solo"))
+            )),
+            vec!["solo"]
+        );
+    }
+
+    #[test]
+    fn a_source_secret_wakes_the_instances_that_reference_it() {
+        let instances = vec![
+            instance(
+                "dns",
+                "direct",
+                serde_json::json!({"rndcKey": {"secretRef": {"name": SOURCE}}}),
+            ),
+            instance(
+                "dns",
+                "deprecated",
+                serde_json::json!({"rndcSecretRef": {"name": SOURCE}}),
+            ),
+            instance("dns", "via-role", serde_json::json!({"clusterRef": "prod"})),
+            instance("dns", "generated", serde_json::json!({})),
+            instance(
+                "other",
+                "other-namespace",
+                serde_json::json!({"rndcKey": {"secretRef": {"name": SOURCE}}}),
+            ),
+        ];
+        let clusters = vec![cluster(
+            "dns",
+            "prod",
+            serde_json::json!({"rndcKey": {"secretRef": {"name": SOURCE}}}),
+        )];
+        assert_eq!(
+            names(instances_for_secret(
+                &instances,
+                &clusters,
+                &secret("dns", SOURCE, None)
+            )),
+            vec!["deprecated", "direct", "via-role"]
+        );
+    }
+
+    #[test]
+    fn an_instance_level_rndc_key_overrides_its_clusters_secret_ref() {
+        let instances = vec![instance(
+            "dns",
+            "overridden",
+            serde_json::json!({"clusterRef": "prod", "rndcKey": {"autoRotate": false}}),
+        )];
+        let clusters = vec![cluster(
+            "dns",
+            "prod",
+            serde_json::json!({"rndcKey": {"secretRef": {"name": SOURCE}}}),
+        )];
+        assert!(
+            instances_for_secret(&instances, &clusters, &secret("dns", SOURCE, None)).is_empty()
+        );
+    }
+
+    #[test]
+    fn an_unrelated_secret_wakes_nothing() {
+        let instances = vec![instance(
+            "dns",
+            "direct",
+            serde_json::json!({"rndcKey": {"secretRef": {"name": SOURCE}}}),
+        )];
+        assert!(
+            instances_for_secret(&instances, &[], &secret("dns", "bindy-other", None)).is_empty()
+        );
+    }
+}

@@ -144,6 +144,7 @@ fn is_token_cache_fresh(read_at: Instant, now: Instant) -> bool {
 /// Fails when the HTTP client cannot be built (see
 /// [`build_http_client_with_timeouts`]).
 fn build_http_client() -> Result<HttpClient> {
+    HTTP_CLIENT_BUILDS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     build_http_client_with_timeouts(
         Duration::from_secs(BINDCAR_HTTP_CONNECT_TIMEOUT_SECS),
         Duration::from_secs(BINDCAR_HTTP_REQUEST_TIMEOUT_SECS),
@@ -175,6 +176,29 @@ fn build_http_client_with_timeouts(
 /// kept here and surfaced by every request instead of being papered over with
 /// an untimed client.
 type SharedHttpClient = std::result::Result<Arc<HttpClient>, Arc<str>>;
+
+/// How many times [`build_http_client`] ran: once per process, since every
+/// [`Bind9Manager`] shares [`SHARED_HTTP_CLIENT`].
+pub(crate) static HTTP_CLIENT_BUILDS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// The one plaintext bindcar HTTP client (and connection pool) every
+/// [`Bind9Manager`] uses. A manager is created per instance per reconcile; a
+/// client per manager rebuilt the pool and the TLS setup each time.
+static SHARED_HTTP_CLIENT: std::sync::LazyLock<SharedHttpClient> =
+    std::sync::LazyLock::new(|| shared_client_from(build_http_client()));
+
+/// Wraps a client build result as a [`SharedHttpClient`], logging a failure.
+fn shared_client_from(client: Result<HttpClient>) -> SharedHttpClient {
+    client.map(Arc::new).map_err(|e| {
+        let reason = format!("{e:#}");
+        error!(
+            error = %reason,
+            "Failed to build the bindcar HTTP client; every bindcar request will fail"
+        );
+        Arc::<str>::from(reason)
+    })
+}
 
 /// Manager for BIND9 servers via HTTP API sidecar.
 ///
@@ -233,7 +257,7 @@ impl Bind9Manager {
     /// TLS CA bundle; use [`Self::new_for_instance`] for a specific instance.
     #[must_use]
     pub fn new() -> Self {
-        Self::from_client_result(build_http_client(), None, None, None)
+        Self::from_shared_client(SHARED_HTTP_CLIENT.clone(), None, None, None)
     }
 
     /// Create a `Bind9Manager` for a specific instance whose Deployment is
@@ -248,8 +272,8 @@ impl Bind9Manager {
     /// * `instance_namespace` - Namespace of the instance
     #[must_use]
     pub fn new_for_instance(instance_name: String, instance_namespace: String) -> Self {
-        Self::from_client_result(
-            build_http_client(),
+        Self::from_shared_client(
+            SHARED_HTTP_CLIENT.clone(),
             None,
             Some(instance_name),
             Some(instance_namespace),
@@ -260,20 +284,27 @@ impl Bind9Manager {
     ///
     /// A failed build is logged once and kept, so every request fails with
     /// the cause rather than running without timeouts.
+    #[cfg(test)]
     fn from_client_result(
         client: Result<HttpClient>,
         deployment: Option<Arc<Deployment>>,
         instance_name: Option<String>,
         instance_namespace: Option<String>,
     ) -> Self {
-        let client = client.map(Arc::new).map_err(|e| {
-            let reason = format!("{e:#}");
-            error!(
-                error = %reason,
-                "Failed to build the bindcar HTTP client; every bindcar request will fail"
-            );
-            Arc::<str>::from(reason)
-        });
+        Self::from_shared_client(
+            shared_client_from(client),
+            deployment,
+            instance_name,
+            instance_namespace,
+        )
+    }
+
+    fn from_shared_client(
+        client: SharedHttpClient,
+        deployment: Option<Arc<Deployment>>,
+        instance_name: Option<String>,
+        instance_namespace: Option<String>,
+    ) -> Self {
         Self {
             client,
             token_cache: Arc::new(RwLock::new(None)),
@@ -333,8 +364,8 @@ impl Bind9Manager {
         instance_name: String,
         instance_namespace: String,
     ) -> Self {
-        Self::from_client_result(
-            build_http_client(),
+        Self::from_shared_client(
+            SHARED_HTTP_CLIENT.clone(),
             Some(deployment),
             Some(instance_name),
             Some(instance_namespace),

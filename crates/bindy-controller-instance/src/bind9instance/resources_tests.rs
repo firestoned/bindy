@@ -64,6 +64,178 @@ mod tests {
         }
     }
 
+    // ----------------------------------------------------------------
+    // ADR-0023: a secretRef key mirrored into {instance}-rndc-key
+    // ----------------------------------------------------------------
+
+    use crate::bind9instance::resources::{mirror_step, validate_rndc_secret_ref, MirrorStep};
+    use bindy_bind9::bind9::rndc::create_rndc_mirror_secret;
+    use bindy_bind9::bind9::RndcKeyData;
+
+    const MIRROR: &str = "primary-0-rndc-key";
+    const SOURCE: &str = "bindy-corp-rndc";
+
+    fn key(secret: &str) -> RndcKeyData {
+        RndcKeyData {
+            name: "corp-key".to_string(),
+            algorithm: RndcAlgorithm::HmacSha256,
+            secret: secret.to_string(),
+        }
+    }
+
+    fn secret_ref_config(name: &str) -> RndcKeyConfig {
+        serde_json::from_value(serde_json::json!({"secretRef": {"name": name}}))
+            .expect("valid RndcKeyConfig")
+    }
+
+    #[test]
+    fn a_missing_mirror_is_written_without_a_rollout() {
+        // The Deployment is created (or its template changes) with it.
+        assert_eq!(
+            mirror_step(None, &key("c2VjcmV0"), SOURCE),
+            MirrorStep::Write { rolls_pods: false }
+        );
+    }
+
+    #[test]
+    fn an_up_to_date_mirror_is_kept() {
+        let current = create_rndc_mirror_secret("dns", MIRROR, &key("c2VjcmV0"), SOURCE);
+        assert_eq!(
+            mirror_step(Some(&current), &key("c2VjcmV0"), SOURCE),
+            MirrorStep::Keep
+        );
+    }
+
+    #[test]
+    fn a_changed_source_key_rewrites_the_mirror_and_rolls_the_pods() {
+        let current = create_rndc_mirror_secret("dns", MIRROR, &key("b2xkLWtleQ=="), SOURCE);
+        assert_eq!(
+            mirror_step(Some(&current), &key("bmV3LWtleQ=="), SOURCE),
+            MirrorStep::Write { rolls_pods: true }
+        );
+    }
+
+    #[test]
+    fn a_renamed_source_with_the_same_key_rewrites_the_mirror_only() {
+        let current = create_rndc_mirror_secret("dns", MIRROR, &key("c2VjcmV0"), "bindy-old");
+        assert_eq!(
+            mirror_step(Some(&current), &key("c2VjcmV0"), SOURCE),
+            MirrorStep::Write { rolls_pods: false }
+        );
+    }
+
+    #[test]
+    fn a_generated_key_replaced_by_a_mirror_rolls_the_pods() {
+        // Switching from a generated key to a secretRef keeps the Secret
+        // name, so the pod template does not change on its own.
+        let generated = secret_with_data(Some(valid_secret_data()));
+        assert_eq!(
+            mirror_step(Some(&generated), &key("bmV3LWtleQ=="), SOURCE),
+            MirrorStep::Write { rolls_pods: true }
+        );
+    }
+
+    #[test]
+    fn a_mirror_is_recreated_when_the_instance_switches_to_a_generated_key() {
+        let mirror = create_rndc_mirror_secret("dns", MIRROR, &key("c2VjcmV0"), SOURCE);
+        let action = evaluate_existing_rndc_secret(&mirror, &rndc_config(true)).unwrap();
+        assert!(
+            matches!(action, RndcSecretAction::Recreate(_)),
+            "a mirror must never be kept or rotated as a generated key, got {action:?}"
+        );
+    }
+
+    // The reconcile fast path must notice a mirror that no longer matches
+    // its source: a Secret event alone changes nothing else it checks.
+    use crate::bind9instance::resources::secret_ref_mirror_stale;
+
+    fn source_secret(entries: &[(&str, &str)]) -> Secret {
+        Secret {
+            metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
+                name: Some(SOURCE.to_string()),
+                ..Default::default()
+            },
+            data: Some(
+                entries
+                    .iter()
+                    .map(|(k, v)| ((*k).to_string(), ByteString(v.as_bytes().to_vec())))
+                    .collect(),
+            ),
+            ..Default::default()
+        }
+    }
+
+    fn operator_key(secret: &str) -> RndcKeyData {
+        RndcKeyData {
+            name: crate::constants::RNDC_OPERATOR_KEY_NAME.to_string(),
+            ..key(secret)
+        }
+    }
+
+    #[test]
+    fn a_mirror_matching_its_source_is_not_stale() {
+        let mirror = create_rndc_mirror_secret("dns", MIRROR, &operator_key("c2VjcmV0"), SOURCE);
+        let source = source_secret(&[("secret", "c2VjcmV0")]);
+        assert!(!secret_ref_mirror_stale(
+            &secret_ref_config(SOURCE),
+            Some(&source),
+            Some(&mirror)
+        ));
+    }
+
+    #[test]
+    fn a_mirror_behind_its_source_is_stale() {
+        let mirror =
+            create_rndc_mirror_secret("dns", MIRROR, &operator_key("b2xkLWtleQ=="), SOURCE);
+        let source = source_secret(&[("secret", "bmV3LWtleQ==")]);
+        assert!(secret_ref_mirror_stale(
+            &secret_ref_config(SOURCE),
+            Some(&source),
+            Some(&mirror)
+        ));
+    }
+
+    #[test]
+    fn a_missing_or_unusable_source_forces_a_reconcile_that_reports_it() {
+        let mirror = create_rndc_mirror_secret("dns", MIRROR, &operator_key("c2VjcmV0"), SOURCE);
+        let config = secret_ref_config(SOURCE);
+        assert!(secret_ref_mirror_stale(&config, None, Some(&mirror)));
+        let unusable = source_secret(&[("unrelated", "x")]);
+        assert!(secret_ref_mirror_stale(
+            &config,
+            Some(&unusable),
+            Some(&mirror)
+        ));
+    }
+
+    #[test]
+    fn a_generated_key_is_never_mirror_stale() {
+        assert!(!secret_ref_mirror_stale(&rndc_config(false), None, None));
+    }
+
+    #[test]
+    fn a_secret_ref_without_the_bindy_prefix_is_refused() {
+        let err = validate_rndc_secret_ref("primary-0", &secret_ref_config("other-tenant-tsig"))
+            .expect_err("foreign Secret must be refused")
+            .to_string();
+        assert!(err.contains("bindy-"), "{err}");
+    }
+
+    #[test]
+    fn a_secret_ref_naming_its_own_mirror_is_refused() {
+        // An instance named bindy-x would otherwise overwrite the user's
+        // bindy-x-rndc-key with the mirror.
+        assert!(
+            validate_rndc_secret_ref("bindy-x", &secret_ref_config("bindy-x-rndc-key")).is_err()
+        );
+    }
+
+    #[test]
+    fn a_bindy_secret_ref_and_a_generated_key_are_accepted() {
+        validate_rndc_secret_ref("primary-0", &secret_ref_config(SOURCE)).expect("bindy- name");
+        validate_rndc_secret_ref("primary-0", &rndc_config(false)).expect("no secretRef");
+    }
+
     #[test]
     fn evaluate_rndc_secret_recreates_when_data_missing() {
         let secret = secret_with_data(None);
@@ -1677,7 +1849,7 @@ mod tests {
                 "spec": {
                     "clusterRef": cluster_ref,
                     "role": "primary",
-                    "rndcKey": { "secretRef": { "name": "corp-rndc" } },
+                    "rndcKey": { "secretRef": { "name": "bindy-corp-rndc" } },
                 },
             }))
             .expect("test Bind9Instance must deserialize")
@@ -1707,12 +1879,15 @@ mod tests {
             let deployment =
                 build_deployment(&name, "dns", inst, cluster, None, &names.rndc_secret)
                     .expect("build");
+            // ADR-0023: the secretRef is mirrored into {name}-rndc-key, and
+            // that mirror is what the pods mount.
+            let mirror = format!("{name}-rndc-key");
             assert_eq!(
                 rndc_secret_name_from_deployment(&deployment).as_deref(),
-                Some("corp-rndc"),
-                "the referenced Secret is mounted, not {name}-rndc-key"
+                Some(mirror.as_str()),
+                "the mirror is mounted, not the referenced Secret"
             );
-            assert_eq!(names.rndc_secret, "corp-rndc");
+            assert_eq!(names.rndc_secret, mirror);
             let mounted_cm = deployment
                 .spec
                 .and_then(|s| s.template.spec)

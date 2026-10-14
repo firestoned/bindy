@@ -1,15 +1,49 @@
 # Threat Model - Bindy DNS Operator
 
-**Version:** 1.25
-**Last Updated:** 2026-10-13
+**Version:** 1.26
+**Last Updated:** 2026-10-14
 **Owner:** Security Team
 **Compliance:** SOX 404, PCI-DSS 6.4.1, Basel III Cyber Risk
 
-> Last full pass 2026-10-13, against ADR-0001 ... ADR-0022 (ADR-0006 as amended;
+> Last full pass 2026-10-14, against ADR-0001 ... ADR-0023 (ADR-0006 as amended;
 > ADR-0009 as amended 2026-10-05, fully implemented; ADR-0013 stages 1 to 3,
 > ADR-0014, ADR-0015, ADR-0016, ADR-0017 as amended and corrected 2026-10-07
 > and by ADR-0019, ADR-0018 as amended 2026-10-07, ADR-0019, ADR-0020,
-> ADR-0021 and ADR-0022 implemented).
+> ADR-0021, ADR-0022 and ADR-0023 implemented).
+>
+> **Revision note (v1.26):** Full pass for ADR-0023 (a `rndcKey.secretRef`
+> RNDC key is mirrored into an operator-owned Secret). The operator now reads
+> the key from the referenced Secret (its `secretKey` entry, or its
+> `rndc.key` file) and always names it `bindy-operator`, the only name the
+> cluster-shared `named.conf` control channel accepts, and writes it to `{instance}-rndc-key`, which is the
+> only RNDC Secret any BIND9 pod mounts; the referenced Secret is never
+> mounted. A change to the source rewrites the mirror and rolls the pods
+> (before, the operator switched keys while the pods kept the old one and
+> every write failed until a manual restart). A missing source keeps the
+> mirror, a failed GET no longer counts as "absent", and a key that is not
+> standard base64 (and so could inject configuration into `rndc.key`) is
+> refused; the source's key name is never written (**M-65**).
+> An RNDC `secretRef` / `rndcSecretRef` must name a `bindy-` Secret, enforced
+> at admission (`bindy-pod-shape-validation` rule 5) and by the reconciler
+> (**M-66**, E2: the confused deputy through which anyone able to create a
+> `Bind9Instance`, `Bind9Cluster` or `ClusterBind9Provider` had any Secret of
+> the namespace mounted into the operand pod). Accepted risk **21** records
+> the mirror as a second copy of user key material and the key-change rollout
+> that bypasses the ADR-0018 queue. Sections changed: components (4), assets,
+> Boundary 4, T3, I1, D6, E2, attack surfaces 3 and 5, M-58, M-65, M-66,
+> accepted risk 21 and the controls summary. No new actor, trust boundary,
+> RBAC grant or dependency: the operator already read Secrets cluster-wide
+> and wrote `{instance}-rndc-key`; the Secret watch it already ran now also
+> maps an unowned source Secret to the instances that reference it, from the
+> instance and cluster stores. The reconciler's user-volume allow-list
+> (`validate_user_volumes`, F-001) is now a true allow-list: a volume must set
+> exactly one source and that one must be `emptyDir`, `secret`, `configMap`
+> or `persistentVolumeClaim`. It used to return on the first allowed source,
+> so an allowed source set together with one on no deny list (`image`) passed.
+> The `bindy-pod-shape-validation` rule 1 still accepts a volume once an
+> allowed source is present (CEL over a typed object cannot enumerate its
+> fields), so for a combined source the reconciler is the control. Other
+> sections re-walked, unchanged.
 >
 > **Revision note (v1.25):** Full pass for ADR-0022 (Scout's five source
 > kinds share one reconcile pipeline). Accepted risk **20** is **closed**:
@@ -596,7 +630,10 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
 
 4. **Supporting Resources**
    - ConfigMaps: Store BIND9 configuration and zone files
-   - Secrets: Store RNDC keys (symmetric HMAC keys)
+   - Secrets: Store RNDC keys (symmetric HMAC keys). Every BIND9 pod mounts
+     `{instance}-rndc-key`, owned by its instance: a key the operator
+     generates, or the mirror of the `bindy-` Secret a `rndcKey.secretRef`
+     names (ADR-0023); the referenced Secret is never mounted
    - Services: Expose DNS (port 53, forwarding to the operand's unprivileged
      container port 5353) and RNDC (port 9530)
    - ServiceAccounts: RBAC for operator access
@@ -626,7 +663,8 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
 | Asset | Description | Confidentiality | Integrity | Availability | Owner |
 |-------|-------------|-----------------|-----------|--------------|-------|
 | **DNS Zone Data** | Authoritative DNS records for all managed domains | Medium | **Critical** | **Critical** | Teams/Platform |
-| **RNDC Keys** | Symmetric HMAC keys for BIND9 control | **Critical** | **Critical** | High | Security Team |
+| **RNDC Keys** | Symmetric HMAC keys for BIND9 control, in the operator-owned `{instance}-rndc-key` the pods mount (generated, or mirrored from a `secretRef` and annotated `bindy.firestoned.io/rndc-source-secret`; owned by the instance and deleted with it) | **Critical** | **Critical** | High | Security Team |
+| **RNDC key source Secret** | User-managed `bindy-` Secret a `rndcKey.secretRef` names (ADR-0023): the key under its `secretKey` entry or as `rndc.key`. Read by the operator only, never mounted; the mirror is a second copy of the same key (accepted risk 21) | **Critical** | **Critical** | Medium | Key owner |
 | **DNSSEC Private Keys** | KSK/ZSK private keys signing a zone (user Secret with `keysFrom.secretRef`, or generated in the pod); possession forges validly signed answers until the DS is withdrawn | **Critical** | **Critical** | High | Zone owner |
 | **Operator Binary** | Signed container image with operator logic | Medium | **Critical** | High | Development Team |
 | **BIND9 Configuration** | named.conf, zone configs | Low | **Critical** | High | Platform Team |
@@ -740,6 +778,10 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
   which copies the keys into a memory-backed `emptyDir`; `named` never
   mounts the Secret (`build_dnssec_keys_init_container`,
   `crates/bindy-bind9/src/bind9_resources/`).
+- The pod mounts exactly one RNDC Secret, `{instance}-rndc-key`, in every
+  RNDC mode. With `rndcKey.secretRef` it is the operator's mirror of two
+  entries of the referenced `bindy-` Secret (ADR-0023, M-65, M-66); before,
+  the pod mounted every entry of whatever Secret the reference named.
 
 **Threats if Compromised:**
 - Attacker can serve malicious DNS responses
@@ -1015,6 +1057,12 @@ verification, but nothing enforces that verification at admission by default)
   M-24), parsed into typed hornet fields, and written by hornet's writer,
   which quotes and escapes each for its position; the rendered result is
   parsed again before the ConfigMap is written (M-44)
+- ✅ **A mirrored RNDC key cannot inject configuration** (M-65, ADR-0023,
+  2026-10-14): the operator re-renders `rndc.key`, which `named.conf`
+  includes, from a user Secret's entries. The key name is always the
+  constant `bindy-operator` (the source's name is never written), and the
+  key must be standard base64, so a quote, `;`, brace or newline that could
+  close the `key` statement is refused before any Secret is written
 - ❌ **MISSING**: Immutable ConfigMaps: `build_configmap` / `build_cluster_configmap`
   (`crates/bindy-bind9/src/bind9_resources/`) do not set `immutable: true`, so a generated ConfigMap can
   be edited in place by anyone holding namespace write access (audit finding P2-2)
@@ -1151,9 +1199,16 @@ exists to constrain that further)
   operator rotates the key and after any write with it fails, and the cached
   type keeps its redacting `Debug` impl
 - ✅ **Only the mounted key is read** (M-58, 2026-10-11): the operator reads the
-  RNDC Secret named by the instance Deployment's `rndc-key` volume, so an
-  instance on `rndcKey.secretRef` is no longer read from `{instance}-rndc-key`
-  (a stale or planted Secret of that name)
+  RNDC Secret named by the instance Deployment's `rndc-key` volume. Since
+  ADR-0023 that is always the operator-owned `{instance}-rndc-key`; a
+  `rndcKey.secretRef` is mirrored into it (M-65), and a reference naming
+  `{instance}-rndc-key` itself is refused, so a user Secret of that name is
+  never overwritten
+- ✅ **Mirrored keys follow their source and never leak through errors**
+  (M-65, ADR-0023, 2026-10-14): a change to the referenced Secret rewrites
+  the mirror, drops the cached key and rolls the pods, so the operator and
+  the pods never hold different keys; no error message built from a source
+  Secret carries the key, and the key type keeps its redacting `Debug`
 - ⚠️ **PARTIAL**: RNDC key rotation is a **documented manual procedure**
   (`docs/src/security/incident-response.md`), not an automated policy. There is no
   scheduled/automatic rotation in the operator.
@@ -1557,8 +1612,10 @@ Local`); LOW after M-50 and M-51
   belongs to the same cluster is mid-rollout (read from the Deployment and
   Pod stores); first come, first served, with claims against concurrent
   reconciles; a rollout past `progressDeadlineSeconds` stops blocking;
-  woken by Deployment and Pod events, no timer. Creation, replica changes
-  and RNDC key rotation are not delayed. The drift check compares owned
+  woken by Deployment and Pod events, no timer. Creation, replica changes,
+  RNDC key rotation and any other replacement of an instance's RNDC key (a
+  mirrored `secretRef` key changing, ADR-0023) are not delayed: an instance
+  whose pods hold a stale key cannot answer writes (accepted risk 21). The drift check compares owned
   fields semantically, and a template patch that bumps no generation is
   remembered as a known no-op, so a comparison miss cannot loop (ADR-0018
   decision 8, v1.19)
@@ -1643,6 +1700,16 @@ up to `progressDeadlineSeconds`, accepted risk 16)
   rbac_drift` fails when `deploy/scout/*.yaml` or the examples in
   `docs/src/guide/scout.md` differ from the RBAC `bindy bootstrap scout` builds,
   so a grant cannot be widened in one representation and not reviewed in the others
+- ✅ **RNDC `secretRef` allow-list** (M-66, ADR-0023, 2026-10-14): the
+  operator copies two entries of the Secret a `rndcKey.secretRef` (or the
+  deprecated `rndcSecretRef`) names into the Secret the operand pods mount.
+  Without a name rule, anyone who can create a `Bind9Instance`,
+  `Bind9Cluster` or `ClusterBind9Provider` could use the operator's
+  cluster-wide Secret read as a confused deputy and get another workload's
+  Secret into a pod; before ADR-0023 the pod mounted every entry of such a
+  Secret. The name must start with `bindy-`, as for DNSSEC keys (H2), checked
+  by the `bindy-pod-shape-validation` admission policy and by the reconciler
+  (`validate_rndc_key_secret_name`). No RBAC grant changed
 - ✅ No wildcard permissions in operator RBAC
 - ✅ Regular RBAC audits (quarterly)
 - ⚠️ **Scout is a separate, less-reviewed RBAC surface**; see T4/I4/E4 and
@@ -1808,7 +1875,7 @@ and risk profile below are unchanged.
 
 **Mitigations:**
 - Secrets encrypted at rest
-- RBAC limits secret read access; the operator reads only the RNDC Secret the instance's pods mount (M-58)
+- RBAC limits secret read access; the operator reads only the RNDC Secret the instance's pods mount (M-58), which is always the operator-owned `{instance}-rndc-key`; a `secretRef` source must be a `bindy-` Secret and is mirrored, never mounted (M-65, M-66)
 - RNDC port not exposed externally
 - NetworkPolicy (planned - L-1)
 - A change made with a stolen key is no longer reverted on a timer (ADR-0016,
@@ -1858,6 +1925,9 @@ and risk profile below are unchanged.
 - Schema validation in CRD (OpenAPI v3)
 - Input sanitization in operator
 - Namespace isolation (RBAC)
+- `ValidatingAdmissionPolicy` suite (M-24); among its rules, a Secret a CR
+  names for the operand pod (DNSSEC `keysFrom`, RNDC `secretRef`) must start
+  with `bindy-` (H2, M-66)
 - Admission webhooks (planned)
 
 **Risk:** MEDIUM
@@ -2158,13 +2228,15 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-55 | **Every pod that holds a zone is reached** (2026-10-08, ADR-0015 decision 7): `for_each_instance_endpoint_with_policy` fails, whatever the policy, when a pod that holds the instance's zones (live, admitted by the zones-loaded gate, instance not deleted: `coverage_pod_ips`) was not reached or its operation failed; record writes and deletions (finalizer, rename, unselected), the zone stale-record pass and zone deletion (primaries and secondaries) go through it; `SkipUnavailable` skips only an instance whose data is gone; the record finalizer allows deletion when the zone is gone or being deleted; discovery deletes a deleted record's data itself and keeps tracking it until confirmed; a pending deletion makes the zone `Degraded` (`RecordDeletionPending`) | T1 (a removed record stays served from a restarted pod), truthful status | ✅ `crates/bindy-bind9/src/instances.rs` (`coverage_pod_ips`, `for_each_instance_endpoint_with_policy`), `crates/bindy-bind9/src/record_push.rs`, `crates/bindy-controller-records/src/records/mod.rs`, `crates/bindy-controller-zone/src/dnszone.rs` (`delete_dnszone`), `dnszone/discovery.rs`, `dnszone/status_helpers.rs`; tests `instances_tests.rs` (9), `transfer_peers_tests.rs` (3); chaos step 15 |
 | M-56 | **Failures stop the operation instead of proceeding on partial data** (2026-10-11): a record finalizer keeps the finalizer and retries when the zone or a role lookup fails (it lets go only when the record has no `zoneRef`, or the zone is gone, being deleted, selects no instances or has no primaries); the instance finalizer treats only 404 as deleted and deletes only the RNDC Secret the operator generated (never a `secretRef` Secret, `generated_rndc_secret`); a primary or secondary whose role cannot be read fails the filter instead of dropping out of the target set; a failed parent `Bind9Cluster` / `ClusterBind9Provider` read fails the reconcile instead of rolling pods to an instance-only spec; a paginated LIST that hits a repeated token, an empty page with a token or the page cap is an error, not a partial list; a failed role lookup never counts as zero expected instances (which could report `Ready=True`); no controller starts before every watch cache (provider, cluster, instance, Deployment, Endpoints, Pod, DNSZone and the nine record kinds) has listed once, so the zones-loaded gate never replays an empty record list onto a new pod; an owner without a UID is an error, not an empty `ownerReference` | T1 (a removed record stays served; a primary silently not updated), truthful status, D-class correctness under API failure | ✅ `crates/bindy-controller-records/src/records/mod.rs` (`zone_lookup_step`, `primaries_step`), `crates/bindy-controller-instance/src/bind9instance/{resources,cluster_helpers}.rs` (`deleted_or_absent`, `parent_or_none`), `crates/bindy-bind9/src/primary.rs` (`role_from_get_result`, `try_filter_instances_by_role_cached`), `crates/bindy-controller-zone/src/dnszone/{secondary,status_helpers}.rs`, `crates/bindy-controller-sdk/src/{pagination,watch,context}.rs` (`next_page_step`, `wait_until_ready`), `crates/bindy/src/main.rs` (`acquire_unless_shutdown`), `crates/bindy-controller-instance/src/bind9instance/mod.rs` (`fetch_cluster_info` fallible), `crates/bindy-bind9/src/bind9_resources/` (`controller_owner_reference`) |
 | M-57 | **A record write validates before it replaces** (2026-10-11; superseded in mechanism by M-62, 2026-10-13): every kind's values are parsed and validated before any query or update, so an invalid entry fails the write with the live RRset intact; since ADR-0021 the old RRset's delete and the new values travel in one UPDATE, and any response other than `NOERROR` fails the write | T1 (a partly rebuilt RRset; new data appended to stale data while the write reports success) | ✅ `crates/bindy-bind9/src/bind9/records/` (per-kind `*_rdata` conversions, `check_replace_response`) |
-| M-58 | **The operator uses the RNDC key the pods hold** (2026-10-11): the key loader reads the Secret name from the instance Deployment's `rndc-key` volume (`rndcKey.secretRef`, an inline `rndcKey.secret` name, or the default), and the writer, the drift check and the Deployment share one name helper; the instance Service follows the merged `bindcarConfig` (instance, cluster, provider). Anyone who can patch the Deployment could already mount that Secret into the pod, so reading the name from it adds no read path | I1 (no fallback Secret read outside the configured one), availability of dynamic updates | ✅ `crates/bindy-bind9/src/bind9_resources/` (`rndc_secret_name`, `rndc_secret_name_from_deployment`, `instance_configmap_name`), `crates/bindy-bind9/src/instances.rs` (`effective_rndc_secret_name`); uses the operator's existing `deployments: get` |
+| M-58 | **The operator uses the RNDC key the pods hold** (2026-10-11): the key loader reads the Secret name from the instance Deployment's `rndc-key` volume (`rndcKey.secretRef`, an inline `rndcKey.secret` name, or the default), and the writer, the drift check and the Deployment share one name helper; the instance Service follows the merged `bindcarConfig` (instance, cluster, provider). Anyone who can patch the Deployment could already mount that Secret into the pod, so reading the name from it adds no read path. Since ADR-0023 the name is `{instance}-rndc-key` in every RNDC mode (M-65) | I1 (no fallback Secret read outside the configured one), availability of dynamic updates | ✅ `crates/bindy-bind9/src/bind9_resources/` (`rndc_secret_name`, `rndc_secret_name_from_deployment`, `instance_configmap_name`), `crates/bindy-bind9/src/instances.rs` (`effective_rndc_secret_name`); uses the operator's existing `deployments: get` |
 | M-59 | **Scout keeps published records in step with the source** (2026-10-11): the TCPRoute record-name override goes through the same P2-7 validation as every other source kind; an `Ingress`/`HTTPRoute`/`TLSRoute` host that was removed or no longer matches the zone has its record pruned; a `Service` that stops being a `LoadBalancer` releases its records and finalizer; `Service` records left by an old `--cluster-name` are cleaned up; `bindy bootstrap scout --namespace X` points the scout at `X`, where its writer Role is | T1 (tenant-controlled record names; stale records served after the source changed), least privilege (the scout writes where its RBAC is) | ✅ `crates/bindy-scout/src/scout.rs` (`tcproute_record_name`), `crates/bindy-scout/src/pipeline.rs` (`prune_unapplied_arecords`, `delete_stale_cluster_arecords`, the `Service` source's `publishable`; since ADR-0022 one pipeline for every kind, M-63), `crates/bindy-bootstrap/src/bootstrap.rs` (`SCOUT_TARGET_NAMESPACE_ENV`) |
 | M-60 | **bindcar transport fails closed** (2026-10-11): the TLS CA bundle is read only from the instance's namespace (a manager without one refuses TLS instead of reading `default`), and a bindcar HTTP client that cannot be built with its timeouts fails every call instead of falling back to a client without timeouts | Spoofing of the bindcar endpoint (a CA bundle planted in `default` trusted for TLS, ADR-0004), availability (an untimed bindcar request hangs a reconcile; D5 is the API-server analogue) | ✅ `crates/bindy-bind9/src/bind9/mod.rs` (`new_for_instance`, `read_ca_bundle`, `build_http_client_with_timeouts`), `crates/bindy-bind9/src/context.rs` |
 | M-61 | **The multi-cluster kubeconfig Secret is written to a private file** (2026-10-12): `bindy bootstrap mc` writes the `bindy.firestoned.io/remote-kubeconfig` Secret, which carries the remote ServiceAccount token, to a file created with mode `0600` (`--output`, default `<service-account>-kubeconfig.yaml`); an existing file is restricted to `0600` before it is truncated; the Secret is never printed (`--output -` is refused). Status messages stay on stderr | I1 (a token left in terminal scrollback, a CI log or a shared session recording), CodeQL `rust/cleartext-logging` | ✅ `crates/bindy-bootstrap/src/bootstrap.rs` (`mc_output_path`, `write_private_file`), `crates/bindy/src/cli.rs` (`--output`); tests `bootstrap_tests.rs` (`mc_output_tests`, 5) |
 | M-62 | **An RRset is replaced in one atomic DNS UPDATE** (2026-10-13, ADR-0021): each record write is one TSIG-signed UPDATE (delete the RRset, then add every value), which BIND9 applies as a unit, so a replaced name never answers NXDOMAIN or a partial RRset; every kind's values are validated before any network call (an out-of-range MX priority is now rejected, not coerced); the current RRset is compared with the desired one by value (names normalised for case and trailing dot, order-insensitive, TTL compared), so an unchanged record sends nothing; an UPDATE larger than the EDNS payload is sent over TCP instead of an oversized UDP datagram; the compare before the write reads the RRset with an unsigned query, only the UPDATE is TSIG-signed (a spoofed answer can at most make the operator skip a write, not inject data) | T1 (DNS tampering: no window of missing or partial data during a write; no churn from text comparison) | ✅ `crates/bindy-bind9/src/bind9/records/mod.rs` (`replace_rrset_message`, `send_rrset_update`, `needs_update`, `update_transport`, `write_rrset`) and the per-kind conversions in `records/*.rs` |
 | M-63 | **Scout sources share one pipeline; records are owned by exactly one source** (2026-10-13, ADR-0022): Ingress, Service, HTTPRoute, TLSRoute and TCPRoute go through one `reconcile_source`, so a check one kind skipped (B1, B11) cannot recur; every `ARecord` carries `bindy.firestoned.io/source-kind` and every selector Scout uses includes it; names are `scout-{cluster}-{namespace}-{name}-{hash}-{index}` with the hash over the NUL-joined (cluster, kind, namespace, name); a record from before ADR-0022 (no source-kind label, matched by `!bindy.firestoned.io/source-kind`) or from a previous `--cluster-name` in the same zone is deleted only once every record replacing it reports `status.zoneRef` and `Ready=True`, rechecked every 10 s until then, so the upgrade rename never takes a name off the air; status addresses that are not IPv4 are skipped; an invalid TTL annotation publishes nothing for that source; malformed startup configuration fails Scout at startup; a Gateway or Service lookup error other than 404 fails the reconcile; the opt-in check runs before the namespace LIST | T1 (a tenant's same-named source overwriting or pruning another's record; hyphen-ambiguous names across namespaces), closes accepted risk 20 | ✅ `crates/bindy-scout/src/pipeline.rs` (`ScoutSource`, `reconcile_source`, `handover_step`, `arecord_served`), `crates/bindy-scout/src/scout.rs` (`LABEL_SOURCE_KIND`, `source_identity_hash`, `arecord_cr_name`, `retain_ipv4`, `parse_ttl_annotation`, `ScoutConfig::from_lookup`, `legacy_arecord_label_selector`); tests `pipeline_tests.rs`, `tests/e2e/scout_test.sh` |
 | M-64 | **A name shared by two records survives one's deletion** (2026-10-13, ADR-0022 decision 5): the record finalizer and the rename path do not delete an RRset that another live record of the same kind in the same zone still declares (bound to that zone by `status.zoneRef`, same name ignoring case, a different object, not being deleted); both re-push the survivor instead (compared by value first, so nothing is sent when BIND9 already serves it); a failed re-push keeps the finalizer, or on a rename keeps `status.publishedName`, so it is retried. One rule (`claims_rrset`) serves the finalizer and the zone's stale-record cleanup (bug-211) | T1 (a shared name taken off the air with nothing to re-push it, since ADR-0016 has no periodic resync) | ✅ `crates/bindy-controller-sdk/src/rrset_claim.rs`, `crates/bindy-controller-records/src/records/mod.rs` (`rrset_claimant`, `repush_claimant`, `delete_record`, `reconcile_record`), `crates/bindy-controller-zone/src/dnszone/discovery.rs` (`claimed_by_live_record`); tests `rrset_claim_tests.rs` (12), `records/mod_tests.rs::rrset_claimant_tests` (5) |
+| M-65 | **A `secretRef` RNDC key is mirrored, never mounted** (2026-10-14, ADR-0023): the operator builds the key from the referenced Secret (its `secretKey` entry, the algorithm from its `algorithm` entry else `secretRef.algorithm`, else its `rndc.key` file), names it `bindy-operator` (the only name the cluster-shared `controls` block accepts; `keyNameKey` is ignored), validates it (algorithm allow-list, base64 key, no key in any error message) and writes it to the instance-owned `{instance}-rndc-key`, annotated `bindy.firestoned.io/rndc-source-secret`, which every pod mounts. A source change rewrites the mirror, drops the cached key and rolls the pods (the reconcile fast path counts a mirror behind its source as drift, `secret_ref_mirror_stale`); any replacement of an existing `{instance}-rndc-key` (mode switch, generated key recreated) does the same. A mirror is never rotated and is replaced by a fresh key when the instance returns to a generated one. Fail fast without destroying: a missing or unusable source fails the reconcile and keeps the mirror, a GET of the RNDC Secret that fails with anything but 404 fails instead of regenerating the key, and a `secretRef` naming `{instance}-rndc-key` is refused | T3 (configuration injected into `rndc.key`), I1 (key in errors; a stale key held by the pods), availability of dynamic updates after a key change | ✅ `crates/bindy-bind9/src/bind9/rndc.rs` (`rndc_key_from_source_secret`, `create_rndc_mirror_secret`), `crates/bindy-controller-instance/src/bind9instance/resources.rs` (`mirror_step`, `mirror_secret_ref_key`, `validate_rndc_secret_ref`), `crates/bindy-controller-instance/src/watch.rs` (`instances_for_secret`); tests `rndc_tests.rs`, `resources_tests.rs`, `watch_tests.rs::secret_wake_tests`, `tests/e2e/rndc_secretref_test.sh` |
+| M-66 | **RNDC `secretRef` names a `bindy-` Secret** (2026-10-14, ADR-0023 decision 6): every `rndcKey.secretRef.name` and deprecated `rndcSecretRef.name`, at every level a CRD carries one, must start with `bindy-`, the H2 allow-list prefix (bug-021). Closes the confused deputy through which a CR author could have the operator place entries of any Secret of the namespace into a Secret the operand pods mount. Enforced at admission and again by the reconciler where the policy is not installed; no RBAC grant changed | E2 (operator Secret read as a confused deputy), I1 | ✅ `deploy/admission-policies/07-bindy-pod-shape-policy.yaml` (rule 5; fixtures `accept-bind9instance-rndc-bindy-secret.yaml`, `reject-bind9instance-rndc-foreign-secret.yaml`, `reject-bind9cluster-rndc-foreign-secret.yaml`), `crates/bindy-bind9/src/safe_volume.rs` (`validate_rndc_key_secret_name`), `validate_rndc_secret_ref`; tests `safe_volume_tests.rs`, `resources_tests.rs`, `tests/e2e/rndc_secretref_test.sh` |
 | M-25 | **Scout Secret RBAC scoped** (fixed 2026-07-19, same day as this finding's discovery): removed the cluster-wide `secrets: get` `PolicyRule` from the `bindy-scout` `ClusterRole` entirely. Replaced with a namespaced, `resourceNames`-restricted Role (`bindy-scout-secrets-reader`) scoped to exactly the one Phase 2 kubeconfig Secret, applied only when `--remote-secret` is configured. Same-cluster-only deployments (the default) now get zero Secret access. See I4/E4/Scenario 6 for the full before/after. | I4, E4, T4 (Secret-read component), Scenario 6 | ✅ RBAC: **was the highest-priority open item in v1.1; closed same-day** |
 
 ---
@@ -2256,6 +2328,8 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 
 20. ~~**Scout records of different source kinds with the same name collide**~~ **Closed 2026-10-13 (ADR-0022, M-63).** Every Scout `ARecord` carries a `bindy.firestoned.io/source-kind` label that every Scout selector includes, and its name carries a hash of the (cluster, kind, namespace, name) source, so kinds no longer overwrite or prune each other's records and namespaces whose hyphen-joined names coincide no longer share an `ARecord`. Existing records are renamed once on upgrade: the new record is applied, and the old one is deleted only after the new one is bound to its zone and `Ready` (M-63), so the DNS name is served throughout; the record finalizer guard (M-64) keeps the name if the old record's deletion races the new record's push. A legacy record carries no kind, so when two kinds shared a name before the upgrade, whichever reconciles first replaces the shared legacy record and the other kind publishes its own record on its next reconcile (every source reconciles at Scout startup).
 
+21. **A mirrored RNDC key is a second copy, and its change skips the rollout queue (ADR-0023)** - With `rndcKey.secretRef`, the key exists in the user's `bindy-` source Secret and in the operator-owned `{instance}-rndc-key` mirror, in the same namespace. Anyone who can read Secrets there can read either, so the mirror adds no reader, but a source deleted to revoke a key leaves the mirror (and the pods) holding it until the reference is changed or the instance deleted: the operator keeps the mirror on purpose, so DNS stays up while a reference is fixed. A key change rolls the instance's pods at once, as an automatic rotation does, without waiting behind other instances that share a zone (ADR-0018), because pods holding a stale key cannot answer writes. *Revisit when* key revocation must take effect without an operator action (then a deleted source should empty the mirror and fail the instance closed), or when a key change must be staggered across a zone's instances.
+
 ---
 
 ## Security Architecture
@@ -2322,7 +2396,7 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 | Control Category | Implemented | Planned | Residual Risk |
 |------------------|-------------|---------|---------------|
 | **Access Control** | RBAC least privilege (main operator; `pods/status` `get`/`patch` only for the zones-loaded gate, test-pinned, ADR-0017), signed commits, B-5 Secret RBAC split, namespace-scoped operator mode (opt-in), 16 `ValidatingAdmissionPolicy` policies, Scout namespace whitelisting (opt-in, M-30), **Scout Secret RBAC scoped (M-25, fixed 2026-07-19)** | Field-level admission for Scout patches (M-28), Scout egress NetworkPolicy (M-27) | MEDIUM: driven by Scout's remaining cluster-wide `patch`/`update` on Ingress/Service/route (T4); the formerly-HIGH Secret-read risk (I4/E4) is resolved |
-| **Data Protection** | Secrets encrypted, AXFR restricted, DNSSEC zone signing (opt-in, M-14/ADR-0006), RNDC key read from the mounted Secret only (M-58), bindcar TLS CA bundle read only from the instance's namespace (M-60) | TSIG for AXFR; DNSSEC-by-default | MEDIUM |
+| **Data Protection** | Secrets encrypted, AXFR restricted, DNSSEC zone signing (opt-in, M-14/ADR-0006), RNDC key read from the mounted Secret only (M-58), which is always the operator-owned `{instance}-rndc-key`, a `secretRef` key mirrored into it from a `bindy-` Secret (M-65, M-66), bindcar TLS CA bundle read only from the instance's namespace (M-60) | TSIG for AXFR; DNSSEC-by-default | MEDIUM |
 | **Supply Chain** | Signed commits/images, SLSA Build L3 provenance for all release artifacts (M-33), NTIA-gated SBOM attestations (M-34), anchored signer identity (M-35), gated per-release crypto inventory (M-39), `--locked` release builds, vuln scanning | Required approving reviews (M-36); operand image digest pinning (M-15); reproducibility check (M-37); hybrid PQ key exchange (M-40); revisit Dependabot auto-merge human-review gap (M-29) | LOW-MEDIUM (no required review on `main`, see S3; automated auto-merge removed a manual checkpoint, see E3; classical key exchange is HNDL-exposed, see accepted risk 8) |
 | **Monitoring** | Kubernetes audit logs, vuln scanning | Audit retention policy, secret access trail | MEDIUM |
 | **Resilience** | Rate limiting, fail-fast on API errors and partial lists with a startup cache gate (M-56), validated, atomic RRset replacement in one UPDATE (M-57, M-62), per-request API deadline (M-45), event-driven reconciliation with no periodic resync (M-48), zones-loaded readiness gate so a rollout never admits an empty BIND9 pod (M-49), handover at the start of termination (M-50), staggered rollouts across instances sharing a zone or cluster (M-51), resource limits | Edge DDoS protection, HPA | MEDIUM |
@@ -2339,6 +2413,6 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 
 ---
 
-**Last Updated:** 2026-10-13
+**Last Updated:** 2026-10-14
 **Next Review:** 2027-01-14 (Quarterly)
 **Approved By:** Security Team *(pending re-approval for v1.1: this revision has not yet been formally reviewed/signed off; see the revision note at the top of this document)*

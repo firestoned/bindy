@@ -292,6 +292,89 @@ mod tests {
         assert!(matches!(err, VolumeRejection::DnssecKeySecretPrefix { .. }));
     }
 
+    // ------------------------------------------------------------------
+    // A true allow-list: exactly one source, and that one on the list
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn an_allowed_source_set_together_with_an_unlisted_one_is_rejected() {
+        // `image` (Kubernetes 1.31) is on no deny list: the allow-list used
+        // to return on the first allowed source and let it through.
+        let v = Volume {
+            name: "sneaky".into(),
+            empty_dir: Some(EmptyDirVolumeSource::default()),
+            image: Some(k8s_openapi::api::core::v1::ImageVolumeSource {
+                reference: Some("registry.example/tools:1".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let err = validate_user_volumes(&[v]).expect_err("two sources must be rejected");
+        assert!(
+            matches!(err, VolumeRejection::MultipleSources { .. }),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn two_allowed_sources_in_one_volume_are_rejected() {
+        let v = Volume {
+            name: "both".into(),
+            empty_dir: Some(EmptyDirVolumeSource::default()),
+            secret: Some(SecretVolumeSource {
+                secret_name: Some("bindy-extra".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(matches!(
+            validate_user_volumes(&[v]),
+            Err(VolumeRejection::MultipleSources { .. })
+        ));
+    }
+
+    #[test]
+    fn an_unlisted_source_is_rejected_by_its_name() {
+        let v = Volume {
+            name: "img".into(),
+            image: Some(k8s_openapi::api::core::v1::ImageVolumeSource::default()),
+            ..Default::default()
+        };
+        let err = validate_user_volumes(&[v]).expect_err("image must be rejected");
+        assert_eq!(
+            err,
+            VolumeRejection::ForbiddenSource {
+                name: "img".into(),
+                kind: "image".into()
+            }
+        );
+    }
+
+    #[test]
+    fn a_volume_with_no_source_is_rejected() {
+        let v = Volume {
+            name: "nothing".into(),
+            ..Default::default()
+        };
+        assert!(matches!(
+            validate_user_volumes(&[v]),
+            Err(VolumeRejection::ForbiddenSource { .. })
+        ));
+    }
+
+    #[test]
+    fn rndc_key_secret_with_bindy_prefix_is_accepted() {
+        validate_rndc_key_secret_name("bindy-corp-rndc")
+            .expect("bindy- prefixed RNDC key secret must be accepted");
+    }
+
+    #[test]
+    fn rndc_key_secret_without_prefix_is_rejected() {
+        let err = validate_rndc_key_secret_name("other-tenant-tsig")
+            .expect_err("foreign RNDC key secret must be rejected");
+        assert!(matches!(err, VolumeRejection::RndcKeySecretPrefix { .. }));
+    }
+
     #[test]
     fn empty_mount_list_is_accepted() {
         validate_user_volume_mounts(&[]).expect("empty list is trivially valid");

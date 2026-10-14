@@ -52,7 +52,10 @@ pub enum VolumeRejection {
          (with name prefix {ALLOWED_USER_SECRET_PREFIX:?}), or persistentVolumeClaim (with name \
          prefix {ALLOWED_USER_PVC_PREFIX:?}) are permitted"
     )]
-    ForbiddenSource { name: String, kind: &'static str },
+    ForbiddenSource { name: String, kind: String },
+
+    #[error("volume {name:?} sets more than one source ({sources:?}): a volume has exactly one")]
+    MultipleSources { name: String, sources: Vec<String> },
 
     #[error(
         "volume {name:?} secret reference {secret:?} does not start with the required prefix \
@@ -89,6 +92,35 @@ pub enum VolumeRejection {
          {ALLOWED_USER_SECRET_PREFIX:?}"
     )]
     DnssecKeySecretPrefix { secret: String },
+
+    #[error(
+        "rndcKey.secretRef {secret:?} does not start with the required prefix \
+         {ALLOWED_USER_SECRET_PREFIX:?}"
+    )]
+    RndcKeySecretPrefix { secret: String },
+}
+
+/// Validate that a `rndcKey.secretRef` (or deprecated `rndcSecretRef`) names
+/// a Secret with the user-secret name prefix (ADR-0023, Decision 6).
+///
+/// The operator reads two entries of that Secret and places them in the
+/// `{instance}-rndc-key` mirror the BIND9 pods mount, so without this check
+/// anyone who can create a `Bind9Instance`, `Bind9Cluster` or
+/// `ClusterBind9Provider` could have the operator copy entries out of any
+/// Secret in the namespace. The `bindy-pod-shape-validation` admission
+/// policy enforces the same rule.
+///
+/// # Errors
+///
+/// Returns [`VolumeRejection::RndcKeySecretPrefix`] if `name` does not start
+/// with [`crate::constants::ALLOWED_USER_SECRET_PREFIX`].
+pub fn validate_rndc_key_secret_name(name: &str) -> Result<(), VolumeRejection> {
+    if name.starts_with(ALLOWED_USER_SECRET_PREFIX) {
+        return Ok(());
+    }
+    Err(VolumeRejection::RndcKeySecretPrefix {
+        secret: name.to_string(),
+    })
 }
 
 /// Validate that a user-supplied DNSSEC key Secret name obeys the same
@@ -171,92 +203,43 @@ pub fn validate_optional_user_volume_mounts(
 // internals
 // ----------------------------------------------------------------------
 
+/// The `Volume` field that is not a source: every other field names one.
+const VOLUME_NAME_FIELD: &str = "name";
+
+/// The source kinds a user volume may use (the allow-list).
+const ALLOWED_VOLUME_SOURCES: [&str; 4] =
+    ["emptyDir", "secret", "configMap", "persistentVolumeClaim"];
+
+/// The volume's set source fields, by their Kubernetes (camelCase) names.
+///
+/// Read from the serialized volume rather than from a hand-kept list of
+/// fields, so a source Kubernetes adds later is seen, and rejected, too.
+fn volume_sources(v: &Volume) -> Vec<String> {
+    let Ok(serde_json::Value::Object(fields)) = serde_json::to_value(v) else {
+        return Vec::new();
+    };
+    fields
+        .into_iter()
+        .filter(|(key, value)| key != VOLUME_NAME_FIELD && !value.is_null())
+        .map(|(key, _)| key)
+        .collect()
+}
+
 fn validate_one_volume(v: &Volume) -> Result<(), VolumeRejection> {
     let name = v.name.clone();
 
-    // Reject every source kind that isn't on our allow-list. This is an
-    // explicit allow-list — anything not matched falls through to
-    // ForbiddenSource at the bottom.
-    if v.host_path.is_some() {
-        return forbid(name, "hostPath");
-    }
-    if v.csi.is_some() {
-        return forbid(name, "csi");
-    }
-    if v.flex_volume.is_some() {
-        return forbid(name, "flexVolume");
-    }
-    if v.nfs.is_some() {
-        return forbid(name, "nfs");
-    }
-    if v.iscsi.is_some() {
-        return forbid(name, "iscsi");
-    }
-    if v.rbd.is_some() {
-        return forbid(name, "rbd");
-    }
-    if v.cephfs.is_some() {
-        return forbid(name, "cephfs");
-    }
-    if v.glusterfs.is_some() {
-        return forbid(name, "glusterfs");
-    }
-    if v.azure_file.is_some() {
-        return forbid(name, "azureFile");
-    }
-    if v.azure_disk.is_some() {
-        return forbid(name, "azureDisk");
-    }
-    if v.gce_persistent_disk.is_some() {
-        return forbid(name, "gcePersistentDisk");
-    }
-    if v.aws_elastic_block_store.is_some() {
-        return forbid(name, "awsElasticBlockStore");
-    }
-    if v.cinder.is_some() {
-        return forbid(name, "cinder");
-    }
-    if v.fc.is_some() {
-        return forbid(name, "fc");
-    }
-    if v.flocker.is_some() {
-        return forbid(name, "flocker");
-    }
-    if v.photon_persistent_disk.is_some() {
-        return forbid(name, "photonPersistentDisk");
-    }
-    if v.portworx_volume.is_some() {
-        return forbid(name, "portworxVolume");
-    }
-    if v.quobyte.is_some() {
-        return forbid(name, "quobyte");
-    }
-    if v.scale_io.is_some() {
-        return forbid(name, "scaleIO");
-    }
-    if v.storageos.is_some() {
-        return forbid(name, "storageos");
-    }
-    if v.vsphere_volume.is_some() {
-        return forbid(name, "vsphereVolume");
-    }
-    if v.projected.is_some() {
-        return forbid(name, "projected");
-    }
-    if v.ephemeral.is_some() {
-        return forbid(name, "ephemeral");
-    }
-    if v.git_repo.is_some() {
-        return forbid(name, "gitRepo");
-    }
-    if v.downward_api.is_some() {
-        return forbid(name, "downwardAPI");
+    // A true allow-list: exactly one source, and that one on the list.
+    let sources = volume_sources(v);
+    let source = match sources.as_slice() {
+        [] => return forbid(name, "none"),
+        [one] => one.as_str(),
+        _ => return Err(VolumeRejection::MultipleSources { name, sources }),
+    };
+    if !ALLOWED_VOLUME_SOURCES.contains(&source) {
+        return forbid(name, source);
     }
 
     // Allow-listed sources, with name-prefix checks where applicable.
-    if v.empty_dir.is_some() {
-        return Ok(());
-    }
     if let Some(ref s) = v.secret {
         let secret = s.secret_name.clone().unwrap_or_default();
         if secret.starts_with(ALLOWED_USER_SECRET_PREFIX) && !secret.is_empty() {
@@ -281,14 +264,15 @@ fn validate_one_volume(v: &Volume) -> Result<(), VolumeRejection> {
             pvc: pvc_name,
         });
     }
-
-    // No recognised source — reject by default. This catches both empty
-    // Volumes and any future variant Kubernetes adds.
-    forbid(name, "unknown/none")
+    // emptyDir: no name to check.
+    Ok(())
 }
 
-fn forbid(name: String, kind: &'static str) -> Result<(), VolumeRejection> {
-    Err(VolumeRejection::ForbiddenSource { name, kind })
+fn forbid(name: String, kind: &str) -> Result<(), VolumeRejection> {
+    Err(VolumeRejection::ForbiddenSource {
+        name,
+        kind: kind.to_string(),
+    })
 }
 
 fn validate_one_volume_mount(m: &VolumeMount) -> Result<(), VolumeRejection> {
