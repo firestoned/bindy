@@ -5,10 +5,11 @@
 > carries on as if it had succeeded. Each fix lands in its own PR, gated by
 > the workspace tests and the chaos e2e suite on Kubernetes 1.31 and 1.37.
 >
-> **Stop condition.** The six PRs below are merged; the remaining review
+> **Stop condition.** The PRs below are merged; the remaining review
 > findings are either done or recorded as follow-ups with a reason.
 
-**Status:** 🔶 In progress (PRs 1 to 6 merged; PR 7 in review).
+**Status:** ✅ Complete 2026-10-14 (PRs 1 to 7 merged, #544 to #551). The
+open follow-ups below are recorded with their reasons; none blocks the goal.
 **Owner:** Erick Bourgeois
 
 ## Why
@@ -29,7 +30,7 @@ copies had already drifted apart, and several of the drifts were bugs.
 | 4 (#548) | Zone instances partitioned once per reconcile; role accessors; `bind9_resources.rs` split into modules; generic bootstrap `apply` | ✅ Merged |
 | 5 (#549) | [ADR-0020](../../docs/adr/0020-record-kinds-declared-once.md) record kinds declared once; [ADR-0021](../../docs/adr/0021-rrset-replaced-in-one-update.md) an RRset replaced in one DNS UPDATE (TCP when it exceeds the EDNS payload) | ✅ Merged |
 | 6 (#550) | [ADR-0022](../../docs/adr/0022-scout-sources-share-one-pipeline.md) Scout sources share one pipeline; `source-kind` label and hashed names (closes accepted risk 20); the record finalizer keeps a shared name's data | ✅ Merged |
-| 7 | Sweep of the remaining smaller findings: [ADR-0023](../../docs/adr/0023-secretref-rndc-key-mirrored.md) RNDC `secretRef` keys mirrored into `{instance}-rndc-key` (named `bindy-operator`, `bindy-` prefix required); `safe_volume` a true one-source allow-list; one ACL grammar; bindcar retries classified by error type; one shared bindcar HTTP client; expected 404/409 logged once. Non-test lines rise by 419: the ADR-0023 mirror, watch and validation are new code | 🔶 In review |
+| 7 (#551) | Sweep of the remaining smaller findings: [ADR-0023](../../docs/adr/0023-secretref-rndc-key-mirrored.md) RNDC `secretRef` keys mirrored into `{instance}-rndc-key` (named `bindy-operator`, `bindy-` prefix required); `safe_volume` a true one-source allow-list; one ACL grammar; bindcar retries classified by error type; one shared bindcar HTTP client; expected 404/409 logged once. Non-test lines rise by 419: the ADR-0023 mirror, watch and validation are new code | ✅ Merged |
 
 ## Lines (Rust under `crates/`)
 
@@ -61,5 +62,15 @@ copies had already drifted apart, and several of the drifts were bugs.
       text); merging the loops is deferred because their errors, logging,
       metrics and final messages differ and a generic helper must keep the
       Kubernetes path's error format.
+- [ ] The TSIG "truncated HMAC" errors logged while pods roll onto a new
+      RNDC key (rotation, ADR-0023 mirror change): `named` answers BADKEY
+      until each pod holds the new key, and hickory reports it as a
+      protocol error at `error!`. Transient (the writes retry), but noisy
+      and misleading. Classify BADKEY and log it once at `warn!`; roadmap 10
+      (hot reload) would remove the window altogether.
+- [ ] The `rndc_secret_ref` rustdoc in `crates/bindy-api/src/crd.rs` lists a
+      "Global level `spec.global.rndcSecretRef`" precedence the resolver does
+      not implement (`resolve_full_rndc_config` reads instance, role, then the
+      deprecated instance field).
 - [ ] `create_or_force_apply` gives the provider's constant labels to the
       `bindy-controller` field manager (values unchanged; noted in PR 3).
