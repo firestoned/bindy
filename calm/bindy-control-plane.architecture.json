@@ -88,6 +88,18 @@
       "description": "User-supplied Secret (name prefix bindy-) holding the zone's KSK/ZSK files as K<zone>._<alg>_<id>.key|private|state; shared by every primary (ADR-0012)."
     },
     {
+      "unique-id": "rndc-source-secret",
+      "node-type": "data-asset",
+      "name": "RNDC key source Secret",
+      "description": "User-managed Secret named by rndcKey.secretRef, in the instance's namespace. Holds the key under the keyNameKey and secretKey entries (algorithm entry optional), or as an rndc.key file. Read by the operator only; never mounted by pods (ADR-0023)."
+    },
+    {
+      "unique-id": "rndc-key-secret",
+      "node-type": "data-asset",
+      "name": "RNDC key Secret",
+      "description": "Operator-owned {instance}-rndc-key Secret (key-name, algorithm, secret, rndc.key), owned by the Bind9Instance. Generated and optionally rotated by the operator, or mirrored from the RNDC key source Secret when rndcKey.secretRef is set (ADR-0023). Mounted by every BIND9 pod at /etc/bind/keys."
+    },
+    {
       "unique-id": "bind9-svc",
       "node-type": "service",
       "name": "BIND9 Service",
@@ -283,6 +295,36 @@
         "connects": {
           "source": { "node": "dnssec-keys-init" },
           "destination": { "node": "named" }
+        }
+      }
+    },
+    {
+      "unique-id": "operator-reads-rndc-source",
+      "description": "reads the referenced key (watch + get); a change re-renders the mirror and rolls the pods - ADR-0023",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "bindy-operator" },
+          "destination": { "node": "rndc-source-secret" }
+        }
+      }
+    },
+    {
+      "unique-id": "operator-writes-rndc-key",
+      "description": "creates, rotates or mirrors the instance's RNDC key; reads it for every TSIG-signed write and bindcar call",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "bindy-operator" },
+          "destination": { "node": "rndc-key-secret" }
+        }
+      }
+    },
+    {
+      "unique-id": "named-reads-rndc-key",
+      "description": "mounts rndc.key (Secret volume, read-only) for rndc and TSIG; bindcar mounts the same key",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "named" },
+          "destination": { "node": "rndc-key-secret" }
         }
       }
     },

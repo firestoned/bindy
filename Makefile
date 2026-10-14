@@ -1,7 +1,7 @@
 # Copyright (c) 2025 Erick Bourgeois, firestoned
 # SPDX-License-Identifier: Apache-2.0
 
-.PHONY: kind-kubeconfig kind-dump-diagnostics pin-release-images help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny cargo-machete gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh tls-transport-test ci-e2e e2e-image e2e-image-load e2e-lifecycle e2e-idempotency e2e-restart e2e-rust e2e-multi-tenancy e2e-regression e2e-zone-spread e2e-tls e2e-chaos e2e-chaos-full e2e-all e2e-clean calm-validate calm-docs calm-docs-check sbom-generate sbom-stage sbom-annotate sbom-check cbom-generate cbom-check cbom-stage provenance-subjects slsa-verifier-install verify-provenance verify-image-provenance verify-sbom-attestation image-digest-record image-digests-matrix
+.PHONY: kind-kubeconfig kind-dump-diagnostics pin-release-images help install test lint format docker-build docker-push deploy clean kind-create kind-deploy kind-test kind-cleanup kind-create-scout kind-scout-cleanup docs docs-serve docs-rustdoc docs-clean crds crds-combined install-yaml scout-yaml admission-policies-yaml release-manifests integ-test-multi-tenancy sign-verify-install verify-image verify-binary sign-binary cargo-deny cargo-machete gitleaks gitleaks-install vexctl-install vex-validate security-scan-local security-scan-quick security-scan-full install-git-hooks admission-policies-install admission-policies-test admission-policies-uninstall regression-test regression-test-fresh tls-transport-test ci-e2e e2e-image e2e-image-load e2e-lifecycle e2e-idempotency e2e-restart e2e-rust e2e-multi-tenancy e2e-rndc-secretref e2e-regression e2e-zone-spread e2e-tls e2e-chaos e2e-chaos-full e2e-all e2e-clean calm-validate calm-docs calm-docs-check sbom-generate sbom-stage sbom-annotate sbom-check cbom-generate cbom-check cbom-stage provenance-subjects slsa-verifier-install verify-provenance verify-image-provenance verify-sbom-attestation image-digest-record image-digests-matrix
 
 # Detect host architecture and derive the matching Linux cross-compilation target.
 # `uname -m` reports arm64 on Apple Silicon macOS but aarch64 on Linux ARM, so
@@ -879,6 +879,7 @@ E2E_RUST_CLUSTER         ?= bindy-e2e-rust
 E2E_MULTITENANCY_CLUSTER ?= bindy-e2e-multitenancy
 E2E_SCOUT_CLUSTER        ?= bindy-e2e-scout
 E2E_CHAOS_CLUSTER        ?= bindy-e2e-chaos
+E2E_RNDC_SECRETREF_CLUSTER ?= bindy-e2e-rndc-secretref
 
 # Shared image handoff for CI: one job builds and saves the tarball, every suite
 # job loads it. Avoids paying for the same cross-compile once per suite.
@@ -921,6 +922,9 @@ e2e-multi-tenancy: ## E2E: namespace isolation across Bind9Cluster/Bind9Instance
 e2e-scout: ## E2E: Scout's zone-scoped stale-cluster ARecord cleanup (#474)
 	$(call run-e2e-suite,tests/e2e/scout_test.sh,$(E2E_SCOUT_CLUSTER))
 
+e2e-rndc-secretref: ## E2E: an RNDC key from rndcKey.secretRef is mirrored, follows its source, and stays served (ADR-0023)
+	$(call run-e2e-suite,tests/e2e/rndc_secretref_test.sh,$(E2E_RNDC_SECRETREF_CLUSTER))
+
 e2e-regression: ## E2E: admission policies + operand pod shape + liveness
 	$(call run-e2e-suite,tests/regression_test.sh,$(REGRESSION_CLUSTER),--fresh)
 
@@ -937,7 +941,7 @@ e2e-chaos-full: ## E2E: full chaos, 15 steps x 2 passes on a 3-node cluster (hou
 	@CHAOS_PROFILE=full $(MAKE) --no-print-directory e2e-chaos
 
 E2E_SUITES = e2e-rust e2e-lifecycle e2e-idempotency e2e-restart e2e-multi-tenancy \
-             e2e-scout e2e-regression e2e-zone-spread e2e-tls e2e-chaos
+             e2e-scout e2e-rndc-secretref e2e-regression e2e-zone-spread e2e-tls e2e-chaos
 
 e2e-all: ## Run every e2e suite sequentially (CI runs them in parallel instead)
 	@for target in $(E2E_SUITES); do \
@@ -953,6 +957,7 @@ e2e-all: ## Run every e2e suite sequentially (CI runs them in parallel instead)
 e2e-clean: ## Delete every kind cluster the e2e suites create
 	@for c in $(E2E_LIFECYCLE_CLUSTER) $(E2E_IDEMPOTENCY_CLUSTER) $(E2E_RESTART_CLUSTER) \
 	          $(E2E_RUST_CLUSTER) $(E2E_MULTITENANCY_CLUSTER) $(E2E_SCOUT_CLUSTER) $(E2E_CHAOS_CLUSTER) \
+	          $(E2E_RNDC_SECRETREF_CLUSTER) \
 	          $(REGRESSION_CLUSTER) $(ZONESPREAD_CLUSTER) $(TLS_TRANSPORT_CLUSTER) \
 	          $(CI_E2E_INTEGRATION_CLUSTER); do \
 		kind delete cluster --name $$c >/dev/null 2>&1 || true; \

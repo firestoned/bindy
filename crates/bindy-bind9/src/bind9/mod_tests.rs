@@ -156,6 +156,24 @@ mod tests {
         assert!(err.is_timeout(), "expected a timeout error, got: {err}");
     }
 
+    /// Every manager shares one bindcar HTTP client (and its connection
+    /// pool): one is created per instance per reconcile, and each used to
+    /// build its own.
+    #[tokio::test]
+    async fn managers_share_one_http_client() {
+        ensure_crypto_provider();
+        let _managers = [
+            Bind9Manager::new(),
+            Bind9Manager::new_for_instance("a".into(), "dns".into()),
+            Bind9Manager::new_for_instance("b".into(), "dns".into()),
+        ];
+        assert_eq!(
+            super::super::HTTP_CLIENT_BUILDS.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the shared client is built exactly once per process"
+        );
+    }
+
     /// If the timeout-bounded client cannot be built, the manager must fail
     /// every request rather than fall back to a client with no timeouts (which
     /// would reintroduce the indefinite hang the timeouts exist to prevent).

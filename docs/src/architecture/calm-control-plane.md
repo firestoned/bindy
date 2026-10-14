@@ -49,6 +49,8 @@ classDef highlight fill:#fdf7ec,stroke:#f0c060,stroke-width:1px,color:#000000;
     dnssec-key-secret["DNSSEC key Secret"]:::node
     crd-dnszone["DNSZone #40;CRD#41;"]:::node
     k8s-api["Kubernetes API Server"]:::node
+    rndc-key-secret["RNDC key Secret"]:::node
+    rndc-source-secret["RNDC key source Secret"]:::node
     admission-policies["ValidatingAdmissionPolicies"]:::node
 
     bindy-operator -->|watches and patches custom resources: one shared watch per kind and namespace target, subscribed to by every controller #40;ADR-0009#41;; client-side rate limited at 20 QPS / 30 burst default, paginated LISTs, retries with exponential backoff #40;ADR-0005#41;; non-watch requests bounded by a 30 s client-side deadline, watches exempt #40;ADR-0014#41;| k8s-api
@@ -67,6 +69,9 @@ classDef highlight fill:#fdf7ec,stroke:#f0c060,stroke-width:1px,color:#000000;
     bindcar -->|rndc / nsupdate #40;local#41;| named
     dnssec-keys-init -->|reads the shared DNSSEC keys #40;Secret volume, read-only, init container only#41; - ADR-0012| dnssec-key-secret
     dnssec-keys-init -->|copies the keys into named's writable key-directory #40;emptyDir#41; before named starts - ADR-0012| named
+    bindy-operator -->|reads the referenced key #40;watch + get#41;; a change re-renders the mirror and rolls the pods - ADR-0023| rndc-source-secret
+    bindy-operator -->|creates, rotates or mirrors the instance's RNDC key; reads it for every TSIG-signed write and bindcar call| rndc-key-secret
+    named -->|mounts rndc.key #40;Secret volume, read-only#41; for rndc and TSIG; bindcar mounts the same key| rndc-key-secret
     dns-client -->|DNS query| bind9-svc
     bind9-svc -->|routes :53 to named :5353 on Ready pods only; a pod is Ready once its zones-loaded readiness gate is True, and stops being Ready once the kubelet syncs the closed gate of a terminating pod #40;ADR-0017#41;| named
     named -->|zone transfer between BIND9 pods: a secondary named transfers #40;AXFR/IXFR, TCP :5353#41; from the primary pod IPs in its primaries list, allowed by the primaries' allow-transfer #40;exactly the zone's live secondary pod IPs#41;; a primary sends NOTIFY to each secondary instance's Service ClusterIP on :53 #40;ADR-0019#41;| bind9-svc

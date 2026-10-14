@@ -906,4 +906,165 @@ key "inline-key" {
 
         assert!(result.is_err(), "comment-only rndc.key must not parse");
     }
+
+    // =====================================================================
+    // ADR-0023: the key of a `secretRef` source Secret, and its mirror
+    // =====================================================================
+
+    use crate::bind9::rndc::{create_rndc_mirror_secret, rndc_key_from_source_secret};
+    use crate::crd::{RndcAlgorithm, RndcSecretRef};
+
+    /// A valid base64 key used by the source-Secret tests.
+    const SOURCE_KEY: &str = "dGVzdC1rbmRjLWtleS1ieXRlcy10aGlydHktdHdvLWJ5dGVz";
+
+    fn source_ref(value: serde_json::Value) -> RndcSecretRef {
+        serde_json::from_value(value).expect("valid RndcSecretRef")
+    }
+
+    fn entries(pairs: &[(&str, &str)]) -> BTreeMap<String, Vec<u8>> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), v.as_bytes().to_vec()))
+            .collect()
+    }
+
+    fn rndc_key_file(name: &str, algorithm: &str, secret: &str) -> String {
+        format!("key \"{name}\" {{\n    algorithm {algorithm};\n    secret \"{secret}\";\n}};\n")
+    }
+
+    /// The only key name `named.conf`'s control channel accepts.
+    const OPERATOR_KEY_NAME: &str = "bindy-operator";
+
+    #[test]
+    fn source_key_comes_from_the_secret_key_entry() {
+        let data = entries(&[("my-secret", SOURCE_KEY)]);
+        let r = source_ref(serde_json::json!({
+            "name": "bindy-corp", "secretKey": "my-secret", "algorithm": "hmac-sha512",
+        }));
+        let key = rndc_key_from_source_secret(&data, &r).expect("secretKey entry");
+        assert_eq!(key.secret, SOURCE_KEY);
+        assert_eq!(key.algorithm, RndcAlgorithm::HmacSha512);
+    }
+
+    #[test]
+    fn the_mirrored_key_is_always_named_bindy_operator() {
+        // named.conf's controls block, shared by every instance of a cluster,
+        // accepts only that name; the source's own name is not used.
+        let data = entries(&[
+            ("key-name", "corp-key"),
+            ("my-name", "other\"; name"),
+            ("secret", SOURCE_KEY),
+        ]);
+        for r in [
+            source_ref(serde_json::json!({"name": "bindy-corp"})),
+            source_ref(serde_json::json!({"name": "bindy-corp", "keyNameKey": "my-name"})),
+        ] {
+            let key = rndc_key_from_source_secret(&data, &r).expect("key");
+            assert_eq!(key.name, OPERATOR_KEY_NAME);
+        }
+    }
+
+    #[test]
+    fn the_sources_algorithm_entry_wins_over_the_secret_ref_algorithm() {
+        let data = entries(&[("secret", SOURCE_KEY), ("algorithm", "hmac-sha384")]);
+        let r = source_ref(serde_json::json!({"name": "bindy-corp"}));
+        let key = rndc_key_from_source_secret(&data, &r).expect("default entries");
+        assert_eq!(key.algorithm, RndcAlgorithm::HmacSha384);
+    }
+
+    #[test]
+    fn a_source_with_only_rndc_key_is_parsed_and_renamed() {
+        let data = entries(&[(
+            "rndc.key",
+            &rndc_key_file("file-key", "hmac-sha256", SOURCE_KEY),
+        )]);
+        let r = source_ref(serde_json::json!({"name": "bindy-corp"}));
+        let key = rndc_key_from_source_secret(&data, &r).expect("rndc.key");
+        assert_eq!(key.name, OPERATOR_KEY_NAME);
+        assert_eq!(key.secret, SOURCE_KEY);
+    }
+
+    #[test]
+    fn the_secret_key_entry_wins_over_rndc_key() {
+        const FILE_KEY: &str = "ZmlsZS1rZXk=";
+        let data = entries(&[
+            ("my-secret", SOURCE_KEY),
+            (
+                "rndc.key",
+                &rndc_key_file("file-key", "hmac-sha256", FILE_KEY),
+            ),
+        ]);
+        let r = source_ref(serde_json::json!({"name": "bindy-corp", "secretKey": "my-secret"}));
+        let key = rndc_key_from_source_secret(&data, &r).expect("secretKey entry");
+        assert_eq!(key.secret, SOURCE_KEY);
+    }
+
+    #[test]
+    fn a_source_with_neither_form_names_the_entries_it_looked_for() {
+        let data = entries(&[("key-name", "corp-key")]);
+        let r = source_ref(serde_json::json!({"name": "bindy-corp", "secretKey": "my-secret"}));
+        let err = rndc_key_from_source_secret(&data, &r)
+            .expect_err("a key name alone is not a key")
+            .to_string();
+        assert!(err.contains("my-secret"), "{err}");
+        assert!(err.contains("rndc.key"), "{err}");
+    }
+
+    #[test]
+    fn a_source_secret_that_is_not_base64_is_refused_without_echoing_it() {
+        for bad in ["", "not base64!", "abc\";\n};"] {
+            let data = entries(&[("secret", bad)]);
+            let r = source_ref(serde_json::json!({"name": "bindy-corp"}));
+            let err = rndc_key_from_source_secret(&data, &r)
+                .expect_err("invalid key must be refused")
+                .to_string();
+            if !bad.is_empty() {
+                assert!(!err.contains(bad), "error must not echo the key: {err}");
+            }
+        }
+        // Valid base64 is accepted whatever its length.
+        let data = entries(&[("secret", "c2VjcmV0")]);
+        let r = source_ref(serde_json::json!({"name": "bindy-corp"}));
+        assert!(rndc_key_from_source_secret(&data, &r).is_ok());
+    }
+
+    #[test]
+    fn a_deprecated_source_algorithm_is_refused() {
+        let data = entries(&[("secret", SOURCE_KEY), ("algorithm", "hmac-sha1")]);
+        let r = source_ref(serde_json::json!({"name": "bindy-corp"}));
+        assert!(rndc_key_from_source_secret(&data, &r).is_err());
+    }
+
+    #[test]
+    fn the_mirror_holds_the_operator_format_and_names_its_source() {
+        let key = RndcKeyData {
+            name: "corp-key".into(),
+            algorithm: RndcAlgorithm::HmacSha256,
+            secret: SOURCE_KEY.into(),
+        };
+        let mirror = create_rndc_mirror_secret("dns", "primary-0-rndc-key", &key, "bindy-corp");
+        assert_eq!(mirror.metadata.name.as_deref(), Some("primary-0-rndc-key"));
+        assert_eq!(mirror.metadata.namespace.as_deref(), Some("dns"));
+        let annotations = mirror.metadata.annotations.clone().unwrap_or_default();
+        assert_eq!(
+            annotations.get(crate::constants::ANNOTATION_RNDC_SOURCE_SECRET),
+            Some(&"bindy-corp".to_string())
+        );
+        assert!(
+            !annotations.contains_key(crate::constants::ANNOTATION_RNDC_ROTATE_AT),
+            "a mirror is never rotated"
+        );
+        let data: BTreeMap<String, Vec<u8>> = mirror
+            .data
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(k, v)| (k, v.0))
+            .collect();
+        let keys: Vec<&str> = data.keys().map(String::as_str).collect();
+        assert_eq!(keys, vec!["algorithm", "key-name", "rndc.key", "secret"]);
+        let parsed = Bind9Manager::parse_rndc_secret_data(&data).expect("operator format");
+        assert_eq!(parsed.name, "corp-key");
+        assert_eq!(parsed.secret, SOURCE_KEY);
+    }
 }

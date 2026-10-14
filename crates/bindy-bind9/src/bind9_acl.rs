@@ -34,8 +34,6 @@ pub const MAX_ACL_ENTRY_LEN: usize = 256;
 /// Matches the DNS name length limit from RFC 1035.
 const MAX_KEY_NAME_LEN: usize = 253;
 
-const ACL_KEYWORDS: [&str; 4] = ["any", "none", "localhost", "localnets"];
-
 const IPV4_MAX_PREFIX: u8 = 32;
 const IPV6_MAX_PREFIX: u8 = 128;
 
@@ -62,6 +60,21 @@ pub enum AclError {
 /// Returns [`AclError`] if the entry is empty, exceeds
 /// [`MAX_ACL_ENTRY_LEN`], or does not match one of the accepted forms.
 pub fn validate_acl_entry(entry: &str) -> Result<(), AclError> {
+    parse_acl_entry(entry).map(|_| ())
+}
+
+/// Validate an `address_match_list` entry and parse it into hornet's typed
+/// element. The one grammar both validation and rendering use.
+///
+/// # Arguments
+/// * `entry` - One CRD-supplied entry, e.g. `10.0.0.0/8`, `!localhost` or
+///   `key bindy-operator`
+///
+/// # Errors
+/// Returns [`AclError`] if the entry is empty, exceeds
+/// [`MAX_ACL_ENTRY_LEN`], or does not match one of the accepted forms; the
+/// error carries the whole trimmed entry.
+pub fn parse_acl_entry(entry: &str) -> Result<AddressMatchElement, AclError> {
     let trimmed = entry.trim();
     if trimmed.is_empty() {
         return Err(AclError::Empty);
@@ -69,78 +82,59 @@ pub fn validate_acl_entry(entry: &str) -> Result<(), AclError> {
     if trimmed.len() > MAX_ACL_ENTRY_LEN {
         return Err(AclError::TooLong(trimmed.to_string()));
     }
-
-    let core = trimmed.strip_prefix('!').unwrap_or(trimmed).trim_start();
-    if core.is_empty() {
-        return Err(AclError::InvalidToken(trimmed.to_string()));
-    }
-
-    if ACL_KEYWORDS.contains(&core) {
-        return Ok(());
-    }
-
-    if let Some(key_name) = core.strip_prefix("key ") {
-        if is_valid_key_name(key_name.trim()) {
-            return Ok(());
-        }
-        return Err(AclError::InvalidToken(trimmed.to_string()));
-    }
-
-    if is_valid_ip_or_cidr(core) {
-        return Ok(());
-    }
-
-    Err(AclError::InvalidToken(trimmed.to_string()))
-}
-
-/// Validate an `address_match_list` entry and parse it into hornet's typed
-/// element.
-///
-/// # Arguments
-/// * `entry` - One CRD-supplied entry, e.g. `10.0.0.0/8`, `!localhost` or
-///   `key bindy-operator`
-///
-/// # Errors
-/// Returns [`AclError`] for anything [`validate_acl_entry`] rejects.
-pub fn parse_acl_entry(entry: &str) -> Result<AddressMatchElement, AclError> {
-    validate_acl_entry(entry)?;
-    let trimmed = entry.trim();
+    let invalid = || AclError::InvalidToken(trimmed.to_string());
     if let Some(negated) = trimmed.strip_prefix('!') {
-        return Ok(AddressMatchElement::Negated(Box::new(parse_positive(
-            negated.trim_start(),
-        )?)));
+        let element = parse_positive(negated.trim_start()).ok_or_else(invalid)?;
+        return Ok(AddressMatchElement::Negated(Box::new(element)));
     }
-    parse_positive(trimmed)
+    parse_positive(trimmed).ok_or_else(invalid)
 }
 
-/// Parse an already-validated entry with no leading `!`.
-fn parse_positive(core: &str) -> Result<AddressMatchElement, AclError> {
+/// Parse an entry with no leading `!`: a keyword, `key <name>`, or an IP
+/// address with an optional prefix. `None` when it is none of them.
+fn parse_positive(core: &str) -> Option<AddressMatchElement> {
     match core {
-        "any" => return Ok(AddressMatchElement::Any),
-        "none" => return Ok(AddressMatchElement::None),
-        "localhost" => return Ok(AddressMatchElement::Localhost),
-        "localnets" => return Ok(AddressMatchElement::Localnets),
+        "any" => return Some(AddressMatchElement::Any),
+        "none" => return Some(AddressMatchElement::None),
+        "localhost" => return Some(AddressMatchElement::Localhost),
+        "localnets" => return Some(AddressMatchElement::Localnets),
         _ => {}
     }
     if let Some(key_name) = core.strip_prefix("key ") {
-        let name = key_name.trim();
-        let unquoted = name
-            .strip_prefix('"')
-            .and_then(|n| n.strip_suffix('"'))
-            .unwrap_or(name);
-        return Ok(AddressMatchElement::Key(unquoted.to_string()));
+        return parse_key_name(key_name.trim()).map(AddressMatchElement::Key);
     }
-    let invalid = || AclError::InvalidToken(core.to_string());
-    let Some((addr, prefix)) = core.split_once('/') else {
-        return core
-            .parse()
-            .map(AddressMatchElement::Ip)
-            .map_err(|_| invalid());
+    parse_ip_or_cidr(core)
+}
+
+/// A `key` entry's name, unquoted, when it matches
+/// `[A-Za-z0-9._-]{1,MAX_KEY_NAME_LEN}`.
+fn parse_key_name(name: &str) -> Option<String> {
+    let unquoted = name
+        .strip_prefix('"')
+        .and_then(|n| n.strip_suffix('"'))
+        .unwrap_or(name);
+    let valid = !unquoted.is_empty()
+        && unquoted.len() <= MAX_KEY_NAME_LEN
+        && unquoted
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.');
+    valid.then(|| unquoted.to_string())
+}
+
+/// An IPv4 or IPv6 address, optionally with a `/prefix` no longer than the
+/// family allows.
+fn parse_ip_or_cidr(s: &str) -> Option<AddressMatchElement> {
+    let Some((addr, prefix)) = s.split_once('/') else {
+        return s.parse::<IpAddr>().ok().map(AddressMatchElement::Ip);
     };
-    Ok(AddressMatchElement::Cidr {
-        addr: addr.parse().map_err(|_| invalid())?,
-        prefix_len: prefix.parse().map_err(|_| invalid())?,
-    })
+    let addr: IpAddr = addr.parse().ok()?;
+    let prefix_len: u8 = prefix.parse().ok()?;
+    let max = if addr.is_ipv4() {
+        IPV4_MAX_PREFIX
+    } else {
+        IPV6_MAX_PREFIX
+    };
+    (prefix_len <= max).then_some(AddressMatchElement::Cidr { addr, prefix_len })
 }
 
 /// Validate and parse every entry in `entries`, keeping their order.
@@ -150,35 +144,4 @@ fn parse_positive(core: &str) -> Result<AddressMatchElement, AclError> {
 /// entry itself so operators can fix the offending CRD.
 pub fn parse_acl_list(entries: &[String]) -> Result<AddressMatchList, AclError> {
     entries.iter().map(|entry| parse_acl_entry(entry)).collect()
-}
-
-fn is_valid_key_name(name: &str) -> bool {
-    let unquoted = name
-        .strip_prefix('"')
-        .and_then(|n| n.strip_suffix('"'))
-        .unwrap_or(name);
-    if unquoted.is_empty() || unquoted.len() > MAX_KEY_NAME_LEN {
-        return false;
-    }
-    unquoted
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
-}
-
-fn is_valid_ip_or_cidr(s: &str) -> bool {
-    let Some((addr_str, prefix_str)) = s.split_once('/') else {
-        return s.parse::<IpAddr>().is_ok();
-    };
-    let Ok(addr) = addr_str.parse::<IpAddr>() else {
-        return false;
-    };
-    let Ok(prefix) = prefix_str.parse::<u8>() else {
-        return false;
-    };
-    let max = if addr.is_ipv4() {
-        IPV4_MAX_PREFIX
-    } else {
-        IPV6_MAX_PREFIX
-    };
-    prefix <= max
 }

@@ -13,8 +13,11 @@ This guide walks you through migrating existing Bindy deployments to use automat
 
 **Backward Compatibility:**
 
-- ✅ Existing deployments using `rndcSecretRef` continue to work
-- ✅ No breaking changes - migration is optional but recommended
+- ✅ Existing deployments using `rndcSecretRef` continue to work, provided
+  the referenced Secret's name starts with `bindy-` (required since ADR-0023
+  for `rndcSecretRef` and `rndcKey.secretRef` alike; see the
+  [migration guide](migration-guide.md))
+- ✅ Moving from `rndcSecretRef` to `rndcKey` is optional but recommended
 - ✅ Gradual migration supported (migrate instances one at a time)
 
 ---
@@ -52,7 +55,7 @@ spec:
   clusterRef: my-cluster
   role: primary
   rndcSecretRef:  # DEPRECATED
-    name: my-rndc-secret
+    name: bindy-my-rndc-secret
     keyNameKey: key-name
     algorithmKey: algorithm
     secretKey: secret
@@ -119,7 +122,7 @@ spec:
 
 6. **Delete old Secret** (after verifying new one works):
    ```bash
-   kubectl delete secret my-rndc-secret -n bindy-system
+   kubectl delete secret bindy-my-rndc-secret -n bindy-system
    ```
 
 ---
@@ -139,7 +142,7 @@ spec:
   role: primary
   rndcKey:
     secretRef:  # Reference existing Secret (no rotation)
-      name: my-rndc-secret
+      name: bindy-my-rndc-secret
       keyNameKey: key-name
       algorithmKey: algorithm
       secretKey: secret
@@ -163,13 +166,13 @@ metadata:
 spec:
   primary:
     rndcSecretRef:  # DEPRECATED
-      name: primary-rndc
+      name: bindy-primary-rndc
       keyNameKey: key-name
       algorithmKey: algorithm
       secretKey: secret
   secondary:
     rndcSecretRef:  # DEPRECATED
-      name: secondary-rndc
+      name: bindy-secondary-rndc
       keyNameKey: key-name
       algorithmKey: algorithm
       secretKey: secret
@@ -289,7 +292,7 @@ spec:
   clusterRef: my-cluster
   role: primary
   rndcSecretRef:  # Restore deprecated field
-    name: my-rndc-secret
+    name: bindy-my-rndc-secret
     keyNameKey: key-name
     algorithmKey: algorithm
     secretKey: secret

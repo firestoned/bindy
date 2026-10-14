@@ -21,6 +21,9 @@
 #   - VolumeMount.subPath / subPathExpr: must not contain '..'.
 #   - DNSSEC spec.dnssec.signing.keysFrom.secretRef.name: must start with
 #     bindy- (mounted outside spec.volumes — finding H2).
+#   - RNDC rndcKey.secretRef.name and the deprecated rndcSecretRef.name, at
+#     every level: must start with bindy- (the operator copies two entries of
+#     that Secret into the Secret the pods mount, ADR-0023).
 #
 # Requires Kubernetes 1.30+ (admissionregistration.k8s.io/v1 GA).
 ---
@@ -75,6 +78,20 @@ spec:
           object.spec.?config.?dnssec.?signing.?keysFrom.?secretRef.?name,
           object.spec.?global.?dnssec.?signing.?keysFrom.?secretRef.?name,
           object.spec.?common.?global.?dnssec.?signing.?keysFrom.?secretRef.?name
+        ].filter(o, o.hasValue()).map(o, o.value())
+    # Collect every RNDC key Secret reference, at every level each CRD
+    # carries one (ADR-0023, Decision 6).
+    - name: rndcKeySecrets
+      expression: |
+        [
+          object.spec.?rndcKey.?secretRef.?name,
+          object.spec.?rndcSecretRef.?name,
+          object.spec.?config.?rndcSecretRef.?name,
+          object.spec.?global.?rndcSecretRef.?name,
+          object.spec.?primary.?rndcKey.?secretRef.?name,
+          object.spec.?primary.?rndcSecretRef.?name,
+          object.spec.?secondary.?rndcKey.?secretRef.?name,
+          object.spec.?secondary.?rndcSecretRef.?name
         ].filter(o, o.hasValue()).map(o, o.value())
   validations:
     # 1. Reject every disallowed Volume source. Allow-list approach: only
@@ -131,6 +148,17 @@ spec:
         "another tenant's RNDC/TSIG key) can be mounted into the operand Pod, " +
         "bypassing the volume allow-list. Offending secret names: " +
         variables.dnssecKeySecrets.filter(n,
+          !n.startsWith(variables.allowedSecretPrefix)).join(", ")
+
+    # 5. Reject RNDC key Secrets outside the user-secret allow-list.
+    - expression: |
+        variables.rndcKeySecrets.all(n, n.startsWith(variables.allowedSecretPrefix))
+      messageExpression: |
+        "Bind9 rndcKey.secretRef.name (and the deprecated rndcSecretRef.name) " +
+        "must start with '" + variables.allowedSecretPrefix + "': the operator " +
+        "copies the key out of that Secret into the Secret the operand Pods " +
+        "mount (ADR-0023). Offending secret names: " +
+        variables.rndcKeySecrets.filter(n,
           !n.startsWith(variables.allowedSecretPrefix)).join(", ")
   auditAnnotations:
     - key: bindy-pod-shape-rejected

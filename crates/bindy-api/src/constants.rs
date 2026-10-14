@@ -390,6 +390,20 @@ pub const ANNOTATION_RNDC_ROTATION_COUNT: &str = "bindy.firestoned.io/rndc-rotat
 /// Example value: `"2025-01-26T10:30:00Z"`
 pub const ANNOTATION_RNDC_ROTATED_AT: &str = "bindy.firestoned.io/rndc-rotated-at";
 
+/// The name of every RNDC key bindy writes, generated or mirrored from a
+/// `rndcKey.secretRef` (ADR-0023): the only key `named.conf`'s control
+/// channel accepts, rendered once into the cluster-shared configuration.
+pub const RNDC_OPERATOR_KEY_NAME: &str = "bindy-operator";
+
+/// Annotation on an `{instance}-rndc-key` Secret mirrored from a
+/// `rndcKey.secretRef` (ADR-0023): the name of the source Secret.
+///
+/// A Secret carrying it is never rotated, and an instance that switches back
+/// to a generated key replaces it with a fresh one.
+///
+/// Example value: `"bindy-corp-rndc"`
+pub const ANNOTATION_RNDC_SOURCE_SECRET: &str = "bindy.firestoned.io/rndc-source-secret";
+
 /// Minimum rotation interval in hours (1 hour)
 ///
 /// RNDC keys cannot be rotated more frequently than once per hour.

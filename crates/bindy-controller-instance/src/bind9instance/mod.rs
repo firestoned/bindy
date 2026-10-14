@@ -456,9 +456,26 @@ pub(crate) async fn reconcile_bind9instance(
 
         // Check Secret existence AND rotation status
         let secret_name = &child_names.rndc_secret;
-        let (secret_exists, needs_rotation, rotation_wake) = match secret_api.get(secret_name).await
-        {
-            Ok(secret) => {
+        let current_secret = secret_api.get(secret_name).await.ok();
+
+        // A secretRef mirror behind its source (ADR-0023): the Secret event
+        // that woke this reconcile changes nothing else checked here. A
+        // failed source read counts as stale, so the reconcile reports it.
+        let mirror_stale = match rndc_config.secret_ref.as_ref() {
+            Some(secret_ref) => match secret_api.get_opt(&secret_ref.name).await {
+                Ok(source) => resources::secret_ref_mirror_stale(
+                    &rndc_config,
+                    source.as_ref(),
+                    current_secret.as_ref(),
+                ),
+                Err(_) => true,
+            },
+            None => false,
+        };
+        let config_drifted = config_drifted || mirror_stale;
+
+        let (secret_exists, needs_rotation, rotation_wake) = match current_secret {
+            Some(secret) => {
                 // Check if rotation is needed using the existing function
                 let needs_rotation =
                     resources::should_rotate_secret(&secret, &rndc_config).unwrap_or(false);
@@ -477,7 +494,7 @@ pub(crate) async fn reconcile_bind9instance(
 
                 (true, needs_rotation, rotation_wake)
             }
-            Err(_) => (false, false, None),
+            None => (false, false, None),
         };
 
         let all_exist = deployment_exists && service_exists && configmap_exists && secret_exists;

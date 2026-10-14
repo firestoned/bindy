@@ -24,7 +24,7 @@ use std::net::{IpAddr, Ipv4Addr};
 
 /// Name of the RNDC key `named` accepts on its control channel. The key file
 /// ([`RNDC_KEY_FILENAME`] in [`BIND_KEYS_PATH`]) is mounted from the RNDC Secret.
-const RNDC_KEY_NAME: &str = "bindy-operator";
+const RNDC_KEY_NAME: &str = crate::constants::RNDC_OPERATOR_KEY_NAME;
 /// File name of the RNDC key inside [`BIND_KEYS_PATH`].
 const RNDC_KEY_FILENAME: &str = "rndc.key";
 

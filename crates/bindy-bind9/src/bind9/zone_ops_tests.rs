@@ -1697,4 +1697,69 @@ mod also_notify_tests {
     fn no_notify_targets_means_no_also_notify() {
         assert_eq!(primary_zone_also_notify(None), None);
     }
+
+    // ------------------------------------------------------------------
+    // Retry classification: by error type, never by our own message text
+    // ------------------------------------------------------------------
+
+    mod retry_classification {
+        use super::super::super::{is_retryable_bindcar_error, HttpError};
+        use reqwest::StatusCode;
+
+        fn http(status: StatusCode) -> anyhow::Error {
+            anyhow::Error::new(HttpError {
+                status,
+                message: "x".to_string(),
+            })
+            .context("Failed to get zone status")
+        }
+
+        #[test]
+        fn a_retryable_http_status_is_retried_and_a_client_error_is_not() {
+            assert!(is_retryable_bindcar_error(&http(
+                StatusCode::SERVICE_UNAVAILABLE
+            )));
+            assert!(is_retryable_bindcar_error(&http(
+                StatusCode::TOO_MANY_REQUESTS
+            )));
+            assert!(!is_retryable_bindcar_error(&http(StatusCode::NOT_FOUND)));
+            assert!(!is_retryable_bindcar_error(&http(StatusCode::CONFLICT)));
+        }
+
+        #[test]
+        fn message_text_alone_is_never_retryable() {
+            // The old classifier retried anything whose text said "Failed to
+            // send" or "connection": our own context string.
+            assert!(!is_retryable_bindcar_error(&anyhow::anyhow!(
+                "Failed to send HTTP request to http://x: connection refused"
+            )));
+        }
+
+        #[tokio::test]
+        async fn a_connection_failure_is_retried() {
+            // Nothing listens on a port the OS just released.
+            let port = std::net::TcpListener::bind("127.0.0.1:0")
+                .and_then(|l| l.local_addr())
+                .expect("free port")
+                .port();
+            let err = reqwest::Client::new()
+                .get(format!("http://127.0.0.1:{port}/"))
+                .send()
+                .await
+                .expect_err("nothing listens");
+            let err = anyhow::Error::new(err).context("Failed to send HTTP request");
+            assert!(is_retryable_bindcar_error(&err));
+        }
+
+        #[tokio::test]
+        async fn a_request_that_cannot_be_built_is_not_retried() {
+            let err = reqwest::Client::new()
+                .get("not a url")
+                .send()
+                .await
+                .expect_err("invalid URL");
+            let err = anyhow::Error::new(err).context("Failed to send HTTP request");
+            assert!(!is_retryable_bindcar_error(&err));
+        }
+    }
 }
