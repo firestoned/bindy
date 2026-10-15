@@ -210,12 +210,15 @@ pub fn rndc_key_from_source_secret(
 /// * `name` - The mirror's name (`{instance}-rndc-key`)
 /// * `key_data` - The key, from [`rndc_key_from_source_secret`]
 /// * `source` - The source Secret's name
+/// * `source_version` - The source's `resourceVersion`, recorded so staleness
+///   is a metadata comparison (ADR-0024)
 #[must_use]
 pub fn create_rndc_mirror_secret(
     namespace: &str,
     name: &str,
     key_data: &RndcKeyData,
     source: &str,
+    source_version: Option<&str>,
 ) -> k8s_openapi::api::core::v1::Secret {
     use k8s_openapi::api::core::v1::Secret;
     use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
@@ -229,10 +232,19 @@ pub fn create_rndc_mirror_secret(
         metadata: ObjectMeta {
             name: Some(name.to_string()),
             namespace: Some(namespace.to_string()),
-            annotations: Some(BTreeMap::from([(
-                crate::constants::ANNOTATION_RNDC_SOURCE_SECRET.to_string(),
-                source.to_string(),
-            )])),
+            annotations: Some(
+                std::iter::once((
+                    crate::constants::ANNOTATION_RNDC_SOURCE_SECRET.to_string(),
+                    source.to_string(),
+                ))
+                .chain(source_version.map(|v| {
+                    (
+                        crate::constants::ANNOTATION_RNDC_SOURCE_VERSION.to_string(),
+                        v.to_string(),
+                    )
+                }))
+                .collect(),
+            ),
             ..Default::default()
         },
         data: Some(data),

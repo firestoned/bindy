@@ -70,6 +70,22 @@ Labels:
 sum(rate(bindy_firestoned_io_resources_deleted_total[5m])) by (resource_type)
 ```
 
+#### Secret Operation Metrics
+
+**`bindy_firestoned_io_secret_operations_total`** (Counter)
+Every Secret operation bindy performs, one per audit event
+([Secret Audit Log](secret-audit-log.md), ADR-0024).
+
+Labels:
+- `operation`: `create`, `replace`, `patch`, `delete`, `read`
+- `purpose`: `rndc-key`, `rndc-key-mirror`, `rndc-key-source`, `bindcar-ca`, `scout-kubeconfig`, `serviceaccount-token`
+- `outcome`: `success`, `failure`
+
+```promql
+# RNDC key loads or writes failing
+sum by (operation) (rate(bindy_firestoned_io_secret_operations_total{purpose=~"rndc-key.*", outcome="failure"}[5m]))
+```
+
 #### Error Metrics
 
 **`bindy_firestoned_io_errors_total`** (Counter)

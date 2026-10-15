@@ -24,6 +24,7 @@
 This document describes Bindy's secret access audit trail implementation, which provides:
 
 - **Comprehensive Logging**: All secret access (get, list, watch) is logged via Kubernetes audit logs
+- **Operator audit events**: bindy itself emits one structured event per Secret operation, with the purpose, reason and owning object the API server log cannot know ([Secret Audit Log](../operations/secret-audit-log.md), ADR-0024); join the two by namespace, name and time
 - **Immutable Storage**: Audit logs stored in S3 with WORM (Object Lock) for tamper-proof retention
 - **Real-Time Alerting**: Prometheus/Alertmanager alerts on anomalous secret access patterns
 - **Compliance Queries**: Pre-built queries for SOX 404, PCI-DSS, and Basel III audit reviews
@@ -35,7 +36,8 @@ Bindy audit logging covers all Kubernetes Secrets in the `bindy-system` namespac
 
 | Secret Name | Purpose | Access Pattern |
 |-------------|---------|----------------|
-| `rndc-key-*` | RNDC authentication keys for BIND9 control | Operator reads on reconciliation (every 5 minutes) |
+| `{instance}-rndc-key` | RNDC/TSIG key for BIND9 control and dynamic updates, generated or mirrored from a `bindy-` `secretRef` source (ADR-0023) | Operator writes on creation, rotation and source change; reads the key on a key-cache miss before a signed write; checks existence and rotation from metadata only (ADR-0024). Mounted by the BIND9 pods |
+| `bindy-*` (`rndcKey.secretRef` source) | User-managed RNDC key the mirror is built from | Operator reads the key only when the source's `resourceVersion` changes |
 | `tls-cert-*` | TLS certificates for DNS-over-TLS/HTTPS | BIND9 pods read on startup |
 | Custom secrets | User-defined secrets for DNS credentials | Varies by use case |
 

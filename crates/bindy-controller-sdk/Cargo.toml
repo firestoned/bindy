@@ -36,3 +36,6 @@ chrono.workspace = true
 reqwest.workspace = true
 rand.workspace = true
 prometheus.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true

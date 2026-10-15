@@ -31,7 +31,7 @@ use bindy_controller_sdk::kube_errors;
 use bindy_controller_sdk::namespace_scope::NamespaceScope;
 use bindy_controller_sdk::pagination::list_all_paginated;
 use bindy_controller_sdk::watch::WatchSet;
-use k8s_openapi::api::core::v1::{Namespace, Secret, Service};
+use k8s_openapi::api::core::v1::{Namespace, Service};
 use k8s_openapi::api::networking::v1::Ingress;
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::Time;
 use k8s_openapi::jiff::Timestamp;
@@ -1870,8 +1870,10 @@ async fn build_remote_client(
     secret_name: &str,
     secret_namespace: &str,
 ) -> Result<Client> {
-    let api: Api<Secret> = Api::namespaced(local_client.clone(), secret_namespace);
-    let secret = api.get(secret_name).await.map_err(|e| {
+    use bindy_controller_sdk::audit::{Actor, AuditReason, SecretApi, SecretPurpose, SecretUse};
+    let api = SecretApi::namespaced(local_client.clone(), secret_namespace, Actor::Scout);
+    let secret_use = SecretUse::new(SecretPurpose::ScoutKubeconfig, AuditReason::ClientBuild);
+    let secret = api.get(secret_name, &secret_use).await.map_err(|e| {
         anyhow!("Failed to read kubeconfig Secret {secret_namespace}/{secret_name}: {e}")
     })?;
 

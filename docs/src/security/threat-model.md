@@ -1,15 +1,38 @@
 # Threat Model - Bindy DNS Operator
 
-**Version:** 1.26
+**Version:** 1.27
 **Last Updated:** 2026-10-14
 **Owner:** Security Team
 **Compliance:** SOX 404, PCI-DSS 6.4.1, Basel III Cyber Risk
 
-> Last full pass 2026-10-14, against ADR-0001 ... ADR-0023 (ADR-0006 as amended;
+> Last full pass 2026-10-14, against ADR-0001 ... ADR-0024 (ADR-0006 as amended;
 > ADR-0009 as amended 2026-10-05, fully implemented; ADR-0013 stages 1 to 3,
 > ADR-0014, ADR-0015, ADR-0016, ADR-0017 as amended and corrected 2026-10-07
 > and by ADR-0019, ADR-0018 as amended 2026-10-07, ADR-0019, ADR-0020,
-> ADR-0021, ADR-0022 and ADR-0023 implemented).
+> ADR-0021, ADR-0022, ADR-0023 and ADR-0024 as amended implemented).
+>
+> **Revision note (v1.27):** Full pass for ADR-0024 (every Secret operation
+> emits one structured audit event). bindy now records, on the tracing target
+> `bindy::audit`, one event per Secret create, replace, patch, delete or read
+> of key material, with operation, outcome, purpose, reason, actor and the
+> object served, and never key material or an API error message (**M-67**,
+> R2: Secret access attributable with *why*, joined to the API server audit
+> log by namespace, name and time). All Secret access goes through one
+> `SecretApi`, and a test fails the build when other code names an
+> `Api<Secret>`. The same change narrows what the operator reads (**M-68**,
+> I1): existence, rotation and mirror-staleness checks read metadata only,
+> the ADR-0023 mirror records its source's `resourceVersion`, and the
+> instance controller's Secret watch is a metadata watch, so the operator no
+> longer receives the data of every Secret in the namespaces it watches. The
+> planned M-12 (secret access audit trail, H-3) is done. Accepted risk
+> **22** records that the events are only as durable as the log pipeline
+> they are routed to, and that `bindy::audit=off` turns them off. Sections
+> changed: components (1, 4, 5), Boundary 3, R1, R2, I1, attack surface 1,
+> scenarios 1 and 4, existing and planned mitigations (M-12, M-67, M-68),
+> high residual risk 2, accepted risk 22 and the controls summary. No new
+> actor, trust boundary, RBAC grant or dependency (the events go to stdout
+> like every log line; `get`, `list` and `watch` cover metadata reads).
+> Other sections re-walked, unchanged.
 >
 > **Revision note (v1.26):** Full pass for ADR-0023 (a `rndcKey.secretRef`
 > RNDC key is mirrored into an operator-owned Secret). The operator now reads
@@ -603,7 +626,10 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
      first list (M-56); SIGTERM or loss of the lease drains in-flight reconciles,
      and a SIGTERM while waiting for the lease or the caches exits cleanly
    - Reconciles desired state with actual state
-   - Manages BIND9 deployments, ConfigMaps, Secrets, Services
+   - Manages BIND9 deployments, ConfigMaps, Secrets, Services. Every Secret
+     operation goes through one audited `SecretApi` and emits a
+     `bindy::audit` event (ADR-0024, M-67); its Secret watch and
+     per-reconcile Secret checks read metadata only (M-68)
    - Uses RNDC to update zones on running BIND9 instances
    - Sets the `bindy.firestoned.io/zones-loaded` condition on its BIND9 pods
      (`pods/status` patch) once their zones are loaded (ADR-0017), and back to
@@ -633,7 +659,9 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
    - Secrets: Store RNDC keys (symmetric HMAC keys). Every BIND9 pod mounts
      `{instance}-rndc-key`, owned by its instance: a key the operator
      generates, or the mirror of the `bindy-` Secret a `rndcKey.secretRef`
-     names (ADR-0023); the referenced Secret is never mounted
+     names (ADR-0023); the referenced Secret is never mounted. The mirror
+     records the source's `resourceVersion`, so the operator reads the
+     source's key only when it changed (ADR-0024, M-68)
    - Services: Expose DNS (port 53, forwarding to the operand's unprivileged
      container port 5353) and RNDC (port 9530)
    - ServiceAccounts: RBAC for operator access
@@ -652,7 +680,9 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
      to target a *different* cluster's Bindy install, through a namespaced,
      `resourceNames`-restricted Role (`bindy-scout-secrets-reader`), applied only in
      that mode. Until 2026-07-19 this was a cluster-wide `secrets: get`; see I4 and
-     M-25. The endpoint mode (M-32) needs no Secret access at all.
+     M-25. The endpoint mode (M-32) needs no Secret access at all. That read
+     is a `bindy::audit` event (`purpose=scout-kubeconfig`, ADR-0024, M-67), as
+     are `bindy bootstrap`'s ServiceAccount token writes, reads and revokes
 
 ---
 
@@ -737,7 +767,12 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
 
 **Threats if Compromised:**
 - Attacker can abuse Kubernetes API access
-- Attacker can read secrets operator has access to
+- Attacker can read secrets operator has access to. Before that, the
+  process itself holds less: its Secret watch is a metadata watch and its
+  existence, rotation and mirror checks read metadata only (M-68), so a
+  memory dump of a healthy operator holds the RNDC keys it loaded (cached
+  for at most 60 s, M-46), not every Secret of its namespaces; every key it
+  reads afterwards is recorded in the Secret audit trail (M-67)
 - Attacker can disrupt reconciliation loops
 - Attacker can patch the status of bindy's BIND9 pods: admit a pod before
   its zones load, or keep new pods out of their Service (ADR-0017, accepted
@@ -1138,6 +1173,10 @@ exists to constrain that further)
 - ✅ Kubernetes audit logs enabled (captures all API requests)
 - ✅ All commits signed (non-repudiation for code changes)
 - ✅ GitOps workflow (changes traceable to Git commits and PR reviews)
+- ✅ **Secret operations attributable** (M-67, ADR-0024, 2026-10-14): every
+  Secret write and key read bindy performs is one structured `bindy::audit`
+  event naming the operation, outcome, purpose, reason and owning object,
+  the *why* the API server log cannot record
 - ❌ **MISSING**: Centralized log aggregation with tamper-proof storage (H-2)
 - ❌ **MISSING**: Log retention policy (90 days active, 1 year archive per PCI-DSS)
 - ❌ **MISSING**: Audit trail queries documented for compliance reviews
@@ -1151,7 +1190,7 @@ exists to constrain that further)
 **Threat:** Attacker reads RNDC keys from Secrets, no record of who accessed them.
 
 **Impact:** HIGH
-**Likelihood:** LOW (secret access is logged by Kubernetes, but not prominently tracked)
+**Likelihood:** LOW (secret access is logged by Kubernetes, and bindy's own access by its audit trail, M-67)
 
 **Attack Scenario:**
 1. Attacker compromises ServiceAccount with secret read access
@@ -1160,11 +1199,23 @@ exists to constrain that further)
 
 **Mitigations:**
 - ✅ Kubernetes audit logs capture Secret read operations
-- ❌ **MISSING**: Dedicated audit trail for secret access (H-3)
-- ❌ **MISSING**: Alerts on unexpected secret reads
+- ✅ **Dedicated audit trail for bindy's Secret access** (M-67, ADR-0024,
+  2026-10-14, H-3 done): one `bindy::audit` event per Secret create,
+  replace, patch, delete or read of key material (operator, Scout,
+  bootstrap), with operation, outcome, purpose, reason, actor and owner,
+  never key material or an API error message; on by default even under
+  `RUST_LOG=warn`. Join it to the API server audit log by namespace, name
+  and time to tell bindy's reads (each with a recorded reason) from anyone
+  else's
+- ✅ **Alerting without parsing logs**: every event increments
+  `bindy_firestoned_io_secret_operations_total{operation, purpose,
+  outcome}`, so failed key loads or mirror writes can page
+- ✅ **Fewer reads to audit** (M-68): metadata-only checks and a metadata
+  Secret watch, so every recorded `read` is a real access to key material
 - ❌ **MISSING**: Secret access dashboard for compliance reviews
 
-**Residual Risk:** MEDIUM (need H-3 - Secret Access Audit Trail)
+**Residual Risk:** LOW (bindy's own access is recorded with its reason;
+durability of the events depends on the log pipeline, accepted risk 22)
 
 ---
 
@@ -1209,6 +1260,14 @@ exists to constrain that further)
   the mirror, drops the cached key and rolls the pods, so the operator and
   the pods never hold different keys; no error message built from a source
   Secret carries the key, and the key type keeps its redacting `Debug`
+- ✅ **Least-data Secret access** (M-68, ADR-0024, 2026-10-14): the instance
+  controller's Secret watch is a metadata watch (`Api<PartialObjectMeta<Secret>>`),
+  and existence, rotation and mirror-staleness checks read metadata only (the
+  mirror records its source's `resourceVersion`), so the operator no longer
+  holds the data of every Secret in its namespaces and reads a source's key
+  only when it changed. Audit events carry no key material and summarise an
+  API failure by status code and reason only (`kube_error_summary`), and the
+  `secretRef` e2e asserts the key never appears in the operator log
 - ⚠️ **PARTIAL**: RNDC key rotation is a **documented manual procedure**
   (`docs/src/security/incident-response.md`), not an automated policy. There is no
   scheduled/automatic rotation in the operator.
@@ -1830,6 +1889,9 @@ scenario.
 - New write path (ADR-0017): `patch` on `pods/status` for the zones-loaded
   gate, one condition per BIND9 pod, written only when it changes; one more
   shared watch (bindy's BIND9 pods, label-selected on the API server)
+- Secret requests (ADR-0024): every Secret operation goes through the
+  audited `SecretApi` (M-67); the Secret watch and the per-reconcile checks
+  are metadata-only requests (M-68)
 
 **Risk:** MEDIUM
 
@@ -2025,6 +2087,10 @@ see T4, [Trust Boundary 6](#boundary-6-scout-controller))
 - RBAC least privilege (no delete permissions)
 - Resource limits prevent resource exhaustion
 - Vulnerability scanning (cargo-audit, Trivy)
+- The process holds only the keys it loaded (M-68), and every Secret
+  operation it makes through bindy's code is an audit event (M-67); a token
+  used directly with `kubectl` shows in the API server audit log with no
+  matching bindy event, which is the signal to look for
 - Network policies (planned - L-1)
 
 **Residual Risk:** MEDIUM (need network policies)
@@ -2106,10 +2172,13 @@ see T4, [Trust Boundary 6](#boundary-6-scout-controller))
 - GitOps workflow (changes via PRs, not direct kubectl)
 - All changes require 2+ reviewers
 - Immutable audit logs (planned - H-2)
-- Secret access audit trail (planned - H-3)
+- Secret access audit trail for bindy's own access (M-67, H-3 done): an
+  admin's direct Secret reads appear in the API server audit log with no
+  matching `bindy::audit` event; disabling bindy's events needs a visible
+  `bindy::audit=off` in the Deployment spec (accepted risk 22)
 - Separation of duties (no single admin has all access)
 
-**Residual Risk:** MEDIUM (need H-2 and H-3)
+**Residual Risk:** MEDIUM (need H-2)
 
 ---
 
@@ -2237,6 +2306,8 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-64 | **A name shared by two records survives one's deletion** (2026-10-13, ADR-0022 decision 5): the record finalizer and the rename path do not delete an RRset that another live record of the same kind in the same zone still declares (bound to that zone by `status.zoneRef`, same name ignoring case, a different object, not being deleted); both re-push the survivor instead (compared by value first, so nothing is sent when BIND9 already serves it); a failed re-push keeps the finalizer, or on a rename keeps `status.publishedName`, so it is retried. One rule (`claims_rrset`) serves the finalizer and the zone's stale-record cleanup (bug-211) | T1 (a shared name taken off the air with nothing to re-push it, since ADR-0016 has no periodic resync) | ✅ `crates/bindy-controller-sdk/src/rrset_claim.rs`, `crates/bindy-controller-records/src/records/mod.rs` (`rrset_claimant`, `repush_claimant`, `delete_record`, `reconcile_record`), `crates/bindy-controller-zone/src/dnszone/discovery.rs` (`claimed_by_live_record`); tests `rrset_claim_tests.rs` (12), `records/mod_tests.rs::rrset_claimant_tests` (5) |
 | M-65 | **A `secretRef` RNDC key is mirrored, never mounted** (2026-10-14, ADR-0023): the operator builds the key from the referenced Secret (its `secretKey` entry, the algorithm from its `algorithm` entry else `secretRef.algorithm`, else its `rndc.key` file), names it `bindy-operator` (the only name the cluster-shared `controls` block accepts; `keyNameKey` is ignored), validates it (algorithm allow-list, base64 key, no key in any error message) and writes it to the instance-owned `{instance}-rndc-key`, annotated `bindy.firestoned.io/rndc-source-secret`, which every pod mounts. A source change rewrites the mirror, drops the cached key and rolls the pods (the reconcile fast path counts a mirror behind its source as drift, `secret_ref_mirror_stale`); any replacement of an existing `{instance}-rndc-key` (mode switch, generated key recreated) does the same. A mirror is never rotated and is replaced by a fresh key when the instance returns to a generated one. Fail fast without destroying: a missing or unusable source fails the reconcile and keeps the mirror, a GET of the RNDC Secret that fails with anything but 404 fails instead of regenerating the key, and a `secretRef` naming `{instance}-rndc-key` is refused | T3 (configuration injected into `rndc.key`), I1 (key in errors; a stale key held by the pods), availability of dynamic updates after a key change | ✅ `crates/bindy-bind9/src/bind9/rndc.rs` (`rndc_key_from_source_secret`, `create_rndc_mirror_secret`), `crates/bindy-controller-instance/src/bind9instance/resources.rs` (`mirror_step`, `mirror_secret_ref_key`, `validate_rndc_secret_ref`), `crates/bindy-controller-instance/src/watch.rs` (`instances_for_secret`); tests `rndc_tests.rs`, `resources_tests.rs`, `watch_tests.rs::secret_wake_tests`, `tests/e2e/rndc_secretref_test.sh` |
 | M-66 | **RNDC `secretRef` names a `bindy-` Secret** (2026-10-14, ADR-0023 decision 6): every `rndcKey.secretRef.name` and deprecated `rndcSecretRef.name`, at every level a CRD carries one, must start with `bindy-`, the H2 allow-list prefix (bug-021). Closes the confused deputy through which a CR author could have the operator place entries of any Secret of the namespace into a Secret the operand pods mount. Enforced at admission and again by the reconciler where the policy is not installed; no RBAC grant changed | E2 (operator Secret read as a confused deputy), I1 | ✅ `deploy/admission-policies/07-bindy-pod-shape-policy.yaml` (rule 5; fixtures `accept-bind9instance-rndc-bindy-secret.yaml`, `reject-bind9instance-rndc-foreign-secret.yaml`, `reject-bind9cluster-rndc-foreign-secret.yaml`), `crates/bindy-bind9/src/safe_volume.rs` (`validate_rndc_key_secret_name`), `validate_rndc_secret_ref`; tests `safe_volume_tests.rs`, `resources_tests.rs`, `tests/e2e/rndc_secretref_test.sh` |
+| M-67 | **Secret audit trail** (2026-10-14, ADR-0024 as amended): every Secret create, replace, patch, delete or read of key material bindy performs (instance controller, cluster controller, the `bindy-bind9` key loader and TLS client, Scout, bootstrap) emits one event on the tracing target `bindy::audit` with `kind=audit`, operation, outcome, namespace, name, purpose, reason, actor and owning object, from closed enums; never key material, a token, or an API error message (a failure is its status code and reason only). Every Secret access goes through `SecretApi`, whose data methods record and whose metadata method does not; a test fails the build when other non-test code names `Api<Secret>` (a text scan: an `Api` whose type is only inferred escapes it, so review still checks new calls). `bindy::audit=info` is added to any `RUST_LOG` that does not name it, and each event increments `bindy_firestoned_io_secret_operations_total{operation,purpose,outcome}` | R1, R2 (Secret access attributable with its reason, joined to the API server audit log), Scenario 4 | ✅ `crates/bindy-controller-sdk/src/audit.rs` (`SecretApi`, `SecretAudit`, `audited`, `kube_error_summary`, `audit_log_filter`), `crates/bindy-controller-sdk/src/metrics.rs` (`SECRET_OPERATIONS_TOTAL`), `crates/bindy/src/main.rs` (`initialize_logging`); tests `audit_tests.rs` (incl. `no_code_outside_the_audit_module_builds_a_secret_api`), `tests/e2e/rndc_secretref_test.sh` |
+| M-68 | **Least-data Secret access** (2026-10-14, ADR-0024 decision 3 as amended): the instance controller's Secret watch is a metadata watch (`Api<PartialObjectMeta<Secret>>`), so the operator no longer receives the data of every Secret in its namespaces; the drift check, rotation status and the cluster controller's existence check read metadata only; the ADR-0023 mirror records its source's `resourceVersion` (`bindy.firestoned.io/rndc-source-version`), so staleness is a metadata comparison and a source's key is read only when it changed | I1 (key material in operator memory, heap dumps and logs), R2 (every recorded `read` is a real key access) | ✅ `crates/bindy-controller-instance/src/watch.rs` (Secret metadata watch, `instances_for_secret`), `crates/bindy-controller-instance/src/bind9instance/resources.rs` (`secret_ref_mirror_stale`, `mirror_secret_ref_key`), `crates/bindy-controller-instance/src/bind9instance/mod.rs` (drift check), `crates/bindy-controller-cluster/src/bind9cluster/instances.rs`; tests `resources_tests.rs`, `watch_tests.rs::secret_wake_tests` |
 | M-25 | **Scout Secret RBAC scoped** (fixed 2026-07-19, same day as this finding's discovery): removed the cluster-wide `secrets: get` `PolicyRule` from the `bindy-scout` `ClusterRole` entirely. Replaced with a namespaced, `resourceNames`-restricted Role (`bindy-scout-secrets-reader`) scoped to exactly the one Phase 2 kubeconfig Secret, applied only when `--remote-secret` is configured. Same-cluster-only deployments (the default) now get zero Secret access. See I4/E4/Scenario 6 for the full before/after. | I4, E4, T4 (Secret-read component), Scenario 6 | ✅ RBAC: **was the highest-priority open item in v1.1; closed same-day** |
 
 ---
@@ -2246,7 +2317,7 @@ tampering (T4), not cluster-wide Secret exposure.
 | ID | Mitigation | Threats Mitigated | Priority | Roadmap Item |
 |----|------------|-------------------|----------|--------------|
 | M-11 | Audit log retention policy | R1 (non-repudiation) | HIGH | H-2 |
-| M-12 | Secret access audit trail | R2 (secret access), I1 (disclosure) | HIGH | H-3 |
+| ~~M-12~~ | ~~Secret access audit trail~~ **DONE: see M-67 and M-68** (ADR-0024) | R2 (secret access), I1 (disclosure) | n/a | Completed 2026-10-14 |
 | ~~M-13~~ | ~~Admission webhooks~~ **DONE: see M-24** | T1 (DNS tampering) | n/a | Completed |
 | M-14 | **DNSSEC signing** (roadmap 07 complete 2026-09-27, ADR-0006): opt-in `dnssec-policy` zone signing (Secret-backed / auto-generated keys; key Secret names validated against the allow-list prefix, see H2; ADR-0012: Secret keys copied by an init container into a tmpfs key directory, shared by every primary, `unlimited` lifetimes enforced by CRD CEL and at render), DS records derived from the zone's KSK DNSKEYs (SHA-256, RFC 8624) and published in `DNSZone.status.dnssec`. DS/keyTag are public data by design; no key material reaches status or logs. Adds one read-only in-cluster query path, operator → `named` :5353 (DNSKEY only, modeled in CALM) | T1 (tampering), Scenario 2 (cache poisoning) | ✅ Opt-in: effective once DS is published in the parent zone |
 | M-15 | Image digest pinning: **partial**. Release `install.yaml`/`scout.yaml` pin the operator image by digest (P2-8); operand images (BIND9, bindcar) remain tag-referenced | T2 (image tampering) | MEDIUM | M-1 |
@@ -2282,7 +2353,7 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 
 1. **DDoS Attacks (D1)** - Risk reduced by rate limiting and horizontal scaling, but edge DDoS protection is needed for volumetric attacks (100+ Gbps).
 
-2. **Insider Threats (Scenario 4)** - Risk reduced by GitOps and RBAC, but immutable audit logs (H-2) and secret access audit trail (H-3) are needed for full non-repudiation.
+2. **Insider Threats (Scenario 4)** - Risk reduced by GitOps and RBAC, and bindy's own Secret access is now recorded with its reason (M-67, H-3 done), but immutable audit logs (H-2) are needed for full non-repudiation.
 
 ---
 
@@ -2329,6 +2400,8 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 20. ~~**Scout records of different source kinds with the same name collide**~~ **Closed 2026-10-13 (ADR-0022, M-63).** Every Scout `ARecord` carries a `bindy.firestoned.io/source-kind` label that every Scout selector includes, and its name carries a hash of the (cluster, kind, namespace, name) source, so kinds no longer overwrite or prune each other's records and namespaces whose hyphen-joined names coincide no longer share an `ARecord`. Existing records are renamed once on upgrade: the new record is applied, and the old one is deleted only after the new one is bound to its zone and `Ready` (M-63), so the DNS name is served throughout; the record finalizer guard (M-64) keeps the name if the old record's deletion races the new record's push. A legacy record carries no kind, so when two kinds shared a name before the upgrade, whichever reconciles first replaces the shared legacy record and the other kind publishes its own record on its next reconcile (every source reconciles at Scout startup).
 
 21. **A mirrored RNDC key is a second copy, and its change skips the rollout queue (ADR-0023)** - With `rndcKey.secretRef`, the key exists in the user's `bindy-` source Secret and in the operator-owned `{instance}-rndc-key` mirror, in the same namespace. Anyone who can read Secrets there can read either, so the mirror adds no reader, but a source deleted to revoke a key leaves the mirror (and the pods) holding it until the reference is changed or the instance deleted: the operator keeps the mirror on purpose, so DNS stays up while a reference is fixed. A key change rolls the instance's pods at once, as an automatic rotation does, without waiting behind other instances that share a zone (ADR-0018), because pods holding a stale key cannot answer writes. *Revisit when* key revocation must take effect without an operator action (then a deleted source should empty the mirror and fail the instance closed), or when a key change must be staggered across a zone's instances.
+
+22. **Secret audit events are only as durable as the log pipeline, and can be turned off (ADR-0024)** - bindy writes its `bindy::audit` events to stdout with every other log line. They survive only if the cluster's log pipeline collects them and routes them (`fields.kind == "audit"`) to retention-controlled, tamper-evident storage; bindy does not ship or sign them itself, and a node lost before collection loses its buffered lines. An operator can also set `RUST_LOG=...,bindy::audit=off`: that is visible in the Deployment spec and in its GitOps history, but nothing forbids it today. The API server audit log still records the Secret requests themselves in either case. *Revisit when* the operator must guarantee delivery of its own audit events (then a dedicated sink, or Kubernetes Events, rather than stdout), or when disabling them must be prevented (then an admission policy rejecting `bindy::audit=off` in the operator Deployment's `RUST_LOG`).
 
 ---
 
@@ -2398,7 +2471,7 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 | **Access Control** | RBAC least privilege (main operator; `pods/status` `get`/`patch` only for the zones-loaded gate, test-pinned, ADR-0017), signed commits, B-5 Secret RBAC split, namespace-scoped operator mode (opt-in), 16 `ValidatingAdmissionPolicy` policies, Scout namespace whitelisting (opt-in, M-30), **Scout Secret RBAC scoped (M-25, fixed 2026-07-19)** | Field-level admission for Scout patches (M-28), Scout egress NetworkPolicy (M-27) | MEDIUM: driven by Scout's remaining cluster-wide `patch`/`update` on Ingress/Service/route (T4); the formerly-HIGH Secret-read risk (I4/E4) is resolved |
 | **Data Protection** | Secrets encrypted, AXFR restricted, DNSSEC zone signing (opt-in, M-14/ADR-0006), RNDC key read from the mounted Secret only (M-58), which is always the operator-owned `{instance}-rndc-key`, a `secretRef` key mirrored into it from a `bindy-` Secret (M-65, M-66), bindcar TLS CA bundle read only from the instance's namespace (M-60) | TSIG for AXFR; DNSSEC-by-default | MEDIUM |
 | **Supply Chain** | Signed commits/images, SLSA Build L3 provenance for all release artifacts (M-33), NTIA-gated SBOM attestations (M-34), anchored signer identity (M-35), gated per-release crypto inventory (M-39), `--locked` release builds, vuln scanning | Required approving reviews (M-36); operand image digest pinning (M-15); reproducibility check (M-37); hybrid PQ key exchange (M-40); revisit Dependabot auto-merge human-review gap (M-29) | LOW-MEDIUM (no required review on `main`, see S3; automated auto-merge removed a manual checkpoint, see E3; classical key exchange is HNDL-exposed, see accepted risk 8) |
-| **Monitoring** | Kubernetes audit logs, vuln scanning | Audit retention policy, secret access trail | MEDIUM |
+| **Monitoring** | Kubernetes audit logs, vuln scanning, Secret audit trail with `secret_operations_total` (M-67), least-data Secret access (M-68) | Audit retention policy (M-11) | MEDIUM (event durability depends on the log pipeline, accepted risk 22) |
 | **Resilience** | Rate limiting, fail-fast on API errors and partial lists with a startup cache gate (M-56), validated, atomic RRset replacement in one UPDATE (M-57, M-62), per-request API deadline (M-45), event-driven reconciliation with no periodic resync (M-48), zones-loaded readiness gate so a rollout never admits an empty BIND9 pod (M-49), handover at the start of termination (M-50), staggered rollouts across instances sharing a zone or cluster (M-51), resource limits | Edge DDoS protection, HPA | MEDIUM |
 | **Container Security** | Non-root, read-only FS, Pod Security Standards, unprivileged DNS port + zero added capabilities (M-23) | Network policies (reference manifest exists, not auto-applied, M-17) | LOW |
 

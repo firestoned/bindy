@@ -1,3 +1,34 @@
+## [2026-10-14 20:00] - Every Secret operation emits one structured audit event (ADR-0024, roadmap 16)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0024-secret-operations-audit-log.md` (Accepted, amended: the `SecretApi` wrapper and its guard test; the metadata Secret watch).
+- `crates/bindy-controller-sdk/src/audit.rs`: `SecretApi`, the only Secret API (data methods audited, `get_metadata_opt` not); `SecretAudit` and `audited`; closed enums `SecretOperation`, `SecretPurpose`, `AuditReason`, `Actor`; `kube_error_summary` (status code and reason only, never the message); `audit_log_filter`. Tests in `audit_tests.rs`, including `no_code_outside_the_audit_module_builds_a_secret_api`, which fails the build when other non-test code builds an `Api<Secret>`.
+- `crates/bindy-controller-sdk/src/metrics.rs`: `bindy_firestoned_io_secret_operations_total{operation, purpose, outcome}`.
+- `crates/bindy-api/src/constants.rs`: `ANNOTATION_RNDC_SOURCE_VERSION`.
+- `docs/src/operations/secret-audit-log.md` (in the Monitoring nav).
+- CALM: the Secret audit event stream and the operator's relationship to it.
+- `crates/bindy-controller-sdk/Cargo.toml`: `tracing-subscriber` as a dev-dependency, to capture events in tests (already a workspace dependency).
+
+### Changed
+- Every Secret operation goes through `SecretApi`: the instance controller (generated key and mirror create, replace, patch, delete, verify read, rotation, deletion), the cluster controller, the `bindy-bind9` key loader and CA bundle read, Scout's kubeconfig read, bootstrap's token apply, read and `mc revoke`.
+- Existence, rotation-timing and mirror-staleness checks read Secret metadata only. The ADR-0023 mirror records its source's `resourceVersion`, so the source's key is read only when it changed (`secret_ref_mirror_stale` now compares metadata; `mirror_step` and `create_rndc_mirror_secret` take the version).
+- The instance controller's Secret watch is a metadata watch (`Api<PartialObjectMeta<Secret>>`): the operator no longer receives the data of every Secret in its watched namespaces. `instances_for_secret` takes any resource.
+- `RndcSecretAction::Recreate` carries its `AuditReason`.
+- `crates/bindy/src/main.rs`: the log filter always keeps `bindy::audit=info` unless `RUST_LOG` names it.
+- `tests/e2e/rndc_secretref_test.sh`: asserts the audit events for the mirror and generated-key operations, and that the RNDC key never appears in the operator log. The operator log is now read pod by pod with ANSI colour codes stripped: `kubectl logs -l` caps output at 10 lines whatever `--tail` says, so the phase 3 rejection check added in PR 7 only ever saw the last 10 lines.
+- Docs: `logging.md`, `env-vars.md`, `metrics.md`, `security/secret-access-audit.md` (its stale "every 5 minutes" RNDC row corrected), `compliance/sox-404.md`, `migration-guide.md`; `docs/src/security/threat-model.md` full pass; roadmap 16 detail doc and `ROADMAPS.md`.
+
+### Why
+Roadmap 16, approved 2026-03-09 and never built: a regulated environment needs an attributable record of every Secret operation, with the why the API server audit log cannot give.
+
+### Impact
+- [ ] Breaking change (behaviour: `RUST_LOG=warn` no longer hides the audit trail; see the migration guide)
+- [x] Requires cluster rollout (operator, scout)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-14 18:00] - Roadmap 30 complete
 
 **Author:** Erick Bourgeois

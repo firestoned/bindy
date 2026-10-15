@@ -404,6 +404,12 @@ pub const RNDC_OPERATOR_KEY_NAME: &str = "bindy-operator";
 /// Example value: `"bindy-corp-rndc"`
 pub const ANNOTATION_RNDC_SOURCE_SECRET: &str = "bindy.firestoned.io/rndc-source-secret";
 
+/// Annotation on an `{instance}-rndc-key` mirror: the `resourceVersion` of
+/// the source Secret it was written from (ADR-0024). The reconcile fast path
+/// compares it with the source's metadata, so it never reads key material to
+/// learn whether the mirror is current.
+pub const ANNOTATION_RNDC_SOURCE_VERSION: &str = "bindy.firestoned.io/rndc-source-version";
+
 /// Minimum rotation interval in hours (1 hour)
 ///
 /// RNDC keys cannot be rotated more frequently than once per hour.

@@ -2,6 +2,23 @@
 
 This document collects the breaking-change migrations for Bindy, newest first.
 
+## Secret operations are audited (ADR-0024)
+
+No CRD, RBAC or flag change.
+
+- **`RUST_LOG` no longer hides the Secret audit trail.** The target
+  `bindy::audit` is added at `info` unless `RUST_LOG` names it, so
+  `RUST_LOG=warn` keeps it. To turn it off, set it explicitly:
+  `RUST_LOG="warn,bindy::audit=off"`. See [Secret Audit Log](secret-audit-log.md).
+- **New log lines and a new metric.** One event per Secret write, per key
+  load on a cache miss, and per source read; a counter
+  `bindy_firestoned_io_secret_operations_total`. Route `fields.kind ==
+  "audit"` (with `RUST_LOG_FORMAT=json`) to a retention-controlled sink.
+- **`secretRef` mirrors gain an annotation.** Each `{instance}-rndc-key`
+  mirror is rewritten once after the upgrade to record its source's
+  `resourceVersion` (`bindy.firestoned.io/rndc-source-version`). The key is
+  unchanged, so the pods do not roll.
+
 ## RNDC `secretRef` keys are mirrored; their Secret must start with `bindy-` (ADR-0023)
 
 Applies to every instance whose RNDC key comes from `rndcKey.secretRef` (on

@@ -254,6 +254,7 @@ nav:
           - Overview: operations/monitoring.md
           - Status Conditions: operations/status.md
           - Logging: operations/logging.md
+          - Secret Audit Log: operations/secret-audit-log.md
           - Log Levels: operations/log-level-change.md
           - Metrics: operations/metrics.md
       - Troubleshooting:

@@ -100,6 +100,12 @@
       "description": "Operator-owned {instance}-rndc-key Secret (key-name, algorithm, secret, rndc.key), owned by the Bind9Instance. Generated and optionally rotated by the operator, or mirrored from the RNDC key source Secret when rndcKey.secretRef is set (ADR-0023). Mounted by every BIND9 pod at /etc/bind/keys."
     },
     {
+      "unique-id": "secret-audit-log",
+      "node-type": "data-asset",
+      "name": "Secret audit event stream",
+      "description": "One structured event per Secret operation on the tracing target bindy::audit (kind=audit, resource=Secret): operation, outcome, namespace, name, purpose, reason, actor and owning object, never key material (ADR-0024). Written to stdout with the other logs (RUST_LOG_FORMAT=json for a SIEM); bindy::audit=info is always enabled unless explicitly turned off. bindy scout and bindy bootstrap emit the same events on their own stdout."
+    },
+    {
       "unique-id": "bind9-svc",
       "node-type": "service",
       "name": "BIND9 Service",
@@ -325,6 +331,16 @@
         "connects": {
           "source": { "node": "named" },
           "destination": { "node": "rndc-key-secret" }
+        }
+      }
+    },
+    {
+      "unique-id": "operator-emits-secret-audit",
+      "description": "emits one audit event per Secret create, replace, patch, delete or key read, through one SDK wrapper, and counts it in bindy_firestoned_io_secret_operations_total - ADR-0024",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "bindy-operator" },
+          "destination": { "node": "secret-audit-log" }
         }
       }
     },

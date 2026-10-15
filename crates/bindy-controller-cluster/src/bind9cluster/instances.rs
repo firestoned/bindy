@@ -514,7 +514,11 @@ pub(super) async fn ensure_managed_instance_resources(
     );
 
     let configmap_api: Api<ConfigMap> = Api::namespaced(client.clone(), &namespace);
-    let secret_api: Api<Secret> = Api::namespaced(client.clone(), &namespace);
+    let secret_api = bindy_controller_sdk::audit::SecretApi::namespaced(
+        client.clone(),
+        &namespace,
+        bindy_controller_sdk::audit::Actor::Bind9Cluster,
+    );
     let service_api: Api<Service> = Api::namespaced(client.clone(), &namespace);
     let deployment_api: Api<Deployment> = Api::namespaced(client.clone(), &namespace);
     let instance_api: Api<Bind9Instance> = Api::namespaced(client.clone(), &namespace);
@@ -537,12 +541,12 @@ pub(super) async fn ensure_managed_instance_resources(
             missing_resources.push("Deployment");
         }
 
-        // Check RNDC Secret: the one the Deployment mounts (a cluster- or
-        // instance-level `rndcKey.secretRef` is not `{instance}-rndc-key`),
-        // else the generated default
+        // Check RNDC Secret: the one the Deployment mounts, else the
+        // default. Existence only, so its metadata: no key is read
+        // (ADR-0024 Decision 3).
         let secret_name =
             bindy_bind9::instances::effective_rndc_secret_name(&instance_name, deployment.as_ref());
-        if secret_api.get(&secret_name).await.is_err() {
+        if !matches!(secret_api.get_metadata_opt(&secret_name).await, Ok(Some(_))) {
             missing_resources.push("Secret");
         }
 

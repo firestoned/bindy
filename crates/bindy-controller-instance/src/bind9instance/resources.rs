@@ -24,7 +24,9 @@ use crate::rollout::{
     TemplateStart,
 };
 use anyhow::Context as _;
+use bindy_controller_sdk::audit::{Actor, AuditReason, SecretApi, SecretPurpose, SecretUse};
 use bindy_controller_sdk::resources::{create_or_apply, delete_if_present};
+use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 
 /// Resolve RNDC configuration from instance and cluster levels.
 ///
@@ -175,9 +177,17 @@ pub(super) async fn create_or_update_resources(
 
     // Fetch the Secret for rotation status updates (only if rotation is
     // enabled; a secretRef mirror is never rotated, ADR-0023)
+    // Annotations only, so metadata only: no key read (ADR-0024).
     let secret = if rndc_config.auto_rotate && rndc_config.secret_ref.is_none() {
-        let secret_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
-        secret_api.get(&secret_name).await.ok()
+        SecretApi::namespaced(client.clone(), namespace, Actor::Bind9Instance)
+            .get_metadata_opt(&secret_name)
+            .await
+            .ok()
+            .flatten()
+            .map(|meta| Secret {
+                metadata: meta.metadata,
+                ..Default::default()
+            })
     } else {
         None
     };
@@ -251,8 +261,8 @@ pub(super) enum RndcSecretAction {
     /// Rotation is due: rotate the key in place.
     Rotate,
     /// Secret is malformed or has drifted from the desired configuration;
-    /// delete it and recreate it (the reason explains why).
-    Recreate(String),
+    /// delete it and recreate it (the audit reason, then why in words).
+    Recreate(AuditReason, String),
 }
 
 /// Decide what to do with an existing RNDC `Secret`.
@@ -288,20 +298,27 @@ pub(super) fn evaluate_existing_rndc_secret(
         .as_ref()
         .and_then(|a| a.get(crate::constants::ANNOTATION_RNDC_SOURCE_SECRET))
     {
-        return Ok(RndcSecretAction::Recreate(format!(
-            "it mirrors the secretRef Secret '{source}', and the instance now uses a generated key"
-        )));
+        return Ok(RndcSecretAction::Recreate(
+            AuditReason::ModeSwitch,
+            format!(
+                "it mirrors the secretRef Secret '{source}', and the instance now uses a generated key"
+            ),
+        ));
     }
 
     // Malformed Secrets must be recreated before any other check.
     let Some(data) = secret.data.as_ref() else {
-        return Ok(RndcSecretAction::Recreate("Secret has no data".to_string()));
+        return Ok(RndcSecretAction::Recreate(
+            AuditReason::RecreateMalformed,
+            "Secret has no data".to_string(),
+        ));
     };
     if RNDC_SECRET_REQUIRED_KEYS
         .iter()
         .any(|key| !data.contains_key(*key))
     {
         return Ok(RndcSecretAction::Recreate(
+            AuditReason::RecreateMalformed,
             "Secret is missing required keys".to_string(),
         ));
     }
@@ -328,9 +345,12 @@ pub(super) fn evaluate_existing_rndc_secret(
     );
     let desired_algorithm = config.algorithm.as_str();
     if current_algorithm != desired_algorithm {
-        return Ok(RndcSecretAction::Recreate(format!(
-            "algorithm mismatch (current: {current_algorithm}, desired: {desired_algorithm})"
-        )));
+        return Ok(RndcSecretAction::Recreate(
+            AuditReason::RecreateAlgorithm,
+            format!(
+                "algorithm mismatch (current: {current_algorithm}, desired: {desired_algorithm})"
+            ),
+        ));
     }
 
     Ok(RndcSecretAction::Keep)
@@ -356,27 +376,25 @@ pub(super) enum MirrorStep {
 ///   generated key)
 /// * `desired` - The key built from the source Secret
 /// * `source` - The source Secret's name
+/// * `source_version` - The source's `resourceVersion`
 ///
 /// # Returns
 ///
-/// [`MirrorStep::Keep`] when the data and the source annotation already
-/// match; otherwise [`MirrorStep::Write`], rolling the pods when the Secret
-/// held another key (or one that cannot be parsed).
+/// [`MirrorStep::Keep`] when the data and the source annotations (name and
+/// version) already match; otherwise [`MirrorStep::Write`], rolling the pods
+/// when the Secret held another key (or one that cannot be parsed).
 pub(super) fn mirror_step(
     existing: Option<&Secret>,
     desired: &crate::bind9::RndcKeyData,
     source: &str,
+    source_version: Option<&str>,
 ) -> MirrorStep {
     let Some(current) = existing else {
         return MirrorStep::Write { rolls_pods: false };
     };
-    let wanted = crate::bind9::rndc::create_rndc_mirror_secret("", "", desired, source);
-    let current_source = current
-        .metadata
-        .annotations
-        .as_ref()
-        .and_then(|a| a.get(crate::constants::ANNOTATION_RNDC_SOURCE_SECRET));
-    if current.data == wanted.data && current_source.map(String::as_str) == Some(source) {
+    let wanted =
+        crate::bind9::rndc::create_rndc_mirror_secret("", "", desired, source, source_version);
+    if current.data == wanted.data && current.metadata.annotations == wanted.metadata.annotations {
         return MirrorStep::Keep;
     }
     let current_key = current.data.as_ref().and_then(|data| {
@@ -391,43 +409,43 @@ pub(super) fn mirror_step(
     }
 }
 
-/// Whether a `rndcKey.secretRef` mirror is behind its source (ADR-0023), for
-/// the reconcile fast path: a Secret event changes nothing else that path
-/// checks.
+/// Whether a `rndcKey.secretRef` mirror is behind its source (ADR-0023), from
+/// metadata alone (ADR-0024 Decision 3): the mirror records the source's
+/// name and `resourceVersion`, so no key material is read to decide.
 ///
 /// # Arguments
 ///
 /// * `config` - The instance's resolved RNDC configuration
-/// * `source` - The referenced Secret, if it exists
-/// * `mirror` - The current `{instance}-rndc-key`, if it exists
+/// * `source` - The referenced Secret's metadata, if it exists
+/// * `mirror` - The current `{instance}-rndc-key`'s metadata, if it exists
 ///
 /// # Returns
 ///
-/// `false` for a generated key. For a `secretRef`, `true` when the source is
-/// missing or holds no usable key (so the full reconcile runs and reports
-/// it), or when the mirror does not hold the source's key and name it.
+/// `false` for a generated key. For a `secretRef`, `true` when the source or
+/// the mirror is missing (so the full reconcile runs and reports it), or when
+/// the mirror does not record the source's name and current version.
 pub(super) fn secret_ref_mirror_stale(
     config: &crate::crd::RndcKeyConfig,
-    source: Option<&Secret>,
-    mirror: Option<&Secret>,
+    source: Option<&ObjectMeta>,
+    mirror: Option<&ObjectMeta>,
 ) -> bool {
     let Some(secret_ref) = config.secret_ref.as_ref() else {
         return false;
     };
-    let Some(source) = source else {
+    let (Some(source), Some(mirror)) = (source, mirror) else {
         return true;
     };
-    let data = source
-        .data
-        .clone()
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(k, v)| (k, v.0))
-        .collect();
-    let Ok(key) = crate::bind9::rndc::rndc_key_from_source_secret(&data, secret_ref) else {
-        return true;
+    let recorded = |key: &str| {
+        mirror
+            .annotations
+            .as_ref()
+            .and_then(|a| a.get(key))
+            .map(String::as_str)
     };
-    mirror_step(mirror, &key, &secret_ref.name) != MirrorStep::Keep
+    recorded(crate::constants::ANNOTATION_RNDC_SOURCE_SECRET) != Some(secret_ref.name.as_str())
+        || recorded(crate::constants::ANNOTATION_RNDC_SOURCE_VERSION).is_none()
+        || recorded(crate::constants::ANNOTATION_RNDC_SOURCE_VERSION)
+            != source.resource_version.as_deref()
 }
 
 /// Validates the resolved `rndcKey.secretRef`, if any (ADR-0023).
@@ -480,14 +498,47 @@ async fn mirror_secret_ref_key(
 ) -> Result<String> {
     let instance_name = instance.name_any();
     let mirror_name = default_rndc_secret_name(&instance_name);
-    let secret_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
-
-    let source = secret_api.get(&secret_ref.name).await.with_context(|| {
+    let secret_api = SecretApi::namespaced(client.clone(), namespace, Actor::Bind9Instance);
+    let owner = format!("Bind9Instance {namespace}/{instance_name}");
+    let source_missing = || {
         format!(
             "Failed to read RNDC Secret {namespace}/{} named by rndcKey.secretRef; {namespace}/{mirror_name} is kept",
             secret_ref.name
         )
-    })?;
+    };
+
+    // Metadata first: an unchanged source needs no key read (ADR-0024).
+    let source_meta = secret_api
+        .get_metadata_opt(&secret_ref.name)
+        .await
+        .with_context(source_missing)?
+        .ok_or_else(|| anyhow::anyhow!("RNDC Secret {namespace}/{} not found", secret_ref.name))
+        .with_context(source_missing)?;
+    let mirror_meta = secret_api
+        .get_metadata_opt(&mirror_name)
+        .await
+        .with_context(|| format!("Failed to read RNDC Secret {namespace}/{mirror_name}"))?;
+    let config_ref = crate::crd::RndcKeyConfig {
+        secret_ref: Some(secret_ref.clone()),
+        ..super::config::default_rndc_config()
+    };
+    if !secret_ref_mirror_stale(
+        &config_ref,
+        Some(&source_meta.metadata),
+        mirror_meta.as_ref().map(|m| &m.metadata),
+    ) {
+        return Ok(mirror_name);
+    }
+
+    let source = secret_api
+        .get(
+            &secret_ref.name,
+            &SecretUse::new(SecretPurpose::RndcKeySource, AuditReason::MirrorSync)
+                .owned_by(owner.clone()),
+        )
+        .await
+        .with_context(source_missing)?;
+    let source_version = source.metadata.resource_version.clone();
     let data = source
         .data
         .unwrap_or_default()
@@ -502,12 +553,18 @@ async fn mirror_secret_ref_key(
             )
         })?;
 
+    let mirror_use =
+        |reason| SecretUse::new(SecretPurpose::RndcKeyMirror, reason).owned_by(owner.clone());
     let existing = secret_api
-        .get_opt(&mirror_name)
+        .get_opt(&mirror_name, &mirror_use(AuditReason::MirrorSync))
         .await
         .with_context(|| format!("Failed to read RNDC Secret {namespace}/{mirror_name}"))?;
-    let MirrorStep::Write { rolls_pods } = mirror_step(existing.as_ref(), &key, &secret_ref.name)
-    else {
+    let MirrorStep::Write { rolls_pods } = mirror_step(
+        existing.as_ref(),
+        &key,
+        &secret_ref.name,
+        source_version.as_deref(),
+    ) else {
         return Ok(mirror_name);
     };
 
@@ -516,16 +573,31 @@ async fn mirror_secret_ref_key(
         &mirror_name,
         &key,
         &secret_ref.name,
+        source_version.as_deref(),
     );
     mirror.metadata.owner_references = Some(vec![controller_owner_reference(instance)?]);
     match existing {
         Some(current) => {
+            // A generated key being replaced is a mode switch; a mirror is
+            // following its source.
+            let reason = if current
+                .annotations()
+                .contains_key(crate::constants::ANNOTATION_RNDC_SOURCE_SECRET)
+            {
+                AuditReason::MirrorSync
+            } else {
+                AuditReason::ModeSwitch
+            };
             mirror.metadata.resource_version = current.metadata.resource_version;
             secret_api
-                .replace(&mirror_name, &PostParams::default(), &mirror)
+                .replace(&mirror_name, &mirror, &mirror_use(reason))
                 .await
         }
-        None => secret_api.create(&PostParams::default(), &mirror).await,
+        None => {
+            secret_api
+                .create(&mirror, &mirror_use(AuditReason::Initial))
+                .await
+        }
     }
     .with_context(|| format!("Failed to write RNDC Secret {namespace}/{mirror_name}"))?;
     info!(
@@ -583,7 +655,9 @@ async fn create_or_update_rndc_secret_with_config(
     // default), named by the helper the drift check and loader share.
     let secret_name = rndc_secret_name(instance, config);
 
-    let secret_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
+    let secret_api = SecretApi::namespaced(client.clone(), namespace, Actor::Bind9Instance);
+    let owner = format!("Bind9Instance {namespace}/{}", instance.name_any());
+    let key_use = |reason| SecretUse::new(SecretPurpose::RndcKey, reason).owned_by(owner.clone());
 
     // Check the existing Secret (if any) and decide what to do with it. The
     // decision logic is a pure function so that the malformed/rotation/drift
@@ -592,9 +666,10 @@ async fn create_or_update_rndc_secret_with_config(
     // A failed GET is not "absent": treating it so deleted and regenerated a
     // working key (ADR-0023, Decision 5).
     let current = secret_api
-        .get_opt(&secret_name)
+        .get_opt(&secret_name, &key_use(AuditReason::Verify))
         .await
         .with_context(|| format!("Failed to read RNDC Secret {namespace}/{secret_name}"))?;
+    let mut create_reason = AuditReason::Initial;
     let mut replaced = false;
     match current {
         Some(existing_secret) => match evaluate_existing_rndc_secret(&existing_secret, config)? {
@@ -610,7 +685,13 @@ async fn create_or_update_rndc_secret_with_config(
                     "RNDC Secret {}/{} missing rotation annotations, adding them",
                     namespace, secret_name
                 );
-                add_rotation_annotations_to_secret(&secret_api, &secret_name, config).await?;
+                add_rotation_annotations_to_secret(
+                    &secret_api,
+                    &secret_name,
+                    config,
+                    &key_use(AuditReason::Rotation),
+                )
+                .await?;
                 return Ok(secret_name);
             }
             RndcSecretAction::Rotate => {
@@ -620,23 +701,24 @@ async fn create_or_update_rndc_secret_with_config(
                 );
                 rotate_rndc_secret(
                     client,
+                    &secret_api,
                     namespace,
                     &secret_name,
                     config,
                     instance,
                     &existing_secret,
+                    &key_use(AuditReason::Rotation),
                 )
                 .await?;
                 return Ok(secret_name);
             }
-            RndcSecretAction::Recreate(reason) => {
+            RndcSecretAction::Recreate(reason, detail) => {
                 warn!(
                     "RNDC Secret {}/{} will be recreated: {}",
-                    namespace, secret_name, reason
+                    namespace, secret_name, detail
                 );
-                secret_api
-                    .delete(&secret_name, &kube::api::DeleteParams::default())
-                    .await?;
+                secret_api.delete(&secret_name, &key_use(reason)).await?;
+                create_reason = reason;
                 replaced = true;
                 // Fall through to create a new Secret below
             }
@@ -703,7 +785,7 @@ async fn create_or_update_rndc_secret_with_config(
     }
 
     secret_api
-        .create(&PostParams::default(), &secret_with_owner)
+        .create(&secret_with_owner, &key_use(create_reason))
         .await?;
 
     // The pods mount the same name, so a replaced key reaches them only
@@ -722,17 +804,19 @@ async fn create_or_update_rndc_secret_with_config(
 ///
 /// # Arguments
 ///
-/// * `secret_api` - Kubernetes API client for Secrets
+/// * `secret_api` - The audited Secret API (ADR-0024)
 /// * `secret_name` - Name of the Secret to update
 /// * `config` - RNDC configuration with rotation settings
+/// * `secret_use` - The operation's audit purpose, reason and owner
 ///
 /// # Errors
 ///
 /// Returns error if Secret patch fails or duration parsing fails.
 async fn add_rotation_annotations_to_secret(
-    secret_api: &Api<Secret>,
+    secret_api: &SecretApi,
     secret_name: &str,
     config: &crate::crd::RndcKeyConfig,
+    secret_use: &SecretUse,
 ) -> Result<()> {
     use chrono::Utc;
     use kube::api::{Patch, PatchParams};
@@ -773,6 +857,7 @@ async fn add_rotation_annotations_to_secret(
             secret_name,
             &PatchParams::apply("bindy-operator"),
             &Patch::Merge(&patch),
+            secret_use,
         )
         .await?;
 
@@ -857,13 +942,16 @@ pub(super) fn should_rotate_secret(
 /// # Errors
 ///
 /// Returns error if `Secret` update fails or annotation parsing fails.
+#[allow(clippy::too_many_arguments)] // the audit context rides along
 async fn rotate_rndc_secret(
     client: &Client,
+    secret_api: &SecretApi,
     namespace: &str,
     secret_name: &str,
     config: &crate::crd::RndcKeyConfig,
     instance: &Bind9Instance,
     existing_secret: &Secret,
+    secret_use: &SecretUse,
 ) -> Result<()> {
     use chrono::Utc;
 
@@ -912,9 +1000,8 @@ async fn rotate_rndc_secret(
         .clone_from(&existing_secret.metadata.owner_references);
 
     // Replace the Secret
-    let secret_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
     secret_api
-        .replace(secret_name, &PostParams::default(), &updated_secret)
+        .replace(secret_name, &updated_secret, secret_use)
         .await?;
 
     // Record and zone writes reuse a loaded key for a short while (ADR-0015):
@@ -1944,8 +2031,19 @@ pub(super) async fn delete_resources(client: &Client, instance: &Bind9Instance) 
     if let Some(secret_name) =
         generated_rndc_secret(name, mounted_secret.as_deref(), &instance_rndc)
     {
-        let secret_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
-        delete_child(&secret_api, namespace, &secret_name).await?;
+        let secret_api = SecretApi::namespaced(client.clone(), namespace, Actor::Bind9Instance);
+        let secret_use = SecretUse::new(SecretPurpose::RndcKey, AuditReason::InstanceDeleted)
+            .owned_by(format!("Bind9Instance {namespace}/{name}"));
+        match secret_api.delete(&secret_name, &secret_use).await {
+            Ok(()) => info!("Deleted Secret {namespace}/{secret_name}"),
+            Err(e) if bindy_controller_sdk::kube_errors::is_not_found(&e) => {
+                debug!("Secret {namespace}/{secret_name} already gone");
+            }
+            Err(e) => {
+                return Err(anyhow::Error::from(e)
+                    .context(format!("Failed to delete Secret {namespace}/{secret_name}")));
+            }
+        }
     }
 
     // 5. ServiceAccount, only when this instance owns it

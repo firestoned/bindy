@@ -41,7 +41,7 @@ use futures::StreamExt;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{ConfigMap, Pod, Secret, Service, ServiceAccount};
 use kube::runtime::reflector::ObjectRef;
-use kube::runtime::{controller::Action, watcher, Controller};
+use kube::runtime::{controller::Action, watcher, Controller, WatchStreamExt};
 use kube::ResourceExt;
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -188,10 +188,10 @@ pub(crate) fn instances_for_configmap(
 /// # Returns
 ///
 /// References to the instances to reconcile.
-pub(crate) fn instances_for_secret(
+pub(crate) fn instances_for_secret<S: ResourceExt>(
     instances: &[Arc<Bind9Instance>],
     clusters: &[Arc<Bind9Cluster>],
-    secret: &Secret,
+    secret: &S,
 ) -> Vec<ObjectRef<Bind9Instance>> {
     let Some(namespace) = secret.namespace() else {
         return vec![];
@@ -378,11 +378,19 @@ async fn run_bind9instance_controller(
         scoped_namespaced_api::<ServiceAccount>(&client, target.as_deref()),
         watcher::Config::default(),
     )
-    // The same Secret watch `.owns` ran, with a mapper that also wakes the
-    // instances whose rndcKey.secretRef names the Secret (ADR-0023).
-    .watches(
-        scoped_namespaced_api::<Secret>(&client, target.as_deref()),
-        watcher::Config::default(),
+    // The Secret watch `.owns` ran, with a mapper that also wakes the
+    // instances whose rndcKey.secretRef names the Secret (ADR-0023). A
+    // metadata watch: the mapper needs names and owner references only, so
+    // the operator never receives Secret data from it (ADR-0024 Decision 3).
+    .watches_stream(
+        watcher::watcher(
+            scoped_namespaced_api::<kube::core::PartialObjectMeta<Secret>>(
+                &client,
+                target.as_deref(),
+            ),
+            watcher::Config::default(),
+        )
+        .touched_objects(),
         move |secret| {
             instances_for_secret(
                 &stores_for_secret_watch.bind9_instances.state(),

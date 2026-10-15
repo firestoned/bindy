@@ -27,7 +27,7 @@ use crate::crd::DNSZone;
 use anyhow::{anyhow, Context as AnyhowContext, Result};
 use bindy_controller_sdk::kube_errors::is_not_found_anyhow;
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{Endpoints, Pod, Secret};
+use k8s_openapi::api::core::v1::{Endpoints, Pod};
 use kube::{Api, Client, ResourceExt};
 use std::collections::HashMap;
 use std::future::Future;
@@ -1124,10 +1124,22 @@ pub async fn load_rndc_key(
         ))?;
     let secret_name = effective_rndc_secret_name(instance_name, deployment.as_ref());
 
-    let secret_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
-    let secret = secret_api.get(&secret_name).await.context(format!(
-        "Failed to get RNDC secret {secret_name} in namespace {namespace}"
-    ))?;
+    let secret_api = bindy_controller_sdk::audit::SecretApi::namespaced(
+        client.clone(),
+        namespace,
+        bindy_controller_sdk::audit::Actor::Bind9,
+    );
+    let secret_use = bindy_controller_sdk::audit::SecretUse::new(
+        bindy_controller_sdk::audit::SecretPurpose::RndcKey,
+        bindy_controller_sdk::audit::AuditReason::KeyLoad,
+    )
+    .owned_by(format!("Bind9Instance {namespace}/{instance_name}"));
+    let secret = secret_api
+        .get(&secret_name, &secret_use)
+        .await
+        .context(format!(
+            "Failed to get RNDC secret {secret_name} in namespace {namespace}"
+        ))?;
 
     let data = secret
         .data

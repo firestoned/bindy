@@ -32,6 +32,7 @@
 //! - [`metrics`] - Prometheus metrics
 //! - [`watch`] - The shared watch layer: one watch and cache per kind and namespace
 
+pub mod audit;
 pub mod context;
 pub mod error;
 pub mod finalizers;

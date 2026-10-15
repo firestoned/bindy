@@ -1,8 +1,41 @@
 # Audit Logging for Secret Operations
 
-> **Status:** ⛔ Not started — approved 2026-03-09 but never implemented; no audit-log emission exists in `src/`. Compliance-relevant, so worth re-triaging rather than leaving to drift.
+> **Status:** 🔶 In review (2026-10-14): implemented by [ADR-0024](../../docs/adr/0024-secret-operations-audit-log.md) on branch `feat/secret-audit-log`. The plan below is the March 2026 original, kept as written; it predates the crate split (ADR-0009) and the `secretRef` mirror (ADR-0023), so its file paths and line numbers no longer exist.
 >
 > *Migrated 2026-09-10 from the external roadmap set. Status verified against `fix-idempotency` @ `648ff7a`.*
+
+## What landed (ADR-0024), and where it differs from the plan
+
+- [x] One structured event per Secret operation on the target `bindy::audit`
+      (`kind=audit`, operation, outcome, namespace, name, purpose, reason,
+      actor, owner), never key material or API error messages:
+      `crates/bindy-controller-sdk/src/audit.rs`.
+- [x] Closed sets as enums (`SecretOperation`, `SecretPurpose`,
+      `AuditReason`, `Actor`), as the plan's `SecretAuditOperation` /
+      `SecretGenerationType`, widened to every Secret use bindy has now.
+- [x] One wrapper, `SecretApi`, through which every Secret operation goes;
+      a test fails the build when other non-test code builds an
+      `Api<Secret>`. The plan added audit calls next to each operation,
+      which left a forgotten failure path possible.
+- [x] Every call site: the instance controller (generated key and ADR-0023
+      mirror: create, replace, patch, delete, rotation, deletion), the
+      `bindy-bind9` key loader and CA bundle read, Scout's kubeconfig read,
+      bootstrap's token apply and read and `mc revoke`.
+- [x] Fewer key reads (not in the plan): existence, rotation and mirror
+      staleness checks read metadata only, the mirror records its source's
+      `resourceVersion`, and the Secret watch is a metadata watch.
+- [x] **Changed from the plan:** no `AUDIT_LOG_ENABLED` switch. The audit
+      target is added to every `RUST_LOG` unless it names `bindy::audit`, so
+      it can only be turned off explicitly (`bindy::audit=off`).
+- [x] `bindy_firestoned_io_secret_operations_total{operation, purpose,
+      outcome}` for alerting (not in the plan).
+- [x] Docs: [Secret Audit Log](../../docs/src/operations/secret-audit-log.md)
+      (instead of `features/audit-logging.md` and `operations/compliance.md`),
+      plus the logging, env-var, metrics, Secret access audit and SOX 404
+      pages. No `examples/audit-logging/` directory: the page carries the
+      JSON sample and the routing rule.
+- [x] Proven on kind: `tests/e2e/rndc_secretref_test.sh` asserts the events
+      and that the RNDC key never appears in the operator log.
 
 ---
 

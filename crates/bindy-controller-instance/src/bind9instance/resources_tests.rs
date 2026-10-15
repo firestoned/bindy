@@ -88,38 +88,74 @@ mod tests {
             .expect("valid RndcKeyConfig")
     }
 
+    /// The source's `resourceVersion` the mirror records (ADR-0024).
+    const V1: &str = "7";
+    const V2: &str = "8";
+
+    fn mirror(secret: &str, source: &str, version: &str) -> Secret {
+        create_rndc_mirror_secret("dns", MIRROR, &key(secret), source, Some(version))
+    }
+
     #[test]
     fn a_missing_mirror_is_written_without_a_rollout() {
         // The Deployment is created (or its template changes) with it.
         assert_eq!(
-            mirror_step(None, &key("c2VjcmV0"), SOURCE),
+            mirror_step(None, &key("c2VjcmV0"), SOURCE, Some(V1)),
             MirrorStep::Write { rolls_pods: false }
         );
     }
 
     #[test]
     fn an_up_to_date_mirror_is_kept() {
-        let current = create_rndc_mirror_secret("dns", MIRROR, &key("c2VjcmV0"), SOURCE);
         assert_eq!(
-            mirror_step(Some(&current), &key("c2VjcmV0"), SOURCE),
+            mirror_step(
+                Some(&mirror("c2VjcmV0", SOURCE, V1)),
+                &key("c2VjcmV0"),
+                SOURCE,
+                Some(V1)
+            ),
             MirrorStep::Keep
         );
     }
 
     #[test]
     fn a_changed_source_key_rewrites_the_mirror_and_rolls_the_pods() {
-        let current = create_rndc_mirror_secret("dns", MIRROR, &key("b2xkLWtleQ=="), SOURCE);
         assert_eq!(
-            mirror_step(Some(&current), &key("bmV3LWtleQ=="), SOURCE),
+            mirror_step(
+                Some(&mirror("b2xkLWtleQ==", SOURCE, V1)),
+                &key("bmV3LWtleQ=="),
+                SOURCE,
+                Some(V2)
+            ),
             MirrorStep::Write { rolls_pods: true }
         );
     }
 
     #[test]
     fn a_renamed_source_with_the_same_key_rewrites_the_mirror_only() {
-        let current = create_rndc_mirror_secret("dns", MIRROR, &key("c2VjcmV0"), "bindy-old");
         assert_eq!(
-            mirror_step(Some(&current), &key("c2VjcmV0"), SOURCE),
+            mirror_step(
+                Some(&mirror("c2VjcmV0", "bindy-old", V1)),
+                &key("c2VjcmV0"),
+                SOURCE,
+                Some(V1)
+            ),
+            MirrorStep::Write { rolls_pods: false }
+        );
+    }
+
+    #[test]
+    fn a_new_source_version_with_the_same_key_rewrites_the_mirror_only() {
+        // A label edit on the source bumps its resourceVersion: the mirror
+        // records the new one (or it would look stale forever) and the pods
+        // keep their key.
+        assert_eq!(
+            mirror_step(
+                Some(&mirror("c2VjcmV0", SOURCE, V1)),
+                &key("c2VjcmV0"),
+                SOURCE,
+                Some(V2)
+            ),
             MirrorStep::Write { rolls_pods: false }
         );
     }
@@ -130,81 +166,92 @@ mod tests {
         // name, so the pod template does not change on its own.
         let generated = secret_with_data(Some(valid_secret_data()));
         assert_eq!(
-            mirror_step(Some(&generated), &key("bmV3LWtleQ=="), SOURCE),
+            mirror_step(Some(&generated), &key("bmV3LWtleQ=="), SOURCE, Some(V1)),
             MirrorStep::Write { rolls_pods: true }
         );
     }
 
     #[test]
     fn a_mirror_is_recreated_when_the_instance_switches_to_a_generated_key() {
-        let mirror = create_rndc_mirror_secret("dns", MIRROR, &key("c2VjcmV0"), SOURCE);
-        let action = evaluate_existing_rndc_secret(&mirror, &rndc_config(true)).unwrap();
+        let action =
+            evaluate_existing_rndc_secret(&mirror("c2VjcmV0", SOURCE, V1), &rndc_config(true))
+                .unwrap();
         assert!(
-            matches!(action, RndcSecretAction::Recreate(_)),
+            matches!(
+                action,
+                RndcSecretAction::Recreate(AuditReason::ModeSwitch, _)
+            ),
             "a mirror must never be kept or rotated as a generated key, got {action:?}"
         );
     }
 
-    // The reconcile fast path must notice a mirror that no longer matches
-    // its source: a Secret event alone changes nothing else it checks.
+    // The reconcile fast path must notice a mirror behind its source, from
+    // metadata alone (ADR-0024 Decision 3): the mirror records the source's
+    // resourceVersion.
     use crate::bind9instance::resources::secret_ref_mirror_stale;
+    use bindy_controller_sdk::audit::AuditReason;
 
-    fn source_secret(entries: &[(&str, &str)]) -> Secret {
-        Secret {
-            metadata: k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta {
-                name: Some(SOURCE.to_string()),
-                ..Default::default()
-            },
-            data: Some(
-                entries
-                    .iter()
-                    .map(|(k, v)| ((*k).to_string(), ByteString(v.as_bytes().to_vec())))
-                    .collect(),
-            ),
+    fn source_meta(version: &str) -> ObjectMeta {
+        ObjectMeta {
+            name: Some(SOURCE.to_string()),
+            resource_version: Some(version.to_string()),
             ..Default::default()
         }
     }
 
-    fn operator_key(secret: &str) -> RndcKeyData {
-        RndcKeyData {
-            name: crate::constants::RNDC_OPERATOR_KEY_NAME.to_string(),
-            ..key(secret)
-        }
-    }
-
     #[test]
-    fn a_mirror_matching_its_source_is_not_stale() {
-        let mirror = create_rndc_mirror_secret("dns", MIRROR, &operator_key("c2VjcmV0"), SOURCE);
-        let source = source_secret(&[("secret", "c2VjcmV0")]);
+    fn a_mirror_recording_its_sources_version_is_not_stale() {
         assert!(!secret_ref_mirror_stale(
             &secret_ref_config(SOURCE),
-            Some(&source),
-            Some(&mirror)
+            Some(&source_meta(V1)),
+            Some(&mirror("c2VjcmV0", SOURCE, V1).metadata)
         ));
     }
 
     #[test]
     fn a_mirror_behind_its_source_is_stale() {
-        let mirror =
-            create_rndc_mirror_secret("dns", MIRROR, &operator_key("b2xkLWtleQ=="), SOURCE);
-        let source = source_secret(&[("secret", "bmV3LWtleQ==")]);
         assert!(secret_ref_mirror_stale(
             &secret_ref_config(SOURCE),
-            Some(&source),
-            Some(&mirror)
+            Some(&source_meta(V2)),
+            Some(&mirror("c2VjcmV0", SOURCE, V1).metadata)
         ));
     }
 
     #[test]
-    fn a_missing_or_unusable_source_forces_a_reconcile_that_reports_it() {
-        let mirror = create_rndc_mirror_secret("dns", MIRROR, &operator_key("c2VjcmV0"), SOURCE);
+    fn a_mirror_of_another_source_or_without_a_recorded_version_is_stale() {
         let config = secret_ref_config(SOURCE);
-        assert!(secret_ref_mirror_stale(&config, None, Some(&mirror)));
-        let unusable = source_secret(&[("unrelated", "x")]);
         assert!(secret_ref_mirror_stale(
             &config,
-            Some(&unusable),
-            Some(&mirror)
+            Some(&source_meta(V1)),
+            Some(&mirror("c2VjcmV0", "bindy-old", V1).metadata)
+        ));
+        // A mirror written before ADR-0024 records no version.
+        let mut unversioned = mirror("c2VjcmV0", SOURCE, V1);
+        unversioned
+            .metadata
+            .annotations
+            .as_mut()
+            .expect("annotations")
+            .remove(crate::constants::ANNOTATION_RNDC_SOURCE_VERSION);
+        assert!(secret_ref_mirror_stale(
+            &config,
+            Some(&source_meta(V1)),
+            Some(&unversioned.metadata)
+        ));
+    }
+
+    #[test]
+    fn a_missing_source_or_mirror_forces_a_reconcile_that_reports_it() {
+        let config = secret_ref_config(SOURCE);
+        assert!(secret_ref_mirror_stale(
+            &config,
+            None,
+            Some(&mirror("c2VjcmV0", SOURCE, V1).metadata)
+        ));
+        assert!(secret_ref_mirror_stale(
+            &config,
+            Some(&source_meta(V1)),
+            None
         ));
     }
 
@@ -241,7 +288,7 @@ mod tests {
         let secret = secret_with_data(None);
         let action = evaluate_existing_rndc_secret(&secret, &rndc_config(false)).unwrap();
         assert!(
-            matches!(action, RndcSecretAction::Recreate(_)),
+            matches!(action, RndcSecretAction::Recreate(..)),
             "Secret without data must be recreated, got {action:?}"
         );
     }
@@ -253,7 +300,7 @@ mod tests {
         let secret = secret_with_data(Some(data));
         let action = evaluate_existing_rndc_secret(&secret, &rndc_config(false)).unwrap();
         assert!(
-            matches!(action, RndcSecretAction::Recreate(_)),
+            matches!(action, RndcSecretAction::Recreate(..)),
             "Secret missing required keys must be recreated, got {action:?}"
         );
     }
@@ -266,7 +313,7 @@ mod tests {
         let secret = secret_with_data(None);
         let action = evaluate_existing_rndc_secret(&secret, &rndc_config(true)).unwrap();
         assert!(
-            matches!(action, RndcSecretAction::Recreate(_)),
+            matches!(action, RndcSecretAction::Recreate(..)),
             "malformed Secret must be recreated regardless of rotation config, got {action:?}"
         );
     }
@@ -285,7 +332,7 @@ mod tests {
         config.algorithm = RndcAlgorithm::HmacSha512;
         let action = evaluate_existing_rndc_secret(&secret, &config).unwrap();
         assert!(
-            matches!(action, RndcSecretAction::Recreate(_)),
+            matches!(action, RndcSecretAction::Recreate(..)),
             "algorithm drift must recreate the Secret, got {action:?}"
         );
     }
