@@ -395,7 +395,13 @@ pub(crate) async fn reconcile_bind9instance(
         let deployment_api: Api<Deployment> = Api::namespaced(client.clone(), &namespace);
         let service_api: Api<Service> = Api::namespaced(client.clone(), &namespace);
         let configmap_api: Api<ConfigMap> = Api::namespaced(client.clone(), &namespace);
-        let secret_api: Api<Secret> = Api::namespaced(client.clone(), &namespace);
+        // Metadata only: existence, rotation timing and mirror staleness need
+        // no key material (ADR-0024 Decision 3).
+        let secret_api = bindy_controller_sdk::audit::SecretApi::namespaced(
+            client.clone(),
+            &namespace,
+            bindy_controller_sdk::audit::Actor::Bind9Instance,
+        );
 
         // Fetch deployment to check if it exists AND if OUR labels match
         let current_deployment = deployment_api.get(&name).await.ok();
@@ -456,17 +462,25 @@ pub(crate) async fn reconcile_bind9instance(
 
         // Check Secret existence AND rotation status
         let secret_name = &child_names.rndc_secret;
-        let current_secret = secret_api.get(secret_name).await.ok();
+        let current_secret = secret_api
+            .get_metadata_opt(secret_name)
+            .await
+            .ok()
+            .flatten()
+            .map(|meta| Secret {
+                metadata: meta.metadata,
+                ..Default::default()
+            });
 
         // A secretRef mirror behind its source (ADR-0023): the Secret event
         // that woke this reconcile changes nothing else checked here. A
         // failed source read counts as stale, so the reconcile reports it.
         let mirror_stale = match rndc_config.secret_ref.as_ref() {
-            Some(secret_ref) => match secret_api.get_opt(&secret_ref.name).await {
+            Some(secret_ref) => match secret_api.get_metadata_opt(&secret_ref.name).await {
                 Ok(source) => resources::secret_ref_mirror_stale(
                     &rndc_config,
-                    source.as_ref(),
-                    current_secret.as_ref(),
+                    source.as_ref().map(|m| &m.metadata),
+                    current_secret.as_ref().map(|s| &s.metadata),
                 ),
                 Err(_) => true,
             },

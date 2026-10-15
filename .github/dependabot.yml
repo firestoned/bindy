@@ -86,9 +86,11 @@ updates:
   - package-ecosystem: "docker"
     directories:
       - "/docker"
+    # Daily, not weekly: the Chainguard (Wolfi) images ship CVE fixes daily
+    # under the same `latest` tag, so a weekly check left the published image
+    # up to a week behind a fixed glibc (CVE-2026-8674 and others, 2026-10).
     schedule:
-      interval: "weekly"
-      day: "monday"
+      interval: "daily"
       time: "09:00"
       timezone: "America/New_York"
     open-pull-requests-limit: 5
@@ -100,14 +102,15 @@ updates:
     commit-message:
       prefix: "docker"
       include: "scope"
-    # One weekly PR for all base images instead of a PR per Dockerfile — the
-    # builder and runtime stages must stay on matching Debian majors, and the
-    # main ruleset requires up-to-date branches (N PRs = N full CI runs).
+    # One PR for all base images instead of a PR per Dockerfile: the builder
+    # and runtime stages must stay on matching Debian majors, and the main
+    # ruleset requires up-to-date branches (N PRs = N full CI runs).
+    # No `update-types` filter: every image here is pinned by digest on a
+    # fixed tag (`13-slim`, `nonroot`, `latest`), and a digest-only bump has
+    # no semver update type, so a major/minor/patch filter left it out of the
+    # group. September's bumps came as one PR per image; the grouped run of
+    # 2026-10-13 raised none at all.
     groups:
       docker-base-images:
         patterns:
           - "*"
-        update-types:
-          - "major"
-          - "minor"
-          - "patch"

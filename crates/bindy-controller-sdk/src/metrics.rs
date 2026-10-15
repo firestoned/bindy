@@ -116,6 +116,24 @@ pub static RESOURCES_DELETED_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
     counter
 });
 
+/// Total number of Secret operations bindy performed (ADR-0024)
+///
+/// Labels:
+/// - `operation`: `create`, `replace`, `patch`, `delete` or `read`
+/// - `purpose`: what the Secret is to bindy (`rndc-key`, `rndc-key-mirror`, ...)
+/// - `outcome`: `success` or `failure`
+pub static SECRET_OPERATIONS_TOTAL: LazyLock<CounterVec> = LazyLock::new(|| {
+    let opts = Opts::new(
+        format!("{METRICS_NAMESPACE}_secret_operations_total"),
+        "Total number of Secret operations by operation, purpose and outcome",
+    );
+    let counter = CounterVec::new(opts, &["operation", "purpose", "outcome"]).unwrap();
+    METRICS_REGISTRY
+        .register(Box::new(counter.clone()))
+        .unwrap();
+    counter
+});
+
 // ============================================================================
 // Error Metrics
 // ============================================================================

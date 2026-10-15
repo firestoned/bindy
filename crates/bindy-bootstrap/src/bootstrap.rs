@@ -58,6 +58,7 @@
 
 use anyhow::{anyhow, Context as _, Result};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use bindy_controller_sdk::audit::{Actor, AuditReason, SecretApi, SecretPurpose, SecretUse};
 use bindy_controller_sdk::resources::delete_if_present;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{Namespace, Secret, ServiceAccount};
@@ -1311,12 +1312,16 @@ pub async fn run_bootstrap_multi_cluster(
 
     let token_secret_name = format!("{sa}{SA_TOKEN_SECRET_SUFFIX}");
     let token_secret = build_mc_sa_token_secret(namespace, sa);
-    apply(
-        &Api::namespaced(client.clone(), namespace),
-        &token_secret,
-        fm,
-    )
-    .await?;
+    // Secrets go through the audited API (ADR-0024), not the generic apply.
+    SecretApi::namespaced(client.clone(), namespace, Actor::Bootstrap)
+        .patch(
+            &token_secret_name,
+            &PatchParams::apply(fm).force(),
+            &Patch::Apply(&token_secret),
+            &SecretUse::new(SecretPurpose::ServiceAccountToken, AuditReason::Initial),
+        )
+        .await
+        .with_context(|| format!("Failed to apply Secret/{token_secret_name}"))?;
     eprintln!("✓ Secret: {token_secret_name} (namespace: {namespace})");
     eprintln!("⏳ Waiting for SA token to be populated...");
     let token = wait_for_sa_token(&client, namespace, &token_secret_name).await?;
@@ -1598,11 +1603,12 @@ pub(crate) fn build_mc_kubeconfig_secret(
 /// This function retries up to `SA_TOKEN_WAIT_MAX_ATTEMPTS` times with
 /// `SA_TOKEN_WAIT_INTERVAL_MS` ms between attempts (max ~10 seconds total).
 async fn wait_for_sa_token(client: &Client, namespace: &str, secret_name: &str) -> Result<String> {
-    let secret_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
+    let secret_api = SecretApi::namespaced(client.clone(), namespace, Actor::Bootstrap);
+    let secret_use = SecretUse::new(SecretPurpose::ServiceAccountToken, AuditReason::Initial);
 
     for _ in 0..SA_TOKEN_WAIT_MAX_ATTEMPTS {
         let secret = secret_api
-            .get(secret_name)
+            .get(secret_name, &secret_use)
             .await
             .with_context(|| format!("Failed to read Secret/{secret_name}"))?;
 
@@ -1848,10 +1854,22 @@ pub async fn run_revoke_multi_cluster(namespace: &str, service_account: &str) ->
     delete_mc_resource::<Role>(&client, namespace, service_account).await?;
 
     let kubeconfig_secret = format!("{service_account}{REMOTE_KUBECONFIG_SECRET_SUFFIX}");
-    delete_mc_resource::<Secret>(&client, namespace, &kubeconfig_secret).await?;
+    delete_mc_secret(
+        &client,
+        namespace,
+        &kubeconfig_secret,
+        SecretPurpose::ScoutKubeconfig,
+    )
+    .await?;
 
     let token_secret = format!("{service_account}{SA_TOKEN_SECRET_SUFFIX}");
-    delete_mc_resource::<Secret>(&client, namespace, &token_secret).await?;
+    delete_mc_secret(
+        &client,
+        namespace,
+        &token_secret,
+        SecretPurpose::ServiceAccountToken,
+    )
+    .await?;
 
     delete_mc_resource::<ServiceAccount>(&client, namespace, service_account).await?;
 
@@ -1873,6 +1891,33 @@ pub async fn run_revoke_multi_cluster(namespace: &str, service_account: &str) ->
 /// # Errors
 /// Returns `Failed to delete <Kind>/<name>` for any API failure other than
 /// 404; the `kube::Error` stays in the chain.
+/// As [`delete_mc_resource`], for a Secret: through the audited Secret API
+/// (ADR-0024).
+///
+/// # Errors
+/// Returns an error if the delete fails for any reason other than 404.
+async fn delete_mc_secret(
+    client: &Client,
+    namespace: &str,
+    name: &str,
+    purpose: SecretPurpose,
+) -> Result<()> {
+    let api = SecretApi::namespaced(client.clone(), namespace, Actor::Bootstrap);
+    match api
+        .delete(name, &SecretUse::new(purpose, AuditReason::Revoke))
+        .await
+    {
+        Ok(()) => eprintln!("✓ Deleted Secret: {name} (namespace: {namespace})"),
+        Err(e) if bindy_controller_sdk::kube_errors::is_not_found(&e) => {
+            eprintln!("  Secret/{name} not found, skipping");
+        }
+        Err(e) => {
+            return Err(anyhow::Error::from(e).context(format!("Failed to delete Secret/{name}")))
+        }
+    }
+    Ok(())
+}
+
 pub(crate) async fn delete_mc_resource<K>(
     client: &Client,
     namespace: &str,

@@ -167,6 +167,44 @@ EOF
     done
 }
 
+# The operator's whole log, ANSI colour codes stripped (the text format
+# colours each field name, so `kind="audit"` never appears verbatim). Read pod
+# by pod: with a label selector, `kubectl logs` caps the output at 10 lines
+# whatever `--tail` says (-1 means "10" there).
+operator_logs() {
+    local pod
+    for pod in $(${KUBECTL} get pods -n "${NAMESPACE}" -l app=bindy -o name 2>/dev/null); do
+        ${KUBECTL} logs -n "${NAMESPACE}" "${pod}" 2>/dev/null || true
+    done | sed 's/\x1b\[[0-9;]*m//g'
+}
+
+# ADR-0024: the operator recorded a Secret operation with these field values.
+# $1: operation, $2: purpose, $3: label
+assert_audit_event() {
+    local operation=$1 purpose=$2 label=$3 logs
+    logs=$(operator_logs)
+    # One grep on a here-string, no pipe: a `grep -q` at the end of a pipe
+    # would fail it under pipefail (the producers get SIGPIPE). The event's
+    # fields always come in this order.
+    if grep -qE "kind=\"?audit\"?.*operation=\"?${operation}\"?.*purpose=\"?${purpose}\"?( |$)" \
+           <<< "${logs}"; then
+        pass "${label}: audit event ${operation} ${purpose}"
+    else
+        fail "${label}: no audit event ${operation} ${purpose}"
+    fi
+}
+
+# ADR-0024: no operator log line carries the key.
+# $1: base64 key, $2: label
+assert_key_never_logged() {
+    local key=$1 label=$2
+    if grep -qF -- "${key}" <<< "$(operator_logs)"; then
+        fail "${label}: the RNDC key appears in the operator log"
+    else
+        pass "${label}: the RNDC key is not in the operator log"
+    fi
+}
+
 cleanup_probes() {
     ${KUBECTL} delete arecord -n "${NAMESPACE}" rndc-probe-1 rndc-probe-2 rndc-probe-3 rndc-probe-4 \
         --ignore-not-found=true --wait=false >/dev/null 2>&1 || true
@@ -199,6 +237,9 @@ assert_pods_rolled "${SNAPSHOT}" "secretRef applied"
 assert_rndc_works "secretRef applied"
 assert_dns_on_primaries "secretRef applied"
 assert_new_record_served 1 "secretRef applied"
+assert_audit_event read rndc-key-source "secretRef applied"
+assert_audit_event replace rndc-key-mirror "secretRef applied"
+assert_key_never_logged "${KEY_ONE}" "secretRef applied"
 summary_row "Custom-entry secretRef mirrored, pods roll, writes served" \
             "$([ ${ERRORS} -eq ${BEFORE_ERRORS} ] && echo '✅ passed' || echo '❌ failed')"
 
@@ -212,6 +253,7 @@ assert_pods_rolled "${SNAPSHOT}" "source key changed"
 assert_rndc_works "source key changed"
 assert_dns_on_primaries "source key changed"
 assert_new_record_served 2 "source key changed"
+assert_key_never_logged "${KEY_TWO}" "source key changed"
 summary_row "A source key change rolls the pods and keeps writes working" \
             "$([ ${ERRORS} -eq ${BEFORE_ERRORS} ] && echo '✅ passed' || echo '❌ failed')"
 
@@ -233,7 +275,7 @@ for inst in $(expected_primaries); do
 done
 # Captured first: `grep -q` in a pipeline exits on its first match, and under
 # pipefail the producer's SIGPIPE would fail the test.
-OPERATOR_LOGS=$(${KUBECTL} logs -n "${NAMESPACE}" -l app=bindy --tail=-1 2>/dev/null || true)
+OPERATOR_LOGS=$(operator_logs)
 APPLIED_REF=$(${KUBECTL} get bind9cluster "${CLUSTER_CR}" -n "${NAMESPACE}" \
     -o jsonpath='{.spec.primary.rndcKey.secretRef.name}' 2>/dev/null || true)
 if [[ "${OPERATOR_LOGS}" == *"rndcKey.secretRef rejected"* ]] \
@@ -284,6 +326,8 @@ assert_pods_rolled "${SNAPSHOT}" "generated again"
 assert_rndc_works "generated again"
 assert_dns_on_primaries "generated again"
 assert_new_record_served 3 "generated again"
+assert_audit_event delete rndc-key "generated again"
+assert_audit_event create rndc-key "generated again"
 summary_row "Switching back to a generated key rolls the pods with a fresh key" \
             "$([ ${ERRORS} -eq ${BEFORE_ERRORS} ] && echo '✅ passed' || echo '❌ failed')"
 

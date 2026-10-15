@@ -1042,7 +1042,8 @@ key "inline-key" {
             algorithm: RndcAlgorithm::HmacSha256,
             secret: SOURCE_KEY.into(),
         };
-        let mirror = create_rndc_mirror_secret("dns", "primary-0-rndc-key", &key, "bindy-corp");
+        let mirror =
+            create_rndc_mirror_secret("dns", "primary-0-rndc-key", &key, "bindy-corp", Some("7"));
         assert_eq!(mirror.metadata.name.as_deref(), Some("primary-0-rndc-key"));
         assert_eq!(mirror.metadata.namespace.as_deref(), Some("dns"));
         let annotations = mirror.metadata.annotations.clone().unwrap_or_default();
@@ -1053,6 +1054,11 @@ key "inline-key" {
         assert!(
             !annotations.contains_key(crate::constants::ANNOTATION_RNDC_ROTATE_AT),
             "a mirror is never rotated"
+        );
+        assert_eq!(
+            annotations.get(crate::constants::ANNOTATION_RNDC_SOURCE_VERSION),
+            Some(&"7".to_string()),
+            "the mirror records the source's resourceVersion (ADR-0024)"
         );
         let data: BTreeMap<String, Vec<u8>> = mirror
             .data

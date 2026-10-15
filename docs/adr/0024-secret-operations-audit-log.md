@@ -4,6 +4,7 @@
 - **Date:** 2026-10-14
 - **Proposed:** 2026-10-14
 - **Deciders:** Erick Bourgeois
+- **Amended:** 2026-10-14 (Decision 2: the wrapper is a `SecretApi` type and a test forbids any other `Api<Secret>`; Decision 3: the Secret watch becomes a metadata watch)
 - **Related:** Implements roadmap 16 (approved 2026-03-09, never built); covers the Secret traffic [ADR-0023](0023-secretref-rndc-key-mirrored.md) added; RBAC posture as in the threat model's B-5 split
 
 ## Context
@@ -76,6 +77,14 @@ Two properties of the current code also matter here:
    emits the event for whichever outcome it returns. Every Secret operation
    goes through it, so a call site cannot record success and forget failure.
    The closed sets are Rust enums, so a typo cannot create a new value.
+
+   **Amended 2026-10-14:** the wrapper is a `SecretApi` type around
+   `Api<Secret>`, whose data methods (`get`, `get_opt`, `create`, `replace`,
+   `patch`, `delete`) each take the operation's purpose, reason and owner,
+   and whose `get_metadata` returns no data and records nothing. No other
+   non-test code constructs an `Api<Secret>`: a test scans the workspace and
+   fails the build if one does. The only exception it allows is the
+   metadata watch below.
 3. **Existence and annotation checks read metadata only.** The drift check
    and the cluster controller's existence check use `get_metadata`, which
    returns no data. They are then not reads of key material and emit no
@@ -86,6 +95,14 @@ Two properties of the current code also matter here:
    annotation is missing, as on a mirror written before this change). The
    source's data is then read only when it changed. Every remaining `read`
    event is a real access to key material.
+
+   **Amended 2026-10-14:** the instance controller's Secret watch, which
+   maps an owned `{instance}-rndc-key` or a `secretRef` source to the
+   instances it serves, needs only names, namespaces and owner references.
+   It becomes a metadata watch (`metadata_watcher`), so the operator no
+   longer receives the data of every Secret in the namespaces it watches. A
+   watch stream cannot be audited per event; it now carries no key
+   material to audit.
 4. **Audit events cannot be filtered away by accident.** When `RUST_LOG`
    does not mention `bindy::audit`, the operator, Scout and bootstrap add
    the directive `bindy::audit=info` to whatever filter it gives, so quieting
@@ -104,8 +121,10 @@ Two properties of the current code also matter here:
   Secret, for which object, why, and whether it worked, joined to the API
   server audit log by namespace, name and time.
 - Fewer Secret reads reach the API server with data in the response: the
-  per-reconcile checks become metadata reads (least privilege in practice;
-  the RBAC grant itself is unchanged, since `get` covers both).
+  per-reconcile checks become metadata reads, and the Secret watch stops
+  streaming every Secret's data to the operator (least privilege in
+  practice; the RBAC grants are unchanged, since `get`, `list` and `watch`
+  cover both).
 - Log volume grows by one line per Secret write and per key-cache miss, not
   per reconcile; key loads are already cached (ADR-0015).
 - `RUST_LOG=warn` no longer hides the audit trail. Anyone relying on that to

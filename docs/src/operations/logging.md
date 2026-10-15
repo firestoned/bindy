@@ -23,6 +23,10 @@ per-record-per-instance progress (`Processing endpoints for instance ...`,
 of records no longer floods the log and rotates history away within minutes.
 Set `RUST_LOG=bindy=debug` (or `debug`) to see it.
 
+The Secret audit events (target `bindy::audit`) stay at `info` whatever
+`RUST_LOG` says, unless `RUST_LOG` names `bindy::audit` itself; see
+[Secret Audit Log](secret-audit-log.md).
+
 ### Log Format
 
 Set log output format via RUST_LOG_FORMAT environment variable:

@@ -83,10 +83,18 @@ where
 /// Initialize logging with custom format
 ///
 /// Respects `RUST_LOG` environment variable if set, otherwise defaults to INFO level.
+/// The Secret audit target (`bindy::audit`) is kept at INFO unless `RUST_LOG`
+/// names it explicitly (ADR-0024), so quieting ordinary logs never drops the
+/// audit trail. An unparsable `RUST_LOG` falls back to the default.
 /// Respects `RUST_LOG_FORMAT` environment variable for output format (json or text).
 fn initialize_logging() {
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let rust_log = std::env::var(tracing_subscriber::EnvFilter::DEFAULT_ENV).ok();
+    let env_filter = tracing_subscriber::EnvFilter::try_new(
+        bindy_controller_sdk::audit::audit_log_filter(rust_log.as_deref()),
+    )
+    .unwrap_or_else(|_| {
+        tracing_subscriber::EnvFilter::new(bindy_controller_sdk::audit::audit_log_filter(None))
+    });
 
     let log_format = std::env::var("RUST_LOG_FORMAT").unwrap_or_else(|_| "text".to_string());
 

@@ -442,7 +442,7 @@ impl Bind9Manager {
 
     /// Read the PEM CA bundle referenced by the TLS configuration.
     async fn read_ca_bundle(&self, tls: &crate::crd::BindcarTlsConfig) -> Result<Vec<u8>> {
-        use k8s_openapi::api::core::v1::{ConfigMap, Secret};
+        use k8s_openapi::api::core::v1::ConfigMap;
         use kube::Api;
 
         let source = tls.ca_bundle.as_ref().ok_or_else(|| {
@@ -491,8 +491,12 @@ impl Bind9Manager {
 
         if let Some(sec_ref) = source.secret_ref.as_ref() {
             let key = sec_ref.key.as_deref().unwrap_or(DEFAULT_CA_BUNDLE_KEY);
-            let api: Api<Secret> = Api::namespaced(kube_client, namespace);
-            let secret = api.get(&sec_ref.name).await.with_context(|| {
+            use bindy_controller_sdk::audit::{
+                Actor, AuditReason, SecretApi, SecretPurpose, SecretUse,
+            };
+            let api = SecretApi::namespaced(kube_client, namespace, Actor::Bind9);
+            let secret_use = SecretUse::new(SecretPurpose::BindcarCa, AuditReason::ClientBuild);
+            let secret = api.get(&sec_ref.name, &secret_use).await.with_context(|| {
                 format!(
                     "failed to read CA bundle Secret {}/{}",
                     namespace, sec_ref.name
