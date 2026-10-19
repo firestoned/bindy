@@ -102,6 +102,19 @@ A tenant on one edge cluster, or that cluster's compromised Scout, could publish
 - Policies 21/22 on kind (Kubernetes 1.36): type checking clean; all accept/reject fixtures as expected; a registered account's delete or relabel of another cluster's record refused (HTTP 422); server-side apply refused the same way; unregistered accounts and a namespace with no registry unaffected. `bindy bootstrap mc` registration and `--revoke` checked against the same cluster: each account's keys owned by its own field manager, revoke removes only those.
 - Not run: the two-cluster Scout e2e (needs a Scout image built from this branch), roadmap 31 phase 5.
 
+## [2026-10-19 10:30] - Document GRPCRoute support in Scout guide
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/src/guide/scout.md`: Documented GRPCRoute support in the route overview, gateway IP configuration, hostname behavior, and record lifecycle.
+
+### Why
+Scout supports GRPCRoute, but the user guide omitted it from the route list and feature summary.
+
+### Impact
+- [x] Documentation only
+
 ## [2026-10-14 20:00] - Every Secret operation emits one structured audit event (ADR-0024, roadmap 16)
 
 **Author:** Erick Bourgeois

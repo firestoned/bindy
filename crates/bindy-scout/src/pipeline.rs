@@ -4,7 +4,7 @@
 //! Scout's one reconcile pipeline (ADR-0022).
 //!
 //! Every source kind Scout watches (`Ingress`, `Service`, `HTTPRoute`,
-//! `TLSRoute`, `TCPRoute`) is reconciled by [`reconcile_source`]. A kind
+//! `GRPCRoute`, `TLSRoute`, `TCPRoute`) is reconciled by [`reconcile_source`]. A kind
 //! supplies only what differs, through [`ScoutSource`]: its kind name, its
 //! hostnames, whether it needs a `record-name` override, and where its IPs
 //! come from. Every step that used to be copied per kind (excluded namespace,
@@ -30,10 +30,10 @@ use crate::scout::{
     is_scout_opted_in, legacy_arecord_label_selector, parse_ttl_annotation, requeue_after_error,
     resolve_ips_from_annotation, resolve_ips_from_lb_status, resolve_ips_from_service_lb_status,
     resolve_record_name, resolve_usable_zone, resolve_zone, source_namespace_eligible,
-    stale_cleanup_zones, stale_selector_base, tcproute_record_name, Gateway, GatewayServiceTarget,
-    HTTPRoute, ParentReference, ScoutContext, ScoutError, StaleKind, TCPRoute, TLSRoute, ZoneAuthz,
-    ZoneResolution, EMPTY_ANNOTATIONS, FINALIZER_SCOUT, LABEL_SOURCE_CLUSTER, LABEL_ZONE,
-    REMOTE_CLEANUP_GRACE_SECS,
+    stale_cleanup_zones, stale_selector_base, tcproute_record_name, GRPCRoute, Gateway,
+    GatewayServiceTarget, HTTPRoute, ParentReference, ScoutContext, ScoutError, StaleKind,
+    TCPRoute, TLSRoute, ZoneAuthz, ZoneResolution, EMPTY_ANNOTATIONS, FINALIZER_SCOUT,
+    LABEL_SOURCE_CLUSTER, LABEL_ZONE, REMOTE_CLEANUP_GRACE_SECS,
 };
 use anyhow::{anyhow, Context as _, Result};
 use bindy_controller_sdk::finalizers;
@@ -172,6 +172,20 @@ impl ScoutSource for Service {
 
 impl ScoutSource for HTTPRoute {
     const KIND: &'static str = "HTTPRoute";
+    const IP_PRECEDENCE: IpPrecedence = IpPrecedence::DiscoveredFirst;
+
+    fn hostnames(&self, _zone: &str) -> Vec<(usize, String)> {
+        indexed_hosts(self.spec.iter().flat_map(|s| s.hostnames.iter().flatten()))
+    }
+
+    async fn discover_ips(&self, ctx: &ScoutContext) -> Result<Vec<String>> {
+        let refs = self.spec.as_ref().and_then(|s| s.parent_refs.as_deref());
+        route_gateway_ips(self, refs, ctx).await
+    }
+}
+
+impl ScoutSource for GRPCRoute {
+    const KIND: &'static str = "GRPCRoute";
     const IP_PRECEDENCE: IpPrecedence = IpPrecedence::DiscoveredFirst;
 
     fn hostnames(&self, _zone: &str) -> Vec<(usize, String)> {
