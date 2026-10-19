@@ -5,11 +5,14 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::kube_errors::{is_conflict, is_conflict_anyhow, is_not_found, is_not_found_anyhow};
+    use crate::kube_errors::{
+        is_conflict, is_conflict_anyhow, is_not_found, is_not_found_anyhow, is_refused,
+    };
     use anyhow::Context as _;
-    use bindy_api::constants::{HTTP_CONFLICT, HTTP_NOT_FOUND};
+    use bindy_api::constants::{
+        HTTP_CONFLICT, HTTP_FORBIDDEN, HTTP_NOT_FOUND, HTTP_UNPROCESSABLE_ENTITY,
+    };
 
-    const HTTP_FORBIDDEN: u16 = 403;
     const HTTP_TOO_MANY_REQUESTS: u16 = 429;
     const HTTP_INTERNAL_SERVER_ERROR: u16 = 500;
 
@@ -30,6 +33,23 @@ mod tests {
     fn constants_carry_the_http_codes() {
         assert_eq!(HTTP_NOT_FOUND, 404);
         assert_eq!(HTTP_CONFLICT, 409);
+        assert_eq!(HTTP_FORBIDDEN, 403);
+        assert_eq!(HTTP_UNPROCESSABLE_ENTITY, 422);
+    }
+
+    #[test]
+    fn refused_is_a_403_or_422_api_error() {
+        assert!(is_refused(&api_error(HTTP_FORBIDDEN, "Forbidden")));
+        assert!(is_refused(&api_error(HTTP_UNPROCESSABLE_ENTITY, "Invalid")));
+        for code in [
+            HTTP_NOT_FOUND,
+            HTTP_CONFLICT,
+            HTTP_TOO_MANY_REQUESTS,
+            HTTP_INTERNAL_SERVER_ERROR,
+        ] {
+            assert!(!is_refused(&api_error(code, "Other")), "{code}");
+        }
+        assert!(!is_refused(&non_api_error()));
     }
 
     #[test]

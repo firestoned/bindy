@@ -25,6 +25,9 @@
 
 use crate::constants::{ALLOW_ZONE_NAMESPACES_WILDCARD, ANNOTATION_ALLOW_ZONE_NAMESPACES};
 use crate::crd::{ARecord, ARecordSpec, DNSZone};
+use crate::guardrails::{
+    first_ip_outside, parse_allowed_ip_ranges, parse_allowed_zones, zone_is_allowed, Ipv4Range,
+};
 use crate::pipeline::source_controller;
 use anyhow::{anyhow, Context, Result};
 use bindy_controller_sdk::kube_errors;
@@ -367,13 +370,13 @@ pub(crate) const ANNOTATION_RECORD_NAME: &str = "bindy.firestoned.io/record-name
 pub(crate) const FINALIZER_SCOUT: &str = "bindy.firestoned.io/arecord-finalizer";
 
 /// Label placed on created ARecords identifying Scout as the manager
-pub(crate) const LABEL_MANAGED_BY: &str = "bindy.firestoned.io/managed-by";
+pub(crate) const LABEL_MANAGED_BY: &str = bindy_api::labels::BINDY_MANAGED_BY_LABEL;
 
 /// Label value for ARecords created by Scout
-pub(crate) const LABEL_MANAGED_BY_SCOUT: &str = "scout";
+pub(crate) const LABEL_MANAGED_BY_SCOUT: &str = bindy_api::labels::MANAGED_BY_SCOUT;
 
 /// Label identifying the source cluster on created ARecords
-pub(crate) const LABEL_SOURCE_CLUSTER: &str = "bindy.firestoned.io/source-cluster";
+pub(crate) const LABEL_SOURCE_CLUSTER: &str = bindy_api::labels::BINDY_SOURCE_CLUSTER_LABEL;
 
 /// Label identifying the source namespace on created ARecords
 pub(crate) const LABEL_SOURCE_NAMESPACE: &str = "bindy.firestoned.io/source-namespace";
@@ -392,7 +395,7 @@ pub(crate) const LABEL_SOURCE_NAME: &str = "bindy.firestoned.io/source-name";
 pub(crate) const LABEL_SOURCE_KIND: &str = "bindy.firestoned.io/source-kind";
 
 /// Label carrying the DNS zone name on created ARecords (for DNSZone selector matching)
-pub(crate) const LABEL_ZONE: &str = "bindy.firestoned.io/zone";
+pub(crate) const LABEL_ZONE: &str = bindy_api::labels::BINDY_ZONE_LABEL;
 
 /// Default namespace where ARecords are created when `BINDY_SCOUT_NAMESPACE` is not set
 pub(crate) const DEFAULT_SCOUT_NAMESPACE: &str = "bindy-system";
@@ -479,6 +482,13 @@ pub(crate) struct ScoutContext {
     /// (see `namespace_matches_selector` and the Scout guide). Set via
     /// `BINDY_SCOUT_NAMESPACE_SELECTOR` or `--namespace-selector`.
     pub namespace_selector: Option<String>,
+    /// Zones Scout may publish into, with their subzones (ADR-0025). `None`
+    /// means every zone. Set via `BINDY_SCOUT_ALLOWED_ZONES` or `--allowed-zones`.
+    pub allowed_zones: Option<Vec<String>>,
+    /// IPv4 ranges every published address must fall in (ADR-0025). `None`
+    /// means every address. Set via `BINDY_SCOUT_ALLOWED_IP_RANGES` or
+    /// `--allowed-ip-ranges`.
+    pub allowed_ip_ranges: Option<Vec<Ipv4Range>>,
     /// Read-only store of DNSZone resources for zone validation.
     /// Populated from the remote client so zones are validated against the bindy cluster.
     pub zone_store: reflector::Store<DNSZone>,
@@ -1925,6 +1935,13 @@ pub(crate) struct ScoutConfig {
     /// every namespace is eligible (backward-compatible default). Set via
     /// `BINDY_SCOUT_NAMESPACE_SELECTOR` or `--namespace-selector`.
     pub(crate) namespace_selector: Option<String>,
+    /// Zones Scout may publish into (ADR-0025); `None` means every zone.
+    /// Set via `BINDY_SCOUT_ALLOWED_ZONES` or `--allowed-zones`.
+    pub(crate) allowed_zones: Option<Vec<String>>,
+    /// IPv4 ranges published addresses must fall in (ADR-0025); `None` means
+    /// every address. Set via `BINDY_SCOUT_ALLOWED_IP_RANGES` or
+    /// `--allowed-ip-ranges`.
+    pub(crate) allowed_ip_ranges: Option<Vec<Ipv4Range>>,
     /// How to reach the bindy cluster: same-cluster, kubeconfig Secret
     /// (Phase 2) or endpoint + token file (Phase 3, ADR-0008).
     pub(crate) remote_transport: RemoteTransport,
@@ -1942,16 +1959,28 @@ pub struct ScoutRemoteOverrides {
     pub ca_file: Option<String>,
 }
 
-/// The CLI flags `bindy scout` passes to [`ScoutConfig::from_lookup`].
+/// The CLI flags `bindy scout` passes to [`run_scout`]. Each one, when set,
+/// takes precedence over its `BINDY_SCOUT_*` environment variable.
 #[derive(Debug, Default, Clone)]
-pub(crate) struct ScoutCli {
-    pub(crate) cluster_name: Option<String>,
-    pub(crate) namespace: Option<String>,
-    pub(crate) default_ips: Vec<String>,
-    pub(crate) gateway_services: Vec<String>,
-    pub(crate) default_zone: Option<String>,
-    pub(crate) namespace_selector: Option<String>,
-    pub(crate) remote: ScoutRemoteOverrides,
+pub struct ScoutCli {
+    /// Overrides `BINDY_SCOUT_CLUSTER_NAME`.
+    pub cluster_name: Option<String>,
+    /// Overrides `BINDY_SCOUT_NAMESPACE`.
+    pub namespace: Option<String>,
+    /// Overrides `BINDY_SCOUT_DEFAULT_IPS`.
+    pub default_ips: Vec<String>,
+    /// Overrides `BINDY_SCOUT_GATEWAY_SERVICES`, one `class=ns/name` each.
+    pub gateway_services: Vec<String>,
+    /// Overrides `BINDY_SCOUT_DEFAULT_ZONE`.
+    pub default_zone: Option<String>,
+    /// Overrides `BINDY_SCOUT_NAMESPACE_SELECTOR`.
+    pub namespace_selector: Option<String>,
+    /// Overrides `BINDY_SCOUT_ALLOWED_ZONES` (comma-separated).
+    pub allowed_zones: Option<String>,
+    /// Overrides `BINDY_SCOUT_ALLOWED_IP_RANGES` (comma-separated).
+    pub allowed_ip_ranges: Option<String>,
+    /// Overrides for the endpoint remote transport (ADR-0008).
+    pub remote: ScoutRemoteOverrides,
 }
 
 /// Namespace assumed for Scout itself when `POD_NAMESPACE` is unset.
@@ -2082,6 +2111,35 @@ impl ScoutConfig {
             lookup,
         )?;
 
+        let allowed_zones = env_or(cli.allowed_zones, "BINDY_SCOUT_ALLOWED_ZONES", lookup)?
+            .map(|raw| parse_allowed_zones(&raw))
+            .transpose()?;
+        if let (Some(allowed), Some(zone)) = (&allowed_zones, &default_zone) {
+            if !zone_is_allowed(allowed, zone) {
+                return Err(anyhow!(
+                    "default zone {zone:?} (BINDY_SCOUT_DEFAULT_ZONE / --default-zone) is not in \
+                     BINDY_SCOUT_ALLOWED_ZONES / --allowed-zones"
+                ));
+            }
+        }
+
+        let allowed_ip_ranges = env_or(
+            cli.allowed_ip_ranges,
+            "BINDY_SCOUT_ALLOWED_IP_RANGES",
+            lookup,
+        )?
+        .map(|raw| parse_allowed_ip_ranges(&raw))
+        .transpose()?;
+        if let Some(outside) = allowed_ip_ranges
+            .as_deref()
+            .and_then(|ranges| first_ip_outside(ranges, &default_ips))
+        {
+            return Err(anyhow!(
+                "default IP {outside:?} (BINDY_SCOUT_DEFAULT_IPS / --default-ips) is outside \
+                 BINDY_SCOUT_ALLOWED_IP_RANGES / --allowed-ip-ranges"
+            ));
+        }
+
         let remote_secret_name = env_or(None, "BINDY_SCOUT_REMOTE_SECRET", lookup)?;
         let remote_secret_namespace = env_or(None, "BINDY_SCOUT_REMOTE_SECRET_NAMESPACE", lookup)?
             .unwrap_or_else(|| own_namespace.clone());
@@ -2106,6 +2164,8 @@ impl ScoutConfig {
             gateway_services,
             default_zone,
             namespace_selector,
+            allowed_zones,
+            allowed_ip_ranges,
             remote_transport,
         })
     }
@@ -2125,26 +2185,11 @@ impl ScoutConfig {
 ///
 /// Returns an error if the configuration is invalid (see
 /// `ScoutConfig::from_lookup`: a missing cluster name, an empty setting, a
-/// malformed `--gateway-service` entry, a non-IPv4 default IP, an ambiguous
-/// remote transport) or if a Kubernetes client cannot be initialised.
-pub async fn run_scout(
-    cli_cluster_name: Option<String>,
-    cli_namespace: Option<String>,
-    cli_default_ips: Vec<String>,
-    cli_gateway_services: Vec<String>,
-    cli_default_zone: Option<String>,
-    cli_namespace_selector: Option<String>,
-    cli_remote: ScoutRemoteOverrides,
-) -> Result<()> {
-    let config = ScoutConfig::from_env(ScoutCli {
-        cluster_name: cli_cluster_name,
-        namespace: cli_namespace,
-        default_ips: cli_default_ips,
-        gateway_services: cli_gateway_services,
-        default_zone: cli_default_zone,
-        namespace_selector: cli_namespace_selector,
-        remote: cli_remote,
-    })?;
+/// malformed `--gateway-service` entry, a non-IPv4 default IP, a malformed
+/// allowlist or a default zone or IP outside it, an ambiguous remote
+/// transport) or if a Kubernetes client cannot be initialised.
+pub async fn run_scout(cli: ScoutCli) -> Result<()> {
+    let config = ScoutConfig::from_env(cli)?;
 
     let local_client = Client::try_default().await?;
 
@@ -2205,6 +2250,22 @@ pub async fn run_scout(
              production deployments; running without one is not recommended."
         );
     }
+    if let Some(zones) = &config.allowed_zones {
+        info!(allowed_zones = ?zones, "Publishing only into the allowed zones and their subzones");
+    } else {
+        warn!(
+            "No --allowed-zones / BINDY_SCOUT_ALLOWED_ZONES configured: any tenant who can \
+             annotate a source may name any zone Scout's DNSZone grants allow. Set it to the \
+             zones this cluster owns (ADR-0025)."
+        );
+    }
+    if config.allowed_ip_ranges.is_none() {
+        warn!(
+            "No --allowed-ip-ranges / BINDY_SCOUT_ALLOWED_IP_RANGES configured: the \
+             bindy.firestoned.io/ip annotation may point a name at any address. Set it to this \
+             cluster's load-balancer ranges (ADR-0025)."
+        );
+    }
 
     // The bindy cluster's DNSZones, read through the shared watch layer
     // (ADR-0009 §3) over the REMOTE client: in same-cluster mode that is the
@@ -2230,6 +2291,8 @@ pub async fn run_scout(
         gateway_services: config.gateway_services,
         default_zone: config.default_zone,
         namespace_selector: config.namespace_selector,
+        allowed_zones: config.allowed_zones,
+        allowed_ip_ranges: config.allowed_ip_ranges,
         zone_store: dnszone_reader,
     });
 

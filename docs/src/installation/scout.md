@@ -128,13 +128,15 @@ Scout requires one mandatory setting: the **logical cluster name** that is stamp
 | `BINDY_SCOUT_EXCLUDE_NAMESPACES` | — | — | Comma-separated list of additional namespaces to skip. |
 | `BINDY_SCOUT_DEFAULT_ZONE` | `--default-zone` | — | Default DNS zone when no `bindy.firestoned.io/zone` annotation is present. With `DEFAULT_IPS`, Ingresses and Services only need `scout-enabled: "true"`. |
 | `BINDY_SCOUT_DEFAULT_IPS` | `--default-ips` | — | Comma-separated default IP(s) used when no per-resource annotation or LB status IP is available. For shared-ingress topologies (e.g. Traefik). |
+| `BINDY_SCOUT_ALLOWED_ZONES` | `--allowed-zones` | unset (every zone) | Comma-separated zones Scout may publish into, each with its subzones. A source naming another zone publishes nothing. **Recommended** ([ADR-0025](https://github.com/firestoned/bindy/blob/main/docs/adr/0025-scout-records-bound-to-cluster-and-zones.md)). |
+| `BINDY_SCOUT_ALLOWED_IP_RANGES` | `--allowed-ip-ranges` | unset (every address) | Comma-separated IPv4 CIDR ranges every published address must fall in. **Recommended.** |
 | `BINDY_SCOUT_REMOTE_SECRET` | — | — | **(Multi-cluster)** Name of a Secret in the local cluster containing a `kubeconfig` key for the Queen Bee cluster. When set, Scout writes `ARecord` CRs and validates zones on the remote Bindy cluster. See [Multi-Cluster Setup](#multi-cluster-setup) below. |
 | `BINDY_SCOUT_REMOTE_SECRET_NAMESPACE` | — | Scout's own namespace | **(Multi-cluster)** Namespace of the `BINDY_SCOUT_REMOTE_SECRET`. Defaults to Scout's own namespace. |
 | `RUST_LOG` | — | `info` | Log level: `trace`, `debug`, `info`, `warn`, `error`. |
 | `RUST_LOG_FORMAT` | — | `text` | Log format: `text` or `json`. |
 
 !!! warning "Scout validates its configuration at startup"
-    Scout exits at startup, naming the setting, when a variable or flag above is set to an empty value, when a `--gateway-service` / `BINDY_SCOUT_GATEWAY_SERVICES` entry is malformed, or when a default IP is not IPv4. Unset a variable you do not need rather than setting it to `""`. See the [Scout guide](../guide/scout.md#configuration-reference).
+    Scout exits at startup, naming the setting, when a variable or flag above is set to an empty value, when a `--gateway-service` / `BINDY_SCOUT_GATEWAY_SERVICES` entry is malformed, when a default IP is not IPv4, or when an allowlist entry is malformed or the default zone or a default IP falls outside it. Unset a variable you do not need rather than setting it to `""`. See the [Scout guide](../guide/scout.md#configuration-reference).
 
 ---
 
@@ -149,6 +151,8 @@ In multi-cluster deployments, Scout runs on **workload clusters** and writes `AR
 bindy bootstrap mc \
   --service-account bindy-scout-remote \
   --namespace bindy-system \
+  --cluster-name cluster-a \
+  --allowed-zones cluster-a.example.com \
   --output scout-kubeconfig.yaml
 
 # Apply it to the child cluster, then delete it: it holds the SA token
@@ -160,6 +164,7 @@ This:
 1. Creates a `ServiceAccount` + `Role` + `RoleBinding` on the **Queen Bee cluster** (minimal: ARecord CRUD + DNSZone read)
 2. Generates a kubeconfig for that service account
 3. Writes a `bindy.firestoned.io/remote-kubeconfig` Secret to the `--output` file, readable only by you (mode `0600`). Without `--output` the file is `<service-account>-kubeconfig.yaml`. The Secret carries the token, so it is never printed to stdout
+4. With `--cluster-name` and `--allowed-zones`, registers the account in the `bindy-scout-sources` ConfigMap, so the `bindy-scout-source-binding` admission policy (install with `make admission-policies-install`) refuses any `ARecord` write by it outside that cluster name and those zones. See [Binding each cluster to its names and zones](../guide/scout.md#binding-each-cluster-to-its-names-and-zones)
 
 !!! tip "One SA per child cluster"
     Use a unique `--service-account` per child cluster for independent credential revocation:

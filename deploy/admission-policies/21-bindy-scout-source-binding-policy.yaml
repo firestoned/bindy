@@ -1,0 +1,138 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: Apache-2.0
+#
+# ValidatingAdmissionPolicy: bind a registered Scout ServiceAccount to the
+# cluster names and zones it may publish (ADR-0025, decision 4).
+#
+# Every edge cluster's Scout writes ARecords into the bindy cluster with its
+# own ServiceAccount (`bindy bootstrap mc`). Scout's own checks (zone grants,
+# --allowed-zones) run inside Scout, so a compromised Scout or a stolen token
+# could otherwise write any ARecord in the namespace: publish into another
+# cluster's zone, stamp another cluster's name, or delete its records.
+#
+# The registry is a ConfigMap named `bindy-scout-sources` in the namespace the
+# records live in (the binding's paramRef has no namespace, so the record's
+# namespace is used). For ServiceAccount <sa> of that namespace:
+#
+#   <sa>.clusters   comma-separated cluster names <sa> may stamp in
+#                   bindy.firestoned.io/source-cluster
+#   <sa>.zones      comma-separated zones <sa> may publish into; an entry
+#                   allows the zone and its subzones. Missing = none.
+#
+# `bindy bootstrap mc --cluster-name <c> --allowed-zones <z,...>` writes both.
+#
+# For a REGISTERED account (one with a `<sa>.clusters` key) every ARecord
+# CREATE, UPDATE and DELETE is denied unless:
+#   - the new object carries managed-by=scout, a source-cluster from
+#     <sa>.clusters and an allowed zone label (CREATE, UPDATE);
+#   - the old object carries a source-cluster from <sa>.clusters and an
+#     allowed zone label (UPDATE, DELETE), so an account cannot rewrite or
+#     delete another cluster's record.
+#
+# Unregistered principals (the operator, people, other controllers, and Scout
+# accounts minted before ADR-0025 until they are registered) are not affected.
+# A namespace with no registry ConfigMap is not affected
+# (parameterNotFoundAction: Allow on the binding).
+#
+# Requires Kubernetes 1.30+ (admissionregistration.k8s.io/v1 GA).
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: bindy-scout-source-binding
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/part-of: bindy
+    app.kubernetes.io/component: admission-policy
+spec:
+  failurePolicy: Fail
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap
+  matchConstraints:
+    resourceRules:
+      - apiGroups:   ["bindy.firestoned.io"]
+        apiVersions: ["v1beta1"]
+        operations:  ["CREATE", "UPDATE", "DELETE"]
+        resources:   ["arecords"]
+  matchConditions:
+    # Only ServiceAccounts of the record's own namespace can be registered.
+    - name: service-account-of-record-namespace
+      expression: |
+        request.userInfo.username.startsWith('system:serviceaccount:' + request.namespace + ':')
+  variables:
+    - name: serviceAccount
+      expression: |
+        request.userInfo.username.substring(size('system:serviceaccount:' + request.namespace + ':'))
+    - name: registry
+      expression: |
+        params.?data.orValue({})
+    - name: registered
+      expression: |
+        (variables.serviceAccount + '.clusters') in variables.registry
+    - name: clusters
+      expression: |
+        variables.registered
+          ? variables.registry[variables.serviceAccount + '.clusters'].split(',').map(c, c.trim()).filter(c, c != '')
+          : []
+    - name: zones
+      expression: |
+        variables.registered
+          ? variables.registry[?(variables.serviceAccount + '.zones')].orValue('').split(',').map(z, z.trim().lowerAscii()).filter(z, z != '')
+          : []
+    - name: newLabels
+      expression: |
+        object != null ? object.metadata.?labels.orValue({}) : {}
+    - name: oldLabels
+      expression: |
+        oldObject != null ? oldObject.metadata.?labels.orValue({}) : {}
+    - name: newCluster
+      expression: |
+        variables.newLabels[?'bindy.firestoned.io/source-cluster'].orValue('')
+    - name: oldCluster
+      expression: |
+        variables.oldLabels[?'bindy.firestoned.io/source-cluster'].orValue('')
+    - name: newZone
+      expression: |
+        variables.newLabels[?'bindy.firestoned.io/zone'].orValue('').lowerAscii()
+    - name: oldZone
+      expression: |
+        variables.oldLabels[?'bindy.firestoned.io/zone'].orValue('').lowerAscii()
+  validations:
+    - expression: |
+        !variables.registered || object == null ||
+        variables.newLabels[?'bindy.firestoned.io/managed-by'].orValue('') == 'scout'
+      messageExpression: |
+        "ServiceAccount '" + variables.serviceAccount + "' is a registered Scout account and may " +
+        "only write ARecords labelled bindy.firestoned.io/managed-by=scout (ADR-0025)."
+    - expression: |
+        !variables.registered || object == null ||
+        variables.newCluster in variables.clusters
+      messageExpression: |
+        "ServiceAccount '" + variables.serviceAccount + "' may only write ARecords for clusters [" +
+        variables.clusters.join(", ") + "], not '" + variables.newCluster +
+        "' (bindy.firestoned.io/source-cluster, ADR-0025)."
+    - expression: |
+        !variables.registered || object == null ||
+        variables.zones.exists(z, variables.newZone == z || variables.newZone.endsWith('.' + z))
+      messageExpression: |
+        "ServiceAccount '" + variables.serviceAccount + "' may only publish into zones [" +
+        variables.zones.join(", ") + "], not '" + variables.newZone +
+        "' (bindy.firestoned.io/zone, ADR-0025)."
+    - expression: |
+        !variables.registered || oldObject == null ||
+        variables.oldCluster in variables.clusters
+      messageExpression: |
+        "ServiceAccount '" + variables.serviceAccount + "' may not change or delete an ARecord of cluster '" +
+        variables.oldCluster + "' (it is registered for [" + variables.clusters.join(", ") + "], ADR-0025)."
+    - expression: |
+        !variables.registered || oldObject == null ||
+        variables.zones.exists(z, variables.oldZone == z || variables.oldZone.endsWith('.' + z))
+      messageExpression: |
+        "ServiceAccount '" + variables.serviceAccount + "' may not change or delete an ARecord in zone '" +
+        variables.oldZone + "' (it is registered for [" + variables.zones.join(", ") + "], ADR-0025)."
+  auditAnnotations:
+    - key: bindy-scout-source-binding-rejected
+      valueExpression: |
+        "Registered Scout ServiceAccount '" + variables.serviceAccount +
+        "' wrote outside its clusters or zones"

@@ -1,15 +1,41 @@
 # Threat Model - Bindy DNS Operator
 
-**Version:** 1.27
-**Last Updated:** 2026-10-14
+**Version:** 1.28
+**Last Updated:** 2026-10-19
 **Owner:** Security Team
 **Compliance:** SOX 404, PCI-DSS 6.4.1, Basel III Cyber Risk
 
-> Last full pass 2026-10-14, against ADR-0001 ... ADR-0024 (ADR-0006 as amended;
+> Last full pass 2026-10-19, against ADR-0001 ... ADR-0025 (ADR-0006 as amended;
 > ADR-0009 as amended 2026-10-05, fully implemented; ADR-0013 stages 1 to 3,
 > ADR-0014, ADR-0015, ADR-0016, ADR-0017 as amended and corrected 2026-10-07
 > and by ADR-0019, ADR-0018 as amended 2026-10-07, ADR-0019, ADR-0020,
-> ADR-0021, ADR-0022, ADR-0023 and ADR-0024 as amended implemented).
+> ADR-0021, ADR-0022, ADR-0023, ADR-0024 as amended and ADR-0025 decisions 1
+> to 6 implemented).
+>
+> **Revision note (v1.28):** Full pass for ADR-0025 (Scout records bound to
+> their cluster and zones). New threats **S4** (a Scout claims another
+> cluster's name) and **T5** (a tenant or a compromised Scout on one edge
+> cluster publishes into, rewrites or deletes another cluster's records). New
+> controls: Scout's `--allowed-zones` and `--allowed-ip-ranges` (**M-69**);
+> the `bindy-scout-sources` registry and the `bindy-scout-source-binding`
+> admission policy, which bind a registered ServiceAccount's ARecord writes,
+> old and new object, to its cluster names and zones (**M-70**, verified on
+> kind 1.36); a DNSZone takes a Scout record only for the zone in its label
+> (**M-71**); Scout skips a refused delete of another cluster's record
+> instead of retrying (**M-72**). Accepted risk **23** records what stays
+> open: duplicate names in a zone registered for two clusters, accounts not
+> yet registered, the registry's ConfigMap write surface, and no address
+> check in admission. One new asset (the registry) and no new RBAC grant on
+> any Scout role; `bindy bootstrap mc` additionally writes one ConfigMap with
+> a per-account field manager. Sections changed: components (5), assets,
+> Boundary 6, S4, T5, attack surface 7, Scenario 6, M-69 to M-72, accepted
+> risk 23, controls summary. Corrected on the way: the assets table still
+> gave the Scout token cluster-wide `secrets:get` and listed "all cluster
+> Secrets (via Scout)" as exposed, both closed by M-25 on 2026-07-19; the
+> controls summary counted 16 admission policies where there are 11 (10
+> before this change). Reviewed with no change: Boundaries 1 to 5, S1 to S3,
+> T1 to T4, R1, R2, I1 to I5, D1 to D6, E1 to E4, attack surfaces 1 to 6,
+> Scenarios 1 to 5.
 >
 > **Revision note (v1.27):** Full pass for ADR-0024 (every Secret operation
 > emits one structured audit event). bindy now records, on the tracing target
@@ -673,7 +699,10 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
    - On opt-in, auto-creates/deletes `ARecord` CRs (and prunes the records of removed
      hosts, of a Service that leaves `LoadBalancer` and of an old `--cluster-name`,
      M-59; each record is owned by one source kind and named from a hash of its
-     source, M-63) and adds/removes its own finalizer,
+     source, M-63) and adds/removes its own finalizer. When configured it
+     publishes only into `--allowed-zones` and only addresses inside
+     `--allowed-ip-ranges` (M-69), and it leaves a record of another cluster
+     alone when the bindy cluster refuses its delete (M-72),
      which requires cluster-wide `patch`/`update` on the watched resource types, not
      just `get`/`list`/`watch`
    - **Phase 2 (multi-cluster) mode**: reads a kubeconfig from one Kubernetes `Secret`
@@ -682,7 +711,12 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
      that mode. Until 2026-07-19 this was a cluster-wide `secrets: get`; see I4 and
      M-25. The endpoint mode (M-32) needs no Secret access at all. That read
      is a `bindy::audit` event (`purpose=scout-kubeconfig`, ADR-0024, M-67), as
-     are `bindy bootstrap`'s ServiceAccount token writes, reads and revokes
+     are `bindy bootstrap`'s ServiceAccount token writes, reads and revokes.
+   - **On the bindy cluster** each edge cluster's Scout writes as its own
+     ServiceAccount from `bindy bootstrap mc`, whose Role grants CRUD on
+     `arecords` and read on `dnszones` in one namespace. Registered in the
+     `bindy-scout-sources` ConfigMap, that account can only write records for
+     its own cluster names and zones (M-70, ADR-0025).
 
 ---
 
@@ -699,8 +733,9 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
 | **Operator Binary** | Signed container image with operator logic | Medium | **Critical** | High | Development Team |
 | **BIND9 Configuration** | named.conf, zone configs | Low | **Critical** | High | Platform Team |
 | **Kubernetes API Access** | ServiceAccount token for operator | **Critical** | **Critical** | **Critical** | Platform Team |
-| **Scout ServiceAccount Token** | Grants cluster-wide `secrets:get` + cluster-wide `patch`/`update` on Ingress/Service/Gateway-API routes | **Critical** | **Critical** | High | Platform Team |
-| **All Cluster Secrets (via Scout)** | Any Secret in any namespace, readable by the Scout ServiceAccount today | **Critical** | N/A | N/A | Security Team |
+| **Scout ServiceAccount Token** | Grants cluster-wide `patch`/`update` on Ingress/Service/Gateway-API routes on the edge cluster; Secret read only on the one Phase 2 kubeconfig Secret (M-25, since 2026-07-19) | High | **Critical** | High | Platform Team |
+| **Scout remote token (bindy cluster)** | The `bootstrap mc` ServiceAccount token an edge cluster's Scout writes with: CRUD on `arecords`, read on `dnszones`, in one namespace. Bounded to its cluster names and zones once registered (M-70) | High | **Critical** | High | Platform Team |
+| **Scout source registry** | `bindy-scout-sources` ConfigMap per records namespace (ADR-0025): which cluster names and zones each Scout ServiceAccount may publish. Editing it widens or narrows what an edge cluster may publish (accepted risk 23) | Low | **Critical** | Medium | Platform Team |
 | **CRD Schemas** | Define API contract for DNS management | Low | **Critical** | Medium | Development Team |
 | **Audit Logs** | Record of all DNS changes and access | High | **Critical** | High | Security Team |
 | **SBOM** | Software Bill of Materials for compliance | Low | **Critical** | Medium | Compliance Team |
@@ -891,8 +926,17 @@ act against a remote cluster.
   current (resolved) status.
 - A compromised Scout is **not** a path to DNS zone data or RNDC keys directly (it
   only creates `ARecord`s, gated by the same zone-authorization check as the main
-  operator). Its distinctive risk is the unscoped Secret read and cross-tenant
-  write surface above.
+  operator). Its distinctive risk is the cross-tenant write surface above.
+- **Cross-cluster record injection** (multi-cluster mode). The bindy cluster
+  trusts each edge cluster's token, and the zone grant names bare namespaces,
+  which repeat across clusters. Without ADR-0025 controls a tenant on one
+  edge cluster, or that cluster's compromised Scout, could publish into,
+  rewrite or delete another cluster's records; see
+  [S4](#s4-a-scout-claims-another-clusters-name) and
+  [T5](#t5-cross-cluster-dns-record-injection-through-scout). The bindy-side
+  half of this boundary is the `bindy-scout-source-binding` admission policy
+  (M-70) and the DNSZone zone-label rule (M-71), which hold whatever the edge
+  cluster does.
 
 ---
 
@@ -972,6 +1016,32 @@ act against a remote cluster.
 **Residual Risk:** LOW-MEDIUM (a stolen account with a valid signing key can
 land a change with no second person in the loop; signatures make it
 attributable, not prevented)
+
+---
+
+#### S4: A Scout Claims Another Cluster's Name
+
+**Threat:** A Scout stamps `bindy.firestoned.io/source-cluster` with another
+edge cluster's name, so its records pass as that cluster's, its stale-cluster
+cleanup treats that cluster's records as its own leftovers, and audit trails
+by label point at the wrong cluster.
+
+**Impact:** HIGH (enables T5)
+**Likelihood:** LOW (needs a compromised Scout, its token, or write access to
+its Deployment)
+
+**Mitigations:**
+- ✅ The cluster name of a **registered** account is bound at admission: a
+  record it creates or changes must carry one of the names in its
+  `<sa>.clusters` registry key, and a record it changes or deletes must
+  already carry one (M-70). The label is no longer self-declared for that
+  account.
+- ✅ One ServiceAccount per edge cluster is the default practice
+  (`bindy bootstrap mc --service-account`), so a name maps to one identity.
+- ⚠️ An account not yet registered is still self-declared (accepted risk 23).
+
+**Residual Risk:** LOW once every account is registered; HIGH for an
+unregistered account in a namespace shared with other clusters.
 
 ---
 
@@ -1152,6 +1222,61 @@ Gateway API route object belonging to a different team/namespace.
 reduces likelihood of an *opt-in-triggered* incident when configured, but does not
 change what a *token-holding* attacker could reach; no field-level admission control
 exists to constrain that further)
+
+---
+
+#### T5: Cross-Cluster DNS Record Injection Through Scout
+
+**Threat:** A tenant on edge cluster `foo` annotates a source with
+`bindy.firestoned.io/zone: bar.example.com`, or `foo`'s Scout is compromised,
+and records land in a zone that belongs to edge cluster `bar`: a new name, an
+existing name taken over (the records controller replaces the RRset with the
+last write, ADR-0021), an address pointed outside `foo`'s networks, or
+`bar`'s records rewritten or deleted.
+
+**Impact:** HIGH (authoritative DNS for another team's or cluster's names)
+**Likelihood:** MEDIUM without ADR-0025 controls (any tenant who can annotate
+a source, in a namespace whose name another cluster's zone grants); LOW with
+them
+
+**Attack Scenario:**
+1. `bar.example.com`'s DNSZone grants namespace `team-a` (for cluster `bar`)
+   in `bindy.firestoned.io/allow-zone-namespaces`
+2. A tenant creates namespace `team-a` on cluster `foo` and an Ingress for
+   `www.bar.example.com` annotated with that zone
+3. `foo`'s Scout finds the zone, finds the grant (namespaces are compared by
+   name only) and writes the record; or a stolen `foo` token writes any
+   record directly
+4. The record is served by `bar.example.com`
+
+**Mitigations:**
+- ✅ **Scout allowlists (M-69):** `--allowed-zones` refuses any zone outside
+  the cluster's own (and its subzones) before the zone lookup;
+  `--allowed-ip-ranges` refuses any address outside the cluster's ranges.
+  Stops steps 2 and 3 for tenants. Enforced in Scout, so not against a stolen
+  token.
+- ✅ **Registered accounts bound at admission (M-70):** the
+  `bindy-scout-source-binding` policy refuses a registered account's
+  create, update or delete of an ARecord outside its cluster names and zones,
+  on the old and new object. Stops step 3 even with a stolen token. Verified
+  on kind 1.36 (fixtures under `deploy/admission-policies/tests/`).
+- ✅ **Zone label is authoritative (M-71):** a DNSZone takes a Scout record
+  only when the record's zone label equals its `spec.zoneName`, so a selector
+  that matches `managed-by: scout` alone cannot hand another cluster's
+  records to the zone. Makes M-70's zone check the record's real zone.
+- ✅ **Refused deletes are final (M-72):** Scout leaves another cluster's
+  record when the API server refuses its delete, instead of retrying or
+  holding a source's finalizer.
+- ✅ Existing: the namespace grant (H1), host-in-zone check, and per-source
+  record ownership (M-63).
+- ⚠️ Two clusters registered for the same zone can still take over each
+  other's names (roadmap 27 item 2), and unregistered accounts are not bound
+  (accepted risk 23).
+- ❌ Addresses are not checked in admission (accepted risk 23).
+
+**Residual Risk:** LOW with every edge cluster's Scout on allowlists and its
+account registered with the policy installed; MEDIUM for zones registered to
+more than one cluster.
 
 ---
 
@@ -2029,6 +2154,10 @@ access at all** on the ClusterRole; see below.
 **Attack Vectors:**
 - Token theft from a compromised Scout pod (as with the main operator's Attack
   Surface #1, but the resulting read/write scope is cluster-wide by design here)
+- Theft of the remote token Scout writes to the bindy cluster with: bounded to
+  its cluster names and zones once registered (M-70, T5)
+- A tenant annotation naming another cluster's zone or an outside address
+  (T5): refused by M-69 when the allowlists are set
 - Any tenant setting the `bindy.firestoned.io/scout-enabled` annotation on their own
   resource can cause Scout to write an `ARecord`; this is expected/intended
   behavior, not a vulnerability, but means Scout's write path is reachable by any
@@ -2042,6 +2171,9 @@ access at all** on the ClusterRole; see below.
 - Same pod-hardening posture as the main operator (non-root, read-only rootfs, seccomp)
 - Zone-authorization check gates `ARecord` creation (same-namespace or explicit
   allow-list, preventing cross-tenant DNS hijack via Scout)
+- ✅ Zone and address allowlists per edge cluster (M-69), registered accounts
+  bound to their cluster names and zones at admission on the bindy cluster
+  (M-70), zone label authoritative for Scout records (M-71); see T5
 - ✅ The `bindy.firestoned.io/record-name` override is validated (P2-7) for every
   source kind; the TCPRoute path skipped it until 2026-10-11 (M-59)
 - ✅ Secret access scoped to a namespaced, `resourceNames`-restricted Role (M-25, fixed)
@@ -2236,6 +2368,9 @@ MEDIUM-severity path, kept as the current scope of this scenario.
 **Mitigations:**
 - Same pod-hardening posture as the main operator (non-root, read-only rootfs, seccomp)
 - Zone-authorization check limits what DNS records Scout can actually create
+- ✅ **Records bound to the cluster and its zones (M-69 to M-71):** a
+  compromised Scout with a registered remote token cannot publish into,
+  rewrite or delete another cluster's records on the bindy cluster (T5)
 - ✅ **Secret RBAC scoped (M-25, fixed 2026-07-19):** closes the confidentiality half
   of this scenario entirely (formerly steps 2–3 above).
 - ✅ **Namespace whitelisting (M-30, opt-in):** when `--namespace-selector` is
@@ -2308,6 +2443,10 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-66 | **RNDC `secretRef` names a `bindy-` Secret** (2026-10-14, ADR-0023 decision 6): every `rndcKey.secretRef.name` and deprecated `rndcSecretRef.name`, at every level a CRD carries one, must start with `bindy-`, the H2 allow-list prefix (bug-021). Closes the confused deputy through which a CR author could have the operator place entries of any Secret of the namespace into a Secret the operand pods mount. Enforced at admission and again by the reconciler where the policy is not installed; no RBAC grant changed | E2 (operator Secret read as a confused deputy), I1 | ✅ `deploy/admission-policies/07-bindy-pod-shape-policy.yaml` (rule 5; fixtures `accept-bind9instance-rndc-bindy-secret.yaml`, `reject-bind9instance-rndc-foreign-secret.yaml`, `reject-bind9cluster-rndc-foreign-secret.yaml`), `crates/bindy-bind9/src/safe_volume.rs` (`validate_rndc_key_secret_name`), `validate_rndc_secret_ref`; tests `safe_volume_tests.rs`, `resources_tests.rs`, `tests/e2e/rndc_secretref_test.sh` |
 | M-67 | **Secret audit trail** (2026-10-14, ADR-0024 as amended): every Secret create, replace, patch, delete or read of key material bindy performs (instance controller, cluster controller, the `bindy-bind9` key loader and TLS client, Scout, bootstrap) emits one event on the tracing target `bindy::audit` with `kind=audit`, operation, outcome, namespace, name, purpose, reason, actor and owning object, from closed enums; never key material, a token, or an API error message (a failure is its status code and reason only). Every Secret access goes through `SecretApi`, whose data methods record and whose metadata method does not; a test fails the build when other non-test code names `Api<Secret>` (a text scan: an `Api` whose type is only inferred escapes it, so review still checks new calls). `bindy::audit=info` is added to any `RUST_LOG` that does not name it, and each event increments `bindy_firestoned_io_secret_operations_total{operation,purpose,outcome}` | R1, R2 (Secret access attributable with its reason, joined to the API server audit log), Scenario 4 | ✅ `crates/bindy-controller-sdk/src/audit.rs` (`SecretApi`, `SecretAudit`, `audited`, `kube_error_summary`, `audit_log_filter`), `crates/bindy-controller-sdk/src/metrics.rs` (`SECRET_OPERATIONS_TOTAL`), `crates/bindy/src/main.rs` (`initialize_logging`); tests `audit_tests.rs` (incl. `no_code_outside_the_audit_module_builds_a_secret_api`), `tests/e2e/rndc_secretref_test.sh` |
 | M-68 | **Least-data Secret access** (2026-10-14, ADR-0024 decision 3 as amended): the instance controller's Secret watch is a metadata watch (`Api<PartialObjectMeta<Secret>>`), so the operator no longer receives the data of every Secret in its namespaces; the drift check, rotation status and the cluster controller's existence check read metadata only; the ADR-0023 mirror records its source's `resourceVersion` (`bindy.firestoned.io/rndc-source-version`), so staleness is a metadata comparison and a source's key is read only when it changed | I1 (key material in operator memory, heap dumps and logs), R2 (every recorded `read` is a real key access) | ✅ `crates/bindy-controller-instance/src/watch.rs` (Secret metadata watch, `instances_for_secret`), `crates/bindy-controller-instance/src/bind9instance/resources.rs` (`secret_ref_mirror_stale`, `mirror_secret_ref_key`), `crates/bindy-controller-instance/src/bind9instance/mod.rs` (drift check), `crates/bindy-controller-cluster/src/bind9cluster/instances.rs`; tests `resources_tests.rs`, `watch_tests.rs::secret_wake_tests` |
+| M-69 | **Scout zone and address allowlists** (2026-10-19, ADR-0025 decisions 1 and 2): `--allowed-zones` / `BINDY_SCOUT_ALLOWED_ZONES` (a zone and its subzones; `*` and non-DNS entries fail startup; `--default-zone` must be allowed) refuses a source's zone before the DNSZone lookup and publishes nothing, keeping earlier records; `--allowed-ip-ranges` / `BINDY_SCOUT_ALLOWED_IP_RANGES` (IPv4 CIDRs; default IPs must be inside) refuses a source with any annotated, discovered or default address outside and retries; unset keeps the old behavior with a startup warning; `bindy bootstrap scout` templates both | T5 (tenant names another cluster's zone or an outside address) | ✅ `crates/bindy-scout/src/guardrails.rs` (`parse_allowed_zones`, `zone_is_allowed`, `parse_allowed_ip_ranges`, `first_ip_outside`), `crates/bindy-scout/src/pipeline.rs` (`publish`), `crates/bindy-scout/src/scout.rs` (`ScoutConfig::from_lookup`), `crates/bindy-bootstrap/src/bootstrap.rs` (`build_scout_deployment`); tests `guardrails_tests.rs` (19), `pipeline_tests.rs`, `scout_tests.rs`, `bootstrap_tests.rs` |
+| M-70 | **Registered Scout accounts bound to their clusters and zones at admission** (2026-10-19, ADR-0025 decisions 3 and 4): `bindy bootstrap mc --cluster-name --allowed-zones` writes `<sa>.clusters` and `<sa>.zones` into the `bindy-scout-sources` ConfigMap of the records namespace under a per-account field manager (`--revoke` removes them); the `bindy-scout-source-binding` ValidatingAdmissionPolicy (paramRef without namespace, `parameterNotFoundAction: Allow`) denies a registered ServiceAccount's ARecord CREATE, UPDATE or DELETE unless the new object carries `managed-by: scout`, a registered cluster and an allowed zone, and the old object a registered cluster and an allowed zone; unregistered principals are not matched. Verified on kind 1.36: type checking clean, refused writes answer 422 with the policy message, server-side apply denied the same way | S4, T5 (stolen or compromised Scout token) | ✅ `deploy/admission-policies/21-bindy-scout-source-binding-policy.yaml`, `22-bindy-scout-source-binding-binding.yaml`, fixtures `tests/accept-arecord-scout-registered.yaml`, `tests/reject-arecord-scout-{foreign-zone,foreign-cluster,suffix-zone,unmanaged}.yaml`, `tests/setup/scout-source-binding.yaml`; `crates/bindy-bootstrap/src/bootstrap.rs` (`build_scout_source_registry`, `scout_source_field_manager`, `unregister_scout_source`) |
+| M-71 | **A DNSZone takes a Scout record only for its own zone** (2026-10-19, ADR-0025 decision 5): a record labelled `bindy.firestoned.io/managed-by: scout` that a `recordsFrom` selector matches is selected only when its `bindy.firestoned.io/zone` label equals the zone's `spec.zoneName` (case and trailing dot ignored); otherwise skipped with a warning | T5 (a selector that omits the zone label takes other clusters' records) | ✅ `crates/bindy-controller-zone/src/dnszone/discovery.rs` (`scout_record_belongs_to_zone`, `discover_records_generic`); tests `discovery_tests.rs` (5) |
+| M-72 | **Scout treats a refused delete of another cluster's record as final** (2026-10-19, ADR-0025 decision 6): on handover and on source removal, a 403 or 422 for a record left under another cluster name is logged and skipped, so a source's finalizer is not held and nothing is retried; the source's own records still fail the reconcile on any error | Availability under M-70 (a refused cleanup holding a tenant's Ingress in `Terminating`) | ✅ `crates/bindy-scout/src/pipeline.rs` (`delete_other_cluster_arecord`), `crates/bindy-controller-sdk/src/kube_errors.rs` (`is_refused`); tests `pipeline_tests.rs` (refused-delete cases), `kube_errors_tests.rs` |
 | M-25 | **Scout Secret RBAC scoped** (fixed 2026-07-19, same day as this finding's discovery): removed the cluster-wide `secrets: get` `PolicyRule` from the `bindy-scout` `ClusterRole` entirely. Replaced with a namespaced, `resourceNames`-restricted Role (`bindy-scout-secrets-reader`) scoped to exactly the one Phase 2 kubeconfig Secret, applied only when `--remote-secret` is configured. Same-cluster-only deployments (the default) now get zero Secret access. See I4/E4/Scenario 6 for the full before/after. | I4, E4, T4 (Secret-read component), Scenario 6 | ✅ RBAC: **was the highest-priority open item in v1.1; closed same-day** |
 
 ---
@@ -2403,6 +2542,8 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 
 22. **Secret audit events are only as durable as the log pipeline, and can be turned off (ADR-0024)** - bindy writes its `bindy::audit` events to stdout with every other log line. They survive only if the cluster's log pipeline collects them and routes them (`fields.kind == "audit"`) to retention-controlled, tamper-evident storage; bindy does not ship or sign them itself, and a node lost before collection loses its buffered lines. An operator can also set `RUST_LOG=...,bindy::audit=off`: that is visible in the Deployment spec and in its GitOps history, but nothing forbids it today. The API server audit log still records the Secret requests themselves in either case. *Revisit when* the operator must guarantee delivery of its own audit events (then a dedicated sink, or Kubernetes Events, rather than stdout), or when disabling them must be prevented (then an admission policy rejecting `bindy::audit=off` in the operator Deployment's `RUST_LOG`).
 
+23. **Scout source binding has four gaps (ADR-0025)** - (a) Two edge clusters registered for the same zone may publish the same name, and the records controller keeps whichever record wrote last (ADR-0021), so either can take over the other's name; the registry makes that sharing an administrator's choice, and roadmap 27 item 2 tracks surfacing the conflict. (b) A Scout ServiceAccount minted before ADR-0025, or by hand, is not constrained until it has a `<sa>.clusters` key, and a namespace without a `bindy-scout-sources` ConfigMap is not constrained at all (`parameterNotFoundAction: Allow`), so existing installs keep their previous exposure until each account is registered; `bindy bootstrap mc` warns when it creates an unregistered account. (c) The registry is an ordinary ConfigMap: anyone who can write ConfigMaps in the records namespace can widen an account's clusters or zones. Scout's own Role cannot, and that namespace is normally platform-owned. (d) Addresses are checked only inside Scout (M-69), not in admission, so a stolen remote token can still point a name in its own zones at any address. Accepted: (a) and (c) are configuration the platform team controls; (b) keeps upgrades non-breaking and is closed by re-running `bootstrap mc`; (d) is bounded to the account's own zones. *Revisit when* roadmap 27 item 2 lands (a), every supported install has registered its accounts and the binding can fail closed (b), a ConfigMap-integrity style policy is wanted for the registry (c), or the supported Kubernetes floor guarantees CEL's IP and CIDR library (d).
+
 ---
 
 ## Security Architecture
@@ -2468,7 +2609,7 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 
 | Control Category | Implemented | Planned | Residual Risk |
 |------------------|-------------|---------|---------------|
-| **Access Control** | RBAC least privilege (main operator; `pods/status` `get`/`patch` only for the zones-loaded gate, test-pinned, ADR-0017), signed commits, B-5 Secret RBAC split, namespace-scoped operator mode (opt-in), 16 `ValidatingAdmissionPolicy` policies, Scout namespace whitelisting (opt-in, M-30), **Scout Secret RBAC scoped (M-25, fixed 2026-07-19)** | Field-level admission for Scout patches (M-28), Scout egress NetworkPolicy (M-27) | MEDIUM: driven by Scout's remaining cluster-wide `patch`/`update` on Ingress/Service/route (T4); the formerly-HIGH Secret-read risk (I4/E4) is resolved |
+| **Access Control** | RBAC least privilege (main operator; `pods/status` `get`/`patch` only for the zones-loaded gate, test-pinned, ADR-0017), signed commits, B-5 Secret RBAC split, namespace-scoped operator mode (opt-in), 11 `ValidatingAdmissionPolicy` policies, Scout namespace whitelisting (opt-in, M-30), **Scout Secret RBAC scoped (M-25, fixed 2026-07-19)**, Scout records bound to their cluster and zones (M-69 to M-72, ADR-0025) | Field-level admission for Scout patches (M-28), Scout egress NetworkPolicy (M-27) | MEDIUM: driven by Scout's remaining cluster-wide `patch`/`update` on Ingress/Service/route (T4); the formerly-HIGH Secret-read risk (I4/E4) is resolved |
 | **Data Protection** | Secrets encrypted, AXFR restricted, DNSSEC zone signing (opt-in, M-14/ADR-0006), RNDC key read from the mounted Secret only (M-58), which is always the operator-owned `{instance}-rndc-key`, a `secretRef` key mirrored into it from a `bindy-` Secret (M-65, M-66), bindcar TLS CA bundle read only from the instance's namespace (M-60) | TSIG for AXFR; DNSSEC-by-default | MEDIUM |
 | **Supply Chain** | Signed commits/images, SLSA Build L3 provenance for all release artifacts (M-33), NTIA-gated SBOM attestations (M-34), anchored signer identity (M-35), gated per-release crypto inventory (M-39), `--locked` release builds, vuln scanning | Required approving reviews (M-36); operand image digest pinning (M-15); reproducibility check (M-37); hybrid PQ key exchange (M-40); revisit Dependabot auto-merge human-review gap (M-29) | LOW-MEDIUM (no required review on `main`, see S3; automated auto-merge removed a manual checkpoint, see E3; classical key exchange is HNDL-exposed, see accepted risk 8) |
 | **Monitoring** | Kubernetes audit logs, vuln scanning, Secret audit trail with `secret_operations_total` (M-67), least-data Secret access (M-68) | Audit retention policy (M-11) | MEDIUM (event durability depends on the log pipeline, accepted risk 22) |

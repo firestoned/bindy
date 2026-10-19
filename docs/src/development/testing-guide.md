@@ -282,16 +282,33 @@ After both clusters are running, use `bindy bootstrap mc` to generate credential
 # Switch to the Queen Bee cluster
 kubectl config use-context kind-bindy-test
 
-# Generate credentials and pipe directly to the Scout cluster
-bindy bootstrap mc -o scout-kubeconfig.yaml
+# Generate credentials, registered for the Scout cluster's name and zone
+# (deploy/scout/deployment.yaml names it test-cluster.example.com)
+bindy bootstrap mc -o scout-kubeconfig.yaml \
+  --cluster-name test-cluster.example.com \
+  --allowed-zones test-cluster.example.com
 kubectl --context kind-bindy-scout apply -f scout-kubeconfig.yaml
 rm scout-kubeconfig.yaml
 
-# Then patch the Scout Deployment to enable remote mode
+# Bind registered accounts on the Queen Bee cluster (ADR-0025)
+make admission-policies-install
+
+# Then patch the Scout Deployment to enable remote mode and its allowlists
 kubectl --context kind-bindy-scout set env deployment/bindy-scout \
   BINDY_SCOUT_REMOTE_SECRET=bindy-scout-remote-kubeconfig \
+  BINDY_SCOUT_ALLOWED_ZONES=test-cluster.example.com \
+  BINDY_SCOUT_ALLOWED_IP_RANGES=0.0.0.0/0 \
   -n bindy-system
 ```
+
+`0.0.0.0/0` keeps every kind address publishable; narrow it to test the
+address check. To test the bindy-side binding without a second Scout, write
+an `ARecord` as the registered account for another zone and expect a denial:
+`kubectl apply --dry-run=server --as=system:serviceaccount:bindy-system:bindy-scout-remote -f deploy/admission-policies/tests/reject-arecord-scout-foreign-zone.yaml`
+(the fixture's labels name `edge-foo`, so it is refused for the cluster name
+as well as the zone). The policy's own fixtures, including the ones that
+impersonate a registered account, run with `make admission-policies-test`,
+which applies `deploy/admission-policies/tests/setup/` first.
 
 See the [Scout Multi-Cluster Guide](../guide/scout.md#multi-cluster-mode) for the full architecture and configuration reference.
 

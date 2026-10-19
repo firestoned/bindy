@@ -109,11 +109,23 @@ Option A is only as good as the scoping around it:
    namespace: `create`/`update`/`delete` on `arecords`, `get`/`list` on
    `dnszones`. Audit logs then attribute every record write to a specific
    drone, and one drone can be revoked without touching the fleet.
-3. **Admission policy on the Bindy cluster.** Enforce that tenant-a's Scout
-   identity can only write records in tenant-a's zones. This contains the
-   residual "compromised Scout hijacks DNS" scenario to the tenant that was
-   compromised.
-4. **Network egress.** Allow each drone to reach only the Bindy cluster's API
+3. **Admission policy on the Bindy cluster.** Register each drone's identity
+   for its cluster name and zones with
+   `bindy bootstrap mc --service-account <drone-sa> --cluster-name <drone> --allowed-zones <drone zones>`,
+   and install the `bindy-scout-source-binding` policy
+   (`deploy/admission-policies/21-*`, `22-*`). The bindy cluster then refuses
+   any `ARecord` write by that identity outside its cluster name and zones,
+   including updates and deletes of other drones' records, so a compromised
+   Scout or a stolen token can only touch its own drone's DNS. See
+   [Binding each cluster to its names and zones](scout.md#binding-each-cluster-to-its-names-and-zones)
+   ([ADR-0025](https://github.com/firestoned/bindy/blob/main/docs/adr/0025-scout-records-bound-to-cluster-and-zones.md)).
+4. **Publishing limits on the drone.** Set `--allowed-zones` and
+   `--allowed-ip-ranges` on each drone's Scout to the same zones and the
+   drone's load-balancer ranges. Tenant annotations naming another drone's
+   zone, or an outside address, are then refused on the drone with a clear
+   log line, before anything reaches the Bindy cluster. See
+   [Publishing limits](scout.md#publishing-limits-for-this-cluster-allowed-zones-allowed-ip-ranges).
+5. **Network egress.** Allow each drone to reach only the Bindy cluster's API
    endpoint — the sole new network path this topology introduces.
 
 ## Rolling Scout out to the fleet
@@ -124,10 +136,17 @@ Ship Scout to drones as part of the cluster add-on stack rather than by hand:
   Phase 2 Secret) as a **ServiceTemplate**, and target it at drones with a
   **MultiClusterService** so every new drone receives Scout automatically at
   provisioning time.
-- The per-drone Bindy-side credential (ServiceAccount + Role + zone admission
-  entry) is created on the Bindy cluster when the tenant/drone is onboarded,
+- The per-drone Bindy-side credential (ServiceAccount + Role + its entry in
+  the `bindy-scout-sources` registry) is created on the Bindy cluster when the
+  tenant/drone is onboarded, with
+  `bindy bootstrap mc --service-account <drone-sa> --cluster-name <drone> --allowed-zones <drone zones>`,
   and its kubeconfig is delivered to the drone as the
-  `BINDY_SCOUT_REMOTE_SECRET` Secret.
+  `BINDY_SCOUT_REMOTE_SECRET` Secret. Offboarding is
+  `bindy bootstrap mc --revoke --service-account <drone-sa>`, which also
+  removes the registry entry.
+- Template `BINDY_SCOUT_ALLOWED_ZONES` and `BINDY_SCOUT_ALLOWED_IP_RANGES`
+  per drone in the ServiceTemplate, from the same onboarding data as the
+  registry entry, so the drone-side and Bindy-side limits agree.
 - The queenship's own Scout is an ordinary [same-cluster or Phase 2
   deployment](scout.md#multi-cluster-mode) with no special privileges.
 

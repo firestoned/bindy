@@ -26,8 +26,11 @@ Applies Kubernetes resources via server-side apply. Every operation is **idempot
 bindy bootstrap <SUBCOMMAND> [OPTIONS]
 
 Subcommands:
-  operator    Apply namespace, CRDs, RBAC, and the operator Deployment
-  scout       Apply namespace, CRDs, scout RBAC, and the scout Deployment
+  operator        Apply namespace, CRDs, RBAC, and the operator Deployment
+  scout           Apply namespace, CRDs, scout RBAC, and the scout Deployment
+  multi-cluster   (alias: mc) Create a child cluster's ServiceAccount on the bindy
+                  cluster, optionally register it for its cluster names and zones,
+                  and write its kubeconfig Secret to a private file
 ```
 
 ### `bindy bootstrap operator`
@@ -101,10 +104,20 @@ bindy bootstrap scout [OPTIONS]
 
 | Flag | Default | Description |
 |---|---|---|
-| `--namespace <NS>` | `bindy-system` | Namespace to install Scout into. |
+| `--namespace <NS>` | `bindy-system` | Namespace to install Scout into. Scout also writes its `ARecord`s there (`BINDY_SCOUT_NAMESPACE`). |
 | `--version <TAG>` | Binary version (e.g. `v0.5.0`) | Image tag for the Scout Deployment. |
-| `--registry <REGISTRY>` | — | Override the container registry. See [Air-gapped environments](#air-gapped-environments). |
-| `--dry-run` | — | Print all resources as YAML without connecting to the cluster. |
+| `--registry <REGISTRY>` | unset | Override the container registry. See [Air-gapped environments](#air-gapped-environments). |
+| `--dry-run` | off | Print all resources as YAML without connecting to the cluster. |
+| `--cluster-name <NAME>` | `default` | Logical name of this cluster, passed to Scout as `--cluster-name` and stamped on every `ARecord` as `bindy.firestoned.io/source-cluster`. Use a unique name per cluster. |
+| `--default-ips <IP[,IP]>` | unset | Passed to Scout as `--default-ips`. |
+| `--default-zone <ZONE>` | unset | Passed to Scout as `--default-zone`. |
+| `--remote-secret <NAME>` | unset | Name of the kubeconfig Secret from `bindy bootstrap mc`; sets `BINDY_SCOUT_REMOTE_SECRET` so Scout writes to the bindy cluster. |
+| `--allowed-zones <ZONE[,ZONE]>` | unset | Passed to Scout as `--allowed-zones`: the zones this cluster may publish into, each with its subzones. **Recommended** ([ADR-0025](https://github.com/firestoned/bindy/blob/main/docs/adr/0025-scout-records-bound-to-cluster-and-zones.md)). |
+| `--allowed-ip-ranges <CIDR[,CIDR]>` | unset | Passed to Scout as `--allowed-ip-ranges`: the IPv4 ranges every published address must fall in. **Recommended.** |
+
+The allowlist values are checked by Scout when it starts, not by `bootstrap`:
+a malformed entry, or a `--default-zone` / `--default-ips` outside them,
+makes the Scout pod exit with an error naming the setting.
 
 #### Examples
 
@@ -117,10 +130,86 @@ bindy bootstrap scout --dry-run
 
 # Air-gapped: pull from a private registry mirror
 bindy bootstrap scout --registry harbor.corp.internal/bindy-mirror
+
+# A child cluster writing to a bindy cluster, limited to its own zone and
+# load-balancer range (the Secret comes from `bindy bootstrap mc`)
+bindy bootstrap scout \
+  --cluster-name cluster-a \
+  --remote-secret bindy-scout-cluster-a-kubeconfig \
+  --allowed-zones cluster-a.example.com \
+  --allowed-ip-ranges 10.20.0.0/24
 ```
 
 !!! note "CRDs are always included"
     Both `bootstrap operator` and `bootstrap scout` apply the full set of CRDs. Running both commands on the same cluster is safe — the CRDs are applied via server-side apply and remain unchanged on subsequent runs.
+
+### `bindy bootstrap multi-cluster` (alias `mc`)
+
+Run **against the bindy (Queen Bee) cluster**, once per child cluster. It
+creates the ServiceAccount a child cluster's Scout writes with, and writes
+that account's kubeconfig as a Secret manifest to a private file for you to
+apply on the child cluster.
+
+Applies, in `--namespace` (all named after `--service-account`):
+
+1. `ServiceAccount/<sa>`
+2. `Role/<sa>`: `arecords` get, list, watch, create, update, patch, delete; `dnszones` get, list, watch
+3. `RoleBinding/<sa>`
+4. With `--cluster-name` and `--allowed-zones`: the keys `<sa>.clusters` and `<sa>.zones` in `ConfigMap/bindy-scout-sources`, under the field manager `bindy-bootstrap-mc.<sa>` (other accounts' keys are left alone)
+5. `Secret/<sa>-token` (a `kubernetes.io/service-account-token` Secret), then waits for the token
+
+Then writes `Secret/<sa>-kubeconfig` (type `bindy.firestoned.io/remote-kubeconfig`)
+to `--output`, mode `0600`. It is never printed to stdout.
+
+```bash
+bindy bootstrap mc [OPTIONS]
+```
+
+#### Options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--namespace <NS>` | `bindy-system` | Namespace on the bindy cluster for the account, and where its Scout writes `ARecord`s. |
+| `--service-account <NAME>` | `bindy-scout-remote` | Account to create. Use one per child cluster, so each can be revoked and registered on its own. |
+| `--cluster-name <NAME[,NAME]>` | unset | Cluster name(s) this account's Scout may stamp in `source-cluster` (its own `--cluster-name`). Requires `--allowed-zones`. List a second name while renaming a cluster. |
+| `--allowed-zones <ZONE[,ZONE]>` | unset | Zones this account may publish into, each with its subzones. Requires `--cluster-name`. Lowercased, trailing dot dropped. |
+| `--server <URL>` | the KUBECONFIG server | API server URL written into the kubeconfig, when the child cluster reaches the bindy cluster at another address. |
+| `-o, --output <PATH>` | `<sa>-kubeconfig.yaml` | Where to write the Secret manifest (mode `0600`; `-` is refused). |
+| `--insecure-skip-tls-verify` | off | Allow a kubeconfig without a CA bundle. Local testing only. |
+| `--revoke` (alias `--delete`) | off | Delete the account's RoleBinding, Role, Secrets and ServiceAccount, and remove its keys from `bindy-scout-sources`. Safe to repeat. |
+
+With `--cluster-name` and `--allowed-zones` the account is **registered**:
+the `bindy-scout-source-binding` admission policy then refuses any `ARecord`
+create, update or delete it makes outside those cluster names and zones (see
+[Binding each cluster to its names and zones](../guide/scout.md#binding-each-cluster-to-its-names-and-zones)).
+Without them the command warns that the account is unconstrained.
+
+#### Examples
+
+```bash
+# A registered account for child cluster cluster-a
+bindy bootstrap mc \
+  --service-account bindy-scout-cluster-a \
+  --cluster-name cluster-a \
+  --allowed-zones cluster-a.example.com \
+  -o cluster-a.yaml
+kubectl --context=cluster-a apply -f cluster-a.yaml && rm cluster-a.yaml
+
+# Register an existing account without changing anything else. It re-applies
+# the same ServiceAccount and RBAC and writes the kubeconfig file again (same
+# token); the child cluster's Secret does not need re-applying.
+bindy bootstrap mc --service-account bindy-scout-cluster-a \
+  --cluster-name cluster-a --allowed-zones cluster-a.example.com -o register.yaml
+rm register.yaml
+
+# Renaming cluster-a to cluster-a2: allow both names during the switch
+bindy bootstrap mc --service-account bindy-scout-cluster-a \
+  --cluster-name cluster-a2,cluster-a --allowed-zones cluster-a.example.com -o register.yaml
+rm register.yaml
+
+# Remove the account and its registration
+bindy bootstrap mc --revoke --service-account bindy-scout-cluster-a
+```
 
 ### Air-gapped environments
 
@@ -230,7 +319,7 @@ bindy run
 
 ## `bindy scout`
 
-Starts the Scout controller. Watches `Ingress` and `LoadBalancer Service` resources cluster-wide and creates `ARecord` CRs for annotated resources. See [Bindy Scout](../guide/scout.md) for the full conceptual guide.
+Starts the Scout controller. Watches `Ingress`, `LoadBalancer` `Service`, and Gateway API `HTTPRoute` / `TLSRoute` / `TCPRoute` resources cluster-wide and creates `ARecord` CRs for opted-in resources. See [Bindy Scout](../guide/scout.md) for the full conceptual guide.
 
 ```bash
 bindy scout [OPTIONS]
@@ -240,8 +329,17 @@ bindy scout [OPTIONS]
 
 | Flag | Env var | Default | Description |
 |---|---|---|---|
-| `--cluster-name <NAME>` | `BINDY_SCOUT_CLUSTER_NAME` | — | **Required.** Logical name of this cluster, stamped on all created `ARecord` labels as `bindy.firestoned.io/source-cluster`. Used to distinguish records from multiple workload clusters writing to the same bindy namespace. |
+| `--cluster-name <NAME>` | `BINDY_SCOUT_CLUSTER_NAME` | none | **Required.** Logical name of this cluster, stamped on all created `ARecord` labels as `bindy.firestoned.io/source-cluster`. Used to distinguish records from multiple workload clusters writing to the same bindy namespace. |
 | `--namespace <NS>` | `BINDY_SCOUT_NAMESPACE` | `bindy-system` | Namespace where `ARecord` CRs are created. |
+| `--default-zone <ZONE>` | `BINDY_SCOUT_DEFAULT_ZONE` | unset | Zone used when a source has no `bindy.firestoned.io/zone` annotation. Must be inside `--allowed-zones` when that is set. |
+| `--default-ips <IP[,IP]>` | `BINDY_SCOUT_DEFAULT_IPS` | unset | Addresses used when a source has no IP annotation and none is discovered. Must be inside `--allowed-ip-ranges` when that is set. |
+| `--gateway-service <class=target>` | `BINDY_SCOUT_GATEWAY_SERVICES` | unset | Repeatable gatewayClass to LoadBalancer Service map for route IP resolution. |
+| `--namespace-selector <SELECTOR>` | `BINDY_SCOUT_NAMESPACE_SELECTOR` | unset (every namespace) | Label selector a source's namespace must match. Recommended. |
+| `--allowed-zones <ZONE[,ZONE]>` | `BINDY_SCOUT_ALLOWED_ZONES` | unset (every zone) | Zones Scout may publish into, each with its subzones. A source naming another zone publishes nothing. `*` is refused. Recommended ([ADR-0025](https://github.com/firestoned/bindy/blob/main/docs/adr/0025-scout-records-bound-to-cluster-and-zones.md)). |
+| `--allowed-ip-ranges <CIDR[,CIDR]>` | `BINDY_SCOUT_ALLOWED_IP_RANGES` | unset (every address) | IPv4 ranges (a bare address means `/32`) every published address must fall in. A source with any address outside publishes nothing. Recommended. |
+| `--remote-endpoint <URL>` | `BINDY_SCOUT_REMOTE_ENDPOINT` | unset | Bindy cluster API URL for the endpoint remote mode (ADR-0008). Requires `--remote-token-file`. |
+| `--remote-token-file <PATH>` | `BINDY_SCOUT_REMOTE_TOKEN_FILE` | unset | Bearer-token file minted by the bindy cluster. |
+| `--remote-ca-file <PATH>` | `BINDY_SCOUT_REMOTE_CA_FILE` | unset (webpki roots) | CA bundle for the remote endpoint. |
 
 !!! note "CLI takes precedence"
     When both a CLI flag and the corresponding environment variable are set, the **CLI flag wins**.
@@ -252,6 +350,8 @@ bindy scout [OPTIONS]
 |---|---|---|
 | `POD_NAMESPACE` | `default` | Scout's own namespace. Always excluded from Ingress watching. Set via Kubernetes downward API. |
 | `BINDY_SCOUT_EXCLUDE_NAMESPACES` | — | Comma-separated list of namespaces to skip in addition to `POD_NAMESPACE`. |
+| `BINDY_SCOUT_REMOTE_SECRET` | unset | Name of the kubeconfig Secret (from `bindy bootstrap mc`) for the kubeconfig remote mode. |
+| `BINDY_SCOUT_REMOTE_SECRET_NAMESPACE` | `POD_NAMESPACE` | Namespace of that Secret. |
 | `RUST_LOG` | `info` | Log level filter. |
 | `RUST_LOG_FORMAT` | `text` | Log format (`text` or `json`). |
 
@@ -272,18 +372,30 @@ BINDY_SCOUT_NAMESPACE=bindy-system bindy scout --cluster-name staging
 
 # Debug logging
 RUST_LOG=bindy=debug bindy scout --cluster-name dev
+
+# Production: bounded to this cluster's zone and load-balancer range
+bindy scout --cluster-name prod \
+  --allowed-zones prod.example.com \
+  --allowed-ip-ranges 10.20.0.0/24
 ```
+
+Scout validates its whole configuration at startup and exits with an error
+naming the setting when a value is empty, malformed, or (for
+`--default-zone` and `--default-ips`) outside the allowlists. With neither
+allowlist set it starts, and logs a warning for each.
 
 ### Ingress annotations
 
-Scout reads the following annotations from `Ingress` resources:
+Scout reads the following annotations from every source kind (see the
+[Annotations Reference](../guide/scout.md#annotations-reference) for the full rules):
 
 | Annotation | Required | Description |
 |---|---|---|
-| `bindy.firestoned.io/recordKind` | **Yes** (`"ARecord"`) | Specifies the DNS record kind to create. Currently only `"ARecord"` is supported. |
-| `bindy.firestoned.io/zone` | **Yes** | DNS zone that owns the Ingress hosts (e.g. `example.com`). |
-| `bindy.firestoned.io/ip` | No | Explicit IP override. Defaults to LoadBalancer status IP. |
+| `bindy.firestoned.io/scout-enabled` | **Yes** (`"true"`) | Opts the resource in. The legacy `bindy.firestoned.io/recordKind: "ARecord"` is still accepted on Ingresses. |
+| `bindy.firestoned.io/zone` | **Yes**, unless `--default-zone` is set | DNS zone that owns the hosts (e.g. `example.com`). Must be inside `--allowed-zones` when that is set. |
+| `bindy.firestoned.io/ip` | No | Explicit IP override. Defaults to the discovered address. Must be inside `--allowed-ip-ranges` when that is set. |
 | `bindy.firestoned.io/ttl` | No | TTL override in seconds. |
+| `bindy.firestoned.io/record-name` | No | Record name override (`@` for the apex). Required on `TCPRoute`. |
 
 ---
 

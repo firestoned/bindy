@@ -44,17 +44,21 @@ classDef highlight fill:#fdf7ec,stroke:#f0c060,stroke-width:1px,color:#000000;
             arecords["ARecord CRs #40;bindy-system#41;"]:::node
             queen-bind9["BIND9 Operands"]:::node
             queen-operator["Bindy Operator"]:::node
+            scout-source-policy["bindy-scout-source-binding"]:::node
             queen-api["Queen Kubernetes API"]:::node
+            scout-source-registry["Scout source registry #40;bindy-scout-sources ConfigMap#41;"]:::node
         end
         class queen-cluster boundary
 
 
     scout-a -->|watches Ingress / Service / HTTPRoute / TLSRoute| ingress-a
     scout-b -->|watches Ingress / Service / HTTPRoute / TLSRoute| ingress-b
-    scout-a -->|server-side-applies ARecord CRs via remote kubeconfig Secret or endpoint + token-file override #40;per-cluster SA minted by the queen cluster, ADR-0008#41;| queen-api
-    scout-b -->|server-side-applies ARecord CRs via remote kubeconfig Secret or endpoint + token-file override #40;per-cluster SA minted by the queen cluster, ADR-0008#41;| queen-api
+    scout-a -->|server-side-applies ARecord CRs via remote kubeconfig Secret or endpoint + token-file override, as its own ServiceAccount minted by the queen cluster #40;ADR-0008#41; and registered for its cluster names and zones #40;ADR-0025#41;| queen-api
+    scout-b -->|server-side-applies ARecord CRs via remote kubeconfig Secret or endpoint + token-file override, as its own ServiceAccount minted by the queen cluster #40;ADR-0008#41; and registered for its cluster names and zones #40;ADR-0025#41;| queen-api
     queen-api -->|persists fanned-in ARecords| arecords
-    queen-operator -->|reconciles ARecords| arecords
+    queen-api -->|evaluates the Scout source-binding policy on every ARecord write by a ServiceAccount of the record's namespace| scout-source-policy
+    scout-source-policy -->|reads the record namespace's bindy-scout-sources ConfigMap as its parameter| scout-source-registry
+    queen-operator -->|reconciles ARecords; a DNSZone selects a Scout-managed record only when its zone label equals the zone's name #40;ADR-0025#41;| arecords
     queen-operator -->|programs zones and records| queen-bind9
 
 

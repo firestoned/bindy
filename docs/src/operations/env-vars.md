@@ -144,6 +144,14 @@ See [Bindy Scout](../guide/scout.md) for the full conceptual guide.
 | `BINDY_SCOUT_NAMESPACE` | `--namespace` | `bindy-system` | Namespace where `ARecord` CRs are created. |
 | `POD_NAMESPACE` | — | `default` | Scout's own namespace. Always excluded from Ingress watching. Inject via Kubernetes downward API. |
 | `BINDY_SCOUT_EXCLUDE_NAMESPACES` | — | — | Comma-separated list of additional namespaces to exclude from Ingress watching. |
+| `BINDY_SCOUT_DEFAULT_ZONE` | `--default-zone` | unset | Zone used when a source has no `bindy.firestoned.io/zone` annotation. Must be inside `BINDY_SCOUT_ALLOWED_ZONES` when that is set, or Scout fails at startup. |
+| `BINDY_SCOUT_DEFAULT_IPS` | `--default-ips` | unset | Comma-separated IPv4 addresses used when no annotation or discovered address applies. Must be inside `BINDY_SCOUT_ALLOWED_IP_RANGES` when that is set, or Scout fails at startup. |
+| `BINDY_SCOUT_GATEWAY_SERVICES` | `--gateway-service` | unset | `gatewayClass=namespace/name` map for Gateway API route IP resolution. |
+| `BINDY_SCOUT_NAMESPACE_SELECTOR` | `--namespace-selector` | unset (every namespace) | Label selector a source's namespace must match. |
+| `BINDY_SCOUT_ALLOWED_ZONES` | `--allowed-zones` | unset (every zone) | Comma-separated zones Scout may publish into; each entry also allows its subzones. A source naming any other zone publishes nothing and keeps the records it already had. `*` and entries that are not DNS names fail startup. Unset logs a startup warning ([ADR-0025](https://github.com/firestoned/bindy/blob/main/docs/adr/0025-scout-records-bound-to-cluster-and-zones.md)). |
+| `BINDY_SCOUT_ALLOWED_IP_RANGES` | `--allowed-ip-ranges` | unset (every address) | Comma-separated IPv4 CIDR ranges (a bare address means `/32`). A source with any address outside them, annotated or discovered, publishes nothing and is retried every 30 seconds. A malformed range fails startup. Unset logs a startup warning. |
+| `BINDY_SCOUT_REMOTE_SECRET` | none | unset | Name of the kubeconfig Secret from `bindy bootstrap mc`; Scout then writes to the bindy cluster. Mutually exclusive with `BINDY_SCOUT_REMOTE_ENDPOINT`. |
+| `BINDY_SCOUT_REMOTE_SECRET_NAMESPACE` | none | `POD_NAMESPACE` | Namespace of `BINDY_SCOUT_REMOTE_SECRET`. |
 | `BINDY_SCOUT_REMOTE_ENDPOINT` | — | Bindy cluster API URL for the endpoint remote mode (ADR-0008): Linkerd-mirrored meshed proxy, konnectivity, or the API server. Requires `BINDY_SCOUT_REMOTE_TOKEN_FILE`; mutually exclusive with `BINDY_SCOUT_REMOTE_SECRET`. |
 | `BINDY_SCOUT_REMOTE_TOKEN_FILE` | — | Bearer-token file minted by the Bindy cluster; re-read on rotation. |
 | `BINDY_SCOUT_REMOTE_CA_FILE` | — | Endpoint CA bundle (PEM); unset means webpki public roots. |
@@ -186,6 +194,12 @@ spec:
                   fieldPath: metadata.namespace
             - name: BINDY_SCOUT_EXCLUDE_NAMESPACES
               value: "kube-system,kube-public,kube-node-lease"
+            # What this cluster may publish (ADR-0025): its own zone and its
+            # load-balancer range.
+            - name: BINDY_SCOUT_ALLOWED_ZONES
+              value: "prod.example.com"
+            - name: BINDY_SCOUT_ALLOWED_IP_RANGES
+              value: "10.20.0.0/24"
             - name: RUST_LOG
               value: "info"
             - name: RUST_LOG_FORMAT
@@ -231,3 +245,4 @@ the [bindcar 0.7.x migration guide](migration-guide.md) and [RBAC](rbac.md).
 3. **Always enable leader election in production** — prevents split-brain when running multiple replicas.
 4. **Inject `POD_NAME` and `POD_NAMESPACE` via downward API** — ensures unique leader identities and correct lease placement.
 5. **Set `BINDY_SCOUT_EXCLUDE_NAMESPACES`** — skip namespaces that will never have Scout-annotated Ingresses to reduce unnecessary watch events.
+6. **Set `BINDY_SCOUT_ALLOWED_ZONES` and `BINDY_SCOUT_ALLOWED_IP_RANGES` on every Scout that serves tenants**, and in multi-cluster mode register each cluster's ServiceAccount with `bindy bootstrap mc --cluster-name --allowed-zones` ([ADR-0025](https://github.com/firestoned/bindy/blob/main/docs/adr/0025-scout-records-bound-to-cluster-and-zones.md)), so no tenant annotation or stolen token can publish outside the cluster's own zones.

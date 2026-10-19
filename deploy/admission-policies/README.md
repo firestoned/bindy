@@ -25,6 +25,8 @@ defense-in-depth on top of the in-process Rust validators in
 | `14-bindy-record-value-binding.yaml` | binding | Binds the record-value policy with `validationActions: [Deny]`. |
 | `15-bindy-image-provenance-policy.yaml` | `bindy-image-provenance-validation` | Registry/immutability allow-list on the image overrides tenants can set via CRs (`spec[.common].image.image`, `spec[.common].bindcarConfig.image`): bindcar from `ghcr.io/firestoned/`, BIND9 from ISC or a firestoned mirror, and every reference digest-pinned or a named non-`:latest` tag. CEL cannot verify Cosign signatures — pair with Kyverno / policy-controller for cryptographic admission (see `docs/src/security/signed-releases.md`). |
 | `16-bindy-image-provenance-binding.yaml` | binding | Binds the image-provenance policy with `validationActions: [Deny]`. |
+| `21-bindy-scout-source-binding-policy.yaml` | `bindy-scout-source-binding` | Binds a registered Scout ServiceAccount to the cluster names and zones listed for it in the `bindy-scout-sources` ConfigMap of the record's namespace (ADR-0025). Its `ARecord` creates, updates and deletes must carry `managed-by: scout`, one of its cluster names and an allowed zone, on both the new and the old object. |
+| `22-bindy-scout-source-binding-binding.yaml` | binding | Binds the Scout source policy with `validationActions: [Deny]`; the `paramRef` has no namespace, so each record is checked against its own namespace's registry, and a namespace without one is not constrained. |
 
 F-003 (cross-namespace zone hijack) is enforced operator-side via the
 `bindy.firestoned.io/allow-zone-namespaces` annotation on `Bind9Instance`
@@ -136,7 +138,19 @@ kubectl apply --dry-run=server -f deploy/admission-policies/tests/accept-bind9cl
 kubectl apply --dry-run=server -f deploy/admission-policies/tests/reject-bind9cluster-acl.yaml
 ```
 
-A convenience Makefile target runs the full fixture suite:
+Some fixtures need objects that exist for real, because a policy reads its
+parameter at admission time and an impersonated principal needs RBAC (which
+runs before admission). They live in `tests/setup/` and are applied for real,
+on test clusters only, before the fixtures run:
+
+```bash
+kubectl apply -f deploy/admission-policies/tests/setup/
+kubectl apply --dry-run=server --as=system:serviceaccount:bindy-system:scout-fixture \
+  -f deploy/admission-policies/tests/reject-arecord-scout-foreign-zone.yaml
+```
+
+A convenience Makefile target runs the full fixture suite (it applies
+`tests/setup/` first):
 
 ```bash
 make admission-policies-test
@@ -202,6 +216,30 @@ relative to the zone origin. This policy enforces the same contract on
    control chars, and `;`, `{`, `}`, `"`, `\`, `$`).
 3. RFC 1035 length cap (253 octets).
 4. No leading `.` and no consecutive dots `..`.
+
+### `bindy-scout-source-binding`
+
+Every edge cluster's Scout writes `ARecord`s into the bindy cluster with its
+own ServiceAccount. Scout's zone and namespace checks run inside Scout, so a
+compromised Scout or a stolen token could otherwise publish into another
+cluster's zone, stamp another cluster's name, or delete its records
+(ADR-0025). For a ServiceAccount `<sa>` with a `<sa>.clusters` key in the
+`bindy-scout-sources` ConfigMap of the record's namespace, the policy denies:
+
+1. a new or changed record without `bindy.firestoned.io/managed-by: scout`;
+2. a new or changed record whose `bindy.firestoned.io/source-cluster` is not
+   in `<sa>.clusters`;
+3. a new or changed record whose `bindy.firestoned.io/zone` is not one of the
+   zones in `<sa>.zones` or a subzone of one (a missing `.zones` key allows
+   none);
+4. an update or delete of an existing record whose cluster or zone is not
+   the account's.
+
+`bindy bootstrap mc --cluster-name <c> --allowed-zones <z>` writes the two
+keys. Accounts without a `.clusters` key, and namespaces without the
+ConfigMap, are not affected. Denials use the default reason, so the API
+server answers HTTP 422; Scout treats a refused delete of another cluster's
+record as final and does not retry it.
 
 ## Audit annotations
 

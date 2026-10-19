@@ -227,6 +227,34 @@ same annotation gate the `DNSZone` reconciler enforces for cross-namespace
 instance targeting. See the [Migration Guide](../operations/migration-guide.md)
 for upgrade steps.
 
+### Publishing limits for this cluster (`--allowed-zones`, `--allowed-ip-ranges`)
+
+The zone grant above is checked per namespace. Namespace names are not unique
+across clusters, so a grant written for `team-a` on one cluster also covers a
+`team-a` namespace on every other cluster feeding the same bindy cluster. Two
+settings let whoever deploys Scout bound what this cluster can publish,
+whatever its tenants write in their annotations
+([ADR-0025](https://github.com/firestoned/bindy/blob/main/docs/adr/0025-scout-records-bound-to-cluster-and-zones.md)):
+
+| Setting | Effect |
+|---|---|
+| `--allowed-zones` / `BINDY_SCOUT_ALLOWED_ZONES` | Comma-separated zones. An entry allows the zone and its subzones: `foo.example.com` allows `foo.example.com` and `api.foo.example.com`, not `bar.example.com` or `badfoo.example.com`. A source whose zone is outside the list publishes nothing; Scout logs a warning and waits for the source to change. Records it published earlier stay, so an allowlist typo never takes names off the air. |
+| `--allowed-ip-ranges` / `BINDY_SCOUT_ALLOWED_IP_RANGES` | Comma-separated IPv4 CIDR ranges (a bare address means `/32`). Every address a source would publish, from the `bindy.firestoned.io/ip` annotation, the discovered load-balancer or Gateway status, or `--default-ips`, must fall in a range; otherwise the source publishes nothing and Scout retries every 30 seconds, since a discovered address can change without the source changing. |
+
+Both are unset by default, which keeps the previous unrestricted behavior and
+logs a startup warning. Set them on every Scout that serves tenants:
+
+```bash
+bindy scout --cluster-name foo \
+  --allowed-zones foo.example.com \
+  --allowed-ip-ranges 10.20.0.0/24
+```
+
+These checks run inside Scout, so they stop careless or malicious tenants but
+not a compromised Scout or a stolen token. In multi-cluster mode, also bind the
+cluster's ServiceAccount on the bindy cluster: see
+[Binding each cluster to its names and zones](#binding-each-cluster-to-its-names-and-zones).
+
 ---
 
 ## Watched Resources
@@ -368,7 +396,7 @@ metadata:
 spec:
   zoneName: example.com
   recordsFrom:
-    - labelSelector:
+    - selector:
         matchLabels:
           bindy.firestoned.io/managed-by: scout
           bindy.firestoned.io/zone: example.com
@@ -390,6 +418,8 @@ spec:
 | `--remote-endpoint <URL>` | **(Phase 3, [ADR-0008](https://github.com/firestoned/bindy/blob/main/docs/adr/0008-scout-remote-endpoint-override.md))** Bindy cluster API URL for the endpoint remote mode: a Linkerd-mirrored meshed proxy, a konnectivity endpoint, or the API server directly. Requires `--remote-token-file`. Mutually exclusive with `BINDY_SCOUT_REMOTE_SECRET` (startup error if both are set). |
 | `--remote-token-file <PATH>` | **(Phase 3)** Path to a bearer-token file **minted by the Bindy cluster** (mounted Secret, CSI or external-secrets delivery). Re-read by kube-rs on rotation — no restart needed. |
 | `--remote-ca-file <PATH>` | **(Phase 3)** Path to the remote endpoint's CA bundle (PEM). Optional: when unset, webpki public roots are used. |
+| `--allowed-zones <ZONE[,ZONE]>` | Zones Scout may publish into, each with its subzones. Unset means every zone (with a startup warning). See [Publishing limits](#publishing-limits-for-this-cluster-allowed-zones-allowed-ip-ranges). |
+| `--allowed-ip-ranges <CIDR[,CIDR]>` | IPv4 ranges every published address must fall in. Unset means every address (with a startup warning). |
 | `--namespace-selector <SELECTOR>` | A Kubernetes label selector (e.g. `bindy.firestoned.io/scout-enabled=true`) restricting which namespaces Scout will act in — same syntax as `kubectl get ns -l <selector>`. A namespace must match this selector **and** the individual Ingress/Service/route object must still carry its own opt-in annotation; both gates apply. **Strongly recommended for every production deployment** — see [Namespace Whitelisting](#namespace-whitelisting-namespace-selector) below. |
 
 CLI flags take precedence over the corresponding environment variables.
@@ -400,6 +430,7 @@ CLI flags take precedence over the corresponding environment variables.
     - a flag or environment variable that is set but empty (for example `BINDY_SCOUT_DEFAULT_ZONE=""` from a template that rendered to nothing): unset it or give it a value;
     - a malformed `--gateway-service` / `BINDY_SCOUT_GATEWAY_SERVICES` entry (one that is not `class=namespace/name` or `class=namespace/<label-selector>`); an empty entry from a trailing comma is still ignored;
     - a `--default-ips` / `BINDY_SCOUT_DEFAULT_IPS` entry that is not an IPv4 address;
+    - an `--allowed-zones` entry that is `*` or not a DNS name, an `--allowed-ip-ranges` entry that is not an IPv4 address or CIDR range, a `--default-zone` outside the allowed zones, or a `--default-ips` entry outside the allowed ranges;
     - a missing cluster name, or an ambiguous or incomplete remote transport (see below).
 
 ### Environment Variables
@@ -414,6 +445,8 @@ CLI flags take precedence over the corresponding environment variables.
 | `BINDY_SCOUT_DEFAULT_IPS` | — | Comma-separated default IP address(es) used when no per-resource annotation override or LoadBalancer status IP is available. Useful for shared-ingress topologies (e.g. Traefik) where all resources resolve to the same VIP(s). Overridden by `--default-ips`. |
 | `BINDY_SCOUT_GATEWAY_SERVICES` | — | Comma-separated `gatewayClass=target` map for gateway-chain IP resolution on HTTPRoute/TLSRoute/TCPRoute, e.g. `traefik=traefik/traefik`. `target` is `namespace/name` or `namespace/<label-selector>`. Because commas separate entries here, multi-label selectors must use the repeatable `--gateway-service` flag. Overridden by `--gateway-service`. |
 | `BINDY_SCOUT_NAMESPACE_SELECTOR` | — (every namespace eligible) | Label selector restricting which namespaces Scout will act in. Overridden by `--namespace-selector`. **Unset means every namespace in the cluster is eligible — running without this set is not recommended for production.** See [Namespace Whitelisting](#namespace-whitelisting-namespace-selector). |
+| `BINDY_SCOUT_ALLOWED_ZONES` | unset (every zone) | Comma-separated zones Scout may publish into, each with its subzones. Overridden by `--allowed-zones`. |
+| `BINDY_SCOUT_ALLOWED_IP_RANGES` | unset (every address) | Comma-separated IPv4 CIDR ranges every published address must fall in. Overridden by `--allowed-ip-ranges`. |
 | `BINDY_SCOUT_REMOTE_SECRET` | — | **(Phase 2)** Name of a Secret in the local cluster containing a `kubeconfig` key. When set, Scout targets the remote Bindy cluster for ARecord creation and zone validation. When unset, same-cluster mode is used. |
 | `BINDY_SCOUT_REMOTE_SECRET_NAMESPACE` | Scout's own namespace | **(Phase 2)** Namespace of the `BINDY_SCOUT_REMOTE_SECRET`. Defaults to Scout's own namespace (`POD_NAMESPACE`). |
 | `BINDY_SCOUT_REMOTE_ENDPOINT` | — | **(Phase 3, ADR-0008)** Bindy cluster API URL for the endpoint remote mode. Requires `BINDY_SCOUT_REMOTE_TOKEN_FILE`; mutually exclusive with `BINDY_SCOUT_REMOTE_SECRET`. Overridden by `--remote-endpoint`. |
@@ -805,7 +838,7 @@ metadata:
 spec:
   zoneName: api.example.com
   recordsFrom:
-    - labelSelector:
+    - selector:
         matchLabels:
           bindy.firestoned.io/managed-by: scout
           bindy.firestoned.io/zone: api.example.com
@@ -1028,8 +1061,15 @@ Run `bindy bootstrap mc` **against the Queen Bee cluster** (the cluster running 
 # Run against the Queen Bee cluster; writes ./bindy-scout-remote-kubeconfig.yaml
 bindy bootstrap mc \
   --service-account bindy-scout-remote \
-  --namespace bindy-system
+  --namespace bindy-system \
+  --cluster-name foo \
+  --allowed-zones foo.example.com
 ```
+
+`--cluster-name` and `--allowed-zones` (given together) register the account
+for that cluster name and those zones; see
+[Binding each cluster to its names and zones](#binding-each-cluster-to-its-names-and-zones).
+Without them the account is created unregistered, and the command says so.
 
 Expected output (stderr, progress only):
 
@@ -1165,6 +1205,7 @@ kubectl --context=queen-bee get arecords -n bindy-system -l bindy.firestoned.io/
 | `bindy-scout-remote` | `Role` | `arecords`: get, list, watch, create, update, patch, delete |
 | `bindy-scout-remote` | `Role` | `dnszones`: get, list, watch *(for zone validation)* |
 | `bindy-scout-remote` | `RoleBinding` | Binds the Role to the SA |
+| `bindy-scout-sources` | `ConfigMap` | Only with `--cluster-name` and `--allowed-zones`: the keys `bindy-scout-remote.clusters` and `bindy-scout-remote.zones` (shared ConfigMap, one pair of keys per account) |
 
 The Role is **namespace-scoped** (defaults to `bindy-system`). Scout cannot read or modify any other namespace on the Queen Bee cluster. It cannot read Secrets, access Pods, or perform any cluster-wide operations.
 
@@ -1174,6 +1215,69 @@ A separate `ServiceAccount`-type token Secret (`bindy-scout-remote-token`) is cr
     Using a unique service account per child cluster (`--service-account bindy-scout-remote-cluster-a`) allows you to revoke access for one cluster by simply deleting its SA on the Queen Bee cluster, without affecting other clusters.
 
 ---
+
+### Binding each cluster to its names and zones
+
+Scout's own checks run on the child cluster. On the bindy cluster, a
+ServiceAccount token from `bootstrap mc` can write any `ARecord` in its
+namespace, so a compromised Scout could publish into another cluster's zone,
+stamp another cluster's name, or delete its records. Three controls on the
+bindy cluster close that
+([ADR-0025](https://github.com/firestoned/bindy/blob/main/docs/adr/0025-scout-records-bound-to-cluster-and-zones.md)):
+
+1. **Registry.** `bindy bootstrap mc --cluster-name foo --allowed-zones foo.example.com`
+   writes two keys for the account into the `bindy-scout-sources` ConfigMap of
+   the namespace the records go to:
+
+    ```yaml
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: bindy-scout-sources
+      namespace: bindy-system
+    data:
+      bindy-scout-remote.clusters: "foo"
+      bindy-scout-remote.zones: "foo.example.com"
+    ```
+
+    Each account's keys are written under a field manager of its own, so
+    registering one cluster never rewrites another's, and
+    `bindy bootstrap mc --revoke` removes only that account's keys.
+
+2. **Admission policy.** `bindy-scout-source-binding`
+   (`deploy/admission-policies/21-*` and `22-*`, installed by
+   `make admission-policies-install`) refuses an `ARecord` create, update or
+   delete by a registered account unless the record carries
+   `bindy.firestoned.io/managed-by: scout`, one of the account's cluster names
+   in `source-cluster`, and an allowed zone in `zone`. For an update or
+   delete the existing record is checked too, so an account can neither
+   rewrite nor delete another cluster's record. Unregistered principals (the
+   operator, people, accounts created before this registry existed) are not
+   affected, and neither is a namespace with no `bindy-scout-sources`
+   ConfigMap.
+
+3. **Zone label.** A `DNSZone` takes a record labelled
+   `bindy.firestoned.io/managed-by: scout` only when the record's
+   `bindy.firestoned.io/zone` label equals the zone's `spec.zoneName`
+   (ignoring case and a trailing dot), whatever its `recordsFrom` selector
+   says. A selector that matches only `managed-by: scout` can therefore not
+   pick up another cluster's records.
+
+!!! warning "Register existing accounts"
+    Upgrading an existing installation? Follow
+    [Migrating to Scout Source Guardrails](../operations/scout-source-guardrails-migration.md).
+    An account minted before this registry existed is unconstrained until it
+    is registered. Re-run `bindy bootstrap mc` with the same
+    `--service-account` plus `--cluster-name` and `--allowed-zones` (it
+    re-applies the same ServiceAccount and RBAC), or add its two keys to the
+    ConfigMap by hand.
+
+!!! note "What this does not cover"
+    Two clusters registered for the same zone may still publish the same
+    name, and the last record written wins. Do not register a zone for more
+    than one cluster unless they deliberately share it. The registry
+    ConfigMap is writable by whoever can write ConfigMaps in that namespace;
+    Scout's own Role does not allow it.
 
 ### Multi-Cluster Configuration Reference
 
@@ -1199,7 +1303,9 @@ When Scout reconciles a resource under a new cluster name:
 
 The zone match matters: two entirely unrelated clusters can happen to run an Ingress with the same namespace + name (e.g. both deploy `team-checkout/web-frontend`) while publishing into **different** DNS zones. Without scoping by zone, each cluster's cleanup would treat the other's live `ARecord` as "stale" purely because the `source-cluster` label differs — and delete it, over and over, on every reconcile. Scoping by zone protects clusters publishing into distinct zones from this.
 
-**This does not protect clusters that share a zone.** If several clusters publish into the *same* DNS zone (a normal multi-cluster-DNS topology) and happen to run resources of the same kind with the same namespace + name, they still match each other's selector and will mutually delete each other's live `ARecord`s in a flapping loop. Give such resources distinct namespaces, names, or zones to avoid this; fully identifying "this same physical Scout instance under a prior cluster name" would need an instance-level marker that this mechanism does not provide.
+**This does not protect clusters that share a zone.** If several clusters publish into the *same* DNS zone (a normal multi-cluster-DNS topology) and happen to run resources of the same kind with the same namespace + name, they still match each other's selector and will mutually delete each other's live `ARecord`s in a flapping loop. Give such resources distinct namespaces, names, or zones to avoid this; fully identifying "this same physical Scout instance under a prior cluster name" would need an instance-level marker that this mechanism does not provide. When each cluster's account is [registered](#binding-each-cluster-to-its-names-and-zones), the bindy cluster refuses those deletes instead: Scout logs the refusal and leaves the other cluster's record alone.
+
+**Renaming a registered cluster.** The registry lists the names an account may stamp, so add the new name first (`bindy bootstrap mc --cluster-name new,old ...`), restart Scout with `--cluster-name new` and let it clean up, then re-run with `--cluster-name new` alone. If the old name is dropped first, the bindy cluster refuses the cleanup of the old records; Scout logs it and does not retry, and the old records must be deleted by hand.
 
 This happens on every reconcile, so all stale records for the reconcile path are cleaned up on the next controller loop after the restart — no manual intervention required there.
 

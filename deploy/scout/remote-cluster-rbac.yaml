@@ -25,6 +25,21 @@
 #       value: "bindy-scout-remote-kubeconfig"
 #     - name: BINDY_SCOUT_REMOTE_SECRET_NAMESPACE
 #       value: "bindy-system"
+#
+# Recommended (ADR-0025): register the ServiceAccount for its cluster name(s)
+# and zones, so the bindy-scout-source-binding admission policy
+# (deploy/admission-policies/21-*) refuses any ARecord write outside them, even
+# with a stolen token. `bindy bootstrap mc --cluster-name ... --allowed-zones ...`
+# does this for you. By hand, one pair of keys per ServiceAccount:
+#
+#   apiVersion: v1
+#   kind: ConfigMap
+#   metadata:
+#     name: bindy-scout-sources
+#     namespace: bindy-system
+#   data:
+#     bindy-scout-remote.clusters: "test-cluster.example.com"
+#     bindy-scout-remote.zones: "test-cluster.example.com"
 ---
 apiVersion: v1
 kind: ServiceAccount

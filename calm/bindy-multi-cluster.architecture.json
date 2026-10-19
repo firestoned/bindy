@@ -30,7 +30,19 @@
       "unique-id": "arecords",
       "node-type": "data-asset",
       "name": "ARecord CRs (bindy-system)",
-      "description": "Canonical ARecord resources in the Queen Bee bindy-system namespace, fanned in from every child cluster and stamped with a source-cluster label."
+      "description": "Canonical ARecord resources in the Queen Bee bindy-system namespace, fanned in from every child cluster and stamped with source-cluster and zone labels. A record written by a registered Scout ServiceAccount carries one of that account's cluster names and an allowed zone; a DNSZone takes a Scout record only when its zone label equals the zone's name (ADR-0025)."
+    },
+    {
+      "unique-id": "scout-source-registry",
+      "node-type": "data-asset",
+      "name": "Scout source registry (bindy-scout-sources ConfigMap)",
+      "description": "Per-namespace ConfigMap on the Queen Bee cluster mapping each child cluster's Scout ServiceAccount to the cluster names (<sa>.clusters) and zones (<sa>.zones) it may publish. Written by bindy bootstrap mc --cluster-name --allowed-zones (ADR-0025)."
+    },
+    {
+      "unique-id": "scout-source-policy",
+      "node-type": "policy",
+      "name": "bindy-scout-source-binding",
+      "description": "ValidatingAdmissionPolicy denying an ARecord CREATE, UPDATE or DELETE by a registered Scout ServiceAccount unless the old and new objects carry managed-by=scout, a source-cluster from the account's registry entry and an allowed zone label. Unregistered principals are not affected (ADR-0025)."
     },
     {
       "unique-id": "child-cluster-a",
@@ -42,7 +54,7 @@
       "unique-id": "scout-a",
       "node-type": "service",
       "name": "Bindy Scout A",
-      "description": "Scout Deployment (image bindy, args=[scout]) on Child Cluster A. Watches local Ingress / LoadBalancer Service / HTTPRoute / TLSRoute / TCPRoute through the shared watch layer (one watch and cache per kind, ADR-0009) and derives DNS names.",
+      "description": "Scout Deployment (image bindy, args=[scout]) on Child Cluster A. Watches local Ingress / LoadBalancer Service / HTTPRoute / TLSRoute / TCPRoute through the shared watch layer (one watch and cache per kind, ADR-0009) and derives DNS names. Publishes only zones in --allowed-zones and addresses in --allowed-ip-ranges when those are set (ADR-0025).",
       "development-language": "Rust"
     },
     {
@@ -61,7 +73,7 @@
       "unique-id": "scout-b",
       "node-type": "service",
       "name": "Bindy Scout B",
-      "description": "Scout Deployment on Child Cluster B with its own ServiceAccount, --cluster-name and remote kubeconfig.",
+      "description": "Scout Deployment on Child Cluster B with its own ServiceAccount, --cluster-name, --allowed-zones, --allowed-ip-ranges and remote kubeconfig.",
       "development-language": "Rust"
     },
     {
@@ -78,7 +90,7 @@
       "relationship-type": {
         "composed-of": {
           "container": "queen-cluster",
-          "nodes": ["queen-api", "queen-operator", "queen-bind9", "arecords"]
+          "nodes": ["queen-api", "queen-operator", "queen-bind9", "arecords", "scout-source-registry", "scout-source-policy"]
         }
       }
     },
@@ -126,7 +138,7 @@
     },
     {
       "unique-id": "scout-a-applies",
-      "description": "server-side-applies ARecord CRs via remote kubeconfig Secret or endpoint + token-file override (per-cluster SA minted by the queen cluster, ADR-0008)",
+      "description": "server-side-applies ARecord CRs via remote kubeconfig Secret or endpoint + token-file override, as its own ServiceAccount minted by the queen cluster (ADR-0008) and registered for its cluster names and zones (ADR-0025)",
       "protocol": "HTTPS",
       "relationship-type": {
         "connects": {
@@ -137,7 +149,7 @@
     },
     {
       "unique-id": "scout-b-applies",
-      "description": "server-side-applies ARecord CRs via remote kubeconfig Secret or endpoint + token-file override (per-cluster SA minted by the queen cluster, ADR-0008)",
+      "description": "server-side-applies ARecord CRs via remote kubeconfig Secret or endpoint + token-file override, as its own ServiceAccount minted by the queen cluster (ADR-0008) and registered for its cluster names and zones (ADR-0025)",
       "protocol": "HTTPS",
       "relationship-type": {
         "connects": {
@@ -157,8 +169,28 @@
       }
     },
     {
+      "unique-id": "api-enforces-scout-source-policy",
+      "description": "evaluates the Scout source-binding policy on every ARecord write by a ServiceAccount of the record's namespace",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "queen-api" },
+          "destination": { "node": "scout-source-policy" }
+        }
+      }
+    },
+    {
+      "unique-id": "scout-source-policy-reads-registry",
+      "description": "reads the record namespace's bindy-scout-sources ConfigMap as its parameter",
+      "relationship-type": {
+        "connects": {
+          "source": { "node": "scout-source-policy" },
+          "destination": { "node": "scout-source-registry" }
+        }
+      }
+    },
+    {
       "unique-id": "operator-reconciles-arecords",
-      "description": "reconciles ARecords",
+      "description": "reconciles ARecords; a DNSZone selects a Scout-managed record only when its zone label equals the zone's name (ADR-0025)",
       "protocol": "HTTPS",
       "relationship-type": {
         "connects": {

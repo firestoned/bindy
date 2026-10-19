@@ -14,6 +14,7 @@
 //! once.
 
 use crate::crd::ARecord;
+use crate::guardrails::{first_ip_outside, zone_is_allowed};
 use crate::scout::{arecord_cr_name, arecord_label_selector, stale_arecord_label_selector};
 use crate::scout::{
     build_arecord, check_zone_authorization_live, cleanup_grace_expired, gateway_addresses_as_ips,
@@ -426,6 +427,16 @@ async fn publish<K: ScoutSource>(
         }
     };
 
+    // ADR-0025 decision 1: only a change to the source (or a restart with a
+    // new allowlist) can lift this, so wait for one. Records published
+    // earlier stay: an allowlist typo must not take names off the air.
+    if let Some(allowed) = ctx.allowed_zones.as_deref() {
+        if !zone_is_allowed(allowed, &zone) {
+            warn!(kind, name = %name, ns = %ns, zone = %zone, allowed_zones = ?allowed, "Zone is not in this Scout's allowed zones (BINDY_SCOUT_ALLOWED_ZONES), publishing nothing for this source");
+            return Ok(Action::await_change());
+        }
+    }
+
     let ttl = match parse_ttl_annotation(annotations) {
         Ok(ttl) => ttl,
         Err(e) => {
@@ -469,6 +480,17 @@ async fn publish<K: ScoutSource>(
         return Ok(requeue_after_error());
     };
 
+    // ADR-0025 decision 2. Retried rather than awaited: a discovered address
+    // can change without the source changing.
+    if let Some(outside) = ctx
+        .allowed_ip_ranges
+        .as_deref()
+        .and_then(|ranges| first_ip_outside(ranges, &ips))
+    {
+        warn!(kind, name = %name, ns = %ns, ip = %outside, "Address is outside this Scout's allowed ranges (BINDY_SCOUT_ALLOWED_IP_RANGES), publishing nothing for this source");
+        return Ok(requeue_after_error());
+    }
+
     let api: Api<ARecord> = Api::namespaced(ctx.remote_client.clone(), &ctx.target_namespace);
     let apply = PatchParams::apply(SCOUT_FIELD_MANAGER).force();
     let mut applied = BTreeSet::new();
@@ -501,20 +523,24 @@ async fn publish<K: ScoutSource>(
     // Legacy and previous-cluster records publish the same names as the
     // records just applied. Deleting one before its replacement is served
     // would take the name off the air (ADR-0022, Decision 4).
-    let mut replaced = list_arecords(
+    let legacy = list_arecords(
         &api,
         &legacy_arecord_label_selector(&ctx.cluster_name, ns, name),
     )
     .await?;
-    replaced.extend(stale_cluster_arecords(&api, &ctx.cluster_name, source, &zone).await?);
-    match handover_step(replaced.len(), all_served) {
+    let stale = stale_cluster_arecords(&api, &ctx.cluster_name, source, &zone).await?;
+    let waiting = legacy.len() + stale.len();
+    match handover_step(waiting, all_served) {
         Handover::Nothing => {}
         Handover::Wait => {
-            info!(kind, name = %name, ns = %ns, waiting = replaced.len(), "Keeping the records this source replaces until its new ARecords are bound to the zone and Ready");
+            info!(kind, name = %name, ns = %ns, waiting, "Keeping the records this source replaces until its new ARecords are bound to the zone and Ready");
             return Ok(Action::requeue(Duration::from_secs(HANDOVER_RECHECK_SECS)));
         }
         Handover::Delete => {
-            delete_arecords(&api, replaced, "replaced by this source's served record").await?;
+            delete_arecords(&api, legacy, "replaced by this source's served record").await?;
+            for ar in stale {
+                delete_other_cluster_arecord(&api, &ar, &ctx.cluster_name, source).await?;
+            }
         }
     }
 
@@ -741,18 +767,43 @@ pub(crate) async fn delete_stale_cluster_arecords(
 ) -> Result<()> {
     let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
     for ar in stale_cluster_arecords(&api, current_cluster, source, current_zone).await? {
-        let old_cluster = ar
-            .labels()
-            .get(LABEL_SOURCE_CLUSTER)
-            .cloned()
-            .unwrap_or_default();
-        let ar_name = ar.name_any();
-        api.delete(&ar_name, &DeleteParams::default())
-            .await
-            .with_context(|| format!("failed to delete ARecord {ar_name}"))?;
-        info!(arecord = %ar_name, old_cluster = %old_cluster, new_cluster = %current_cluster, kind = source.kind, name = %source.name, ns = %source.namespace, "Deleted stale ARecord after a cluster-name change");
+        delete_other_cluster_arecord(&api, &ar, current_cluster, source).await?;
     }
     Ok(())
+}
+
+/// Deletes a record a previous cluster name left in this source's zone.
+///
+/// Under ADR-0025 the API server refuses this when Scout's account is not
+/// registered for that cluster name: the record then belongs to another
+/// cluster, so the refusal is logged and skipped, never retried (retrying
+/// cannot succeed, and on source removal it would hold the finalizer).
+///
+/// # Errors
+/// Returns an error if the delete fails for any reason other than a refusal.
+async fn delete_other_cluster_arecord(
+    api: &Api<ARecord>,
+    ar: &ARecord,
+    current_cluster: &str,
+    source: &SourceRef,
+) -> Result<()> {
+    let old_cluster = ar
+        .labels()
+        .get(LABEL_SOURCE_CLUSTER)
+        .cloned()
+        .unwrap_or_default();
+    let ar_name = ar.name_any();
+    match api.delete(&ar_name, &DeleteParams::default()).await {
+        Ok(_) => {
+            info!(arecord = %ar_name, old_cluster = %old_cluster, new_cluster = %current_cluster, kind = source.kind, name = %source.name, ns = %source.namespace, "Deleted stale ARecord after a cluster-name change");
+            Ok(())
+        }
+        Err(e) if kube_errors::is_refused(&e) => {
+            warn!(arecord = %ar_name, old_cluster = %old_cluster, new_cluster = %current_cluster, error = %e, "The bindy cluster refused deleting another cluster's ARecord; leaving it (ADR-0025: this Scout's account is not registered for that cluster name)");
+            Ok(())
+        }
+        Err(e) => Err(e).with_context(|| format!("failed to delete ARecord {ar_name}")),
+    }
 }
 
 /// Lists the source's records left by a previous cluster name in

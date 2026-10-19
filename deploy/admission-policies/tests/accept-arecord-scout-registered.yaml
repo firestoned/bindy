@@ -1,0 +1,23 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: Apache-2.0
+#
+# Should be ACCEPTED by bindy-scout-source-binding: the registered account writes for its own cluster into a subzone of its allowed zone.
+# Needs tests/setup/scout-source-binding.yaml applied, and must be applied
+# while impersonating the registered Scout ServiceAccount:
+#
+#   kubectl apply --dry-run=server --as=system:serviceaccount:bindy-system:scout-fixture \
+#     -f accept-arecord-scout-registered.yaml
+#
+apiVersion: bindy.firestoned.io/v1beta1
+kind: ARecord
+metadata:
+  name: vap-accept-arecord-scout-registered
+  namespace: bindy-system
+  labels:
+    bindy.firestoned.io/managed-by: scout
+    bindy.firestoned.io/source-cluster: edge-foo
+    bindy.firestoned.io/zone: api.foo.example.com
+spec:
+  name: api
+  ipv4Addresses:
+    - "192.0.2.10"

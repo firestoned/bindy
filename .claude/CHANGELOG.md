@@ -1,3 +1,41 @@
+## [2026-10-19 12:00] - Scout records bound to their cluster and zones (ADR-0025, roadmap 31)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0025-scout-records-bound-to-cluster-and-zones.md`: ADR-0025, six decisions binding what an edge cluster's Scout can publish.
+- `crates/bindy-scout/src/guardrails.rs` (+ `guardrails_tests.rs`): zone and IPv4 range allowlists (parse, match).
+- Scout `--allowed-zones` / `BINDY_SCOUT_ALLOWED_ZONES` and `--allowed-ip-ranges` / `BINDY_SCOUT_ALLOWED_IP_RANGES` (`scout.rs`, `pipeline.rs`, `crates/bindy/src/cli.rs`): a source naming a zone outside the list, or resolving to an address outside the ranges, publishes nothing; a `--default-zone` or default IP outside them fails startup; unset keeps the old behavior with a startup warning.
+- `bindy bootstrap scout --allowed-zones --allowed-ip-ranges`, and `bindy bootstrap mc --cluster-name --allowed-zones`, which registers the ServiceAccount in the `bindy-scout-sources` ConfigMap under a per-account field manager; `--revoke` removes its keys (`crates/bindy-bootstrap/src/bootstrap.rs`).
+- `deploy/admission-policies/21-bindy-scout-source-binding-policy.yaml`, `22-...-binding.yaml`: a registered Scout ServiceAccount's ARecord create, update and delete must carry `managed-by: scout`, a registered cluster name and an allowed zone, on the old and new object. Fixtures in `tests/`, real setup objects in `tests/setup/` (applied by `make admission-policies-test` and `tests/regression_test.sh`); `make admission-policies-install` installs 21/22.
+- `bindy_controller_sdk::kube_errors::is_refused` (HTTP 403 or 422) and `bindy_api::constants::{HTTP_FORBIDDEN, HTTP_UNPROCESSABLE_ENTITY}`; `bindy_api::labels::{MANAGED_BY_SCOUT, BINDY_ZONE_LABEL, BINDY_SOURCE_CLUSTER_LABEL}`, which Scout's label constants now alias.
+- `.github/community/31-scout-source-guardrails.md` and its `ROADMAPS.md` row.
+
+### Changed
+- `crates/bindy-controller-zone/src/dnszone/discovery.rs`: a DNSZone takes a record labelled `managed-by: scout` only when its `bindy.firestoned.io/zone` label equals the zone's `spec.zoneName` (`scout_record_belongs_to_zone`).
+- `crates/bindy-scout/src/pipeline.rs`: a refused (403/422) delete of a record left under another cluster name is logged and skipped instead of failing the reconcile (`delete_other_cluster_arecord`).
+- `bindy_scout::run_scout` takes the public `ScoutCli` struct instead of seven arguments.
+- New migration page `docs/src/operations/scout-source-guardrails-migration.md` (nav: Migration): pre-checks for records the zone-label rule would drop and for unregistered or shared accounts, a warn-and-audit phase for the policy, per-step verification commands, rename and account-split procedures, rollback table; linked from `migration-guide.md` and the Scout guide.
+- New examples `examples/scout-guardrails-bindy-cluster.yaml` (registry + per-cluster DNSZones) and `examples/scout-guardrails-edge-cluster.yaml` (bounded Scout), indexed in `examples/README.md`; the DNSZones validate against the CRD schema.
+- `docs/src/reference/cli.md`: every `bootstrap scout` flag, a new `bootstrap multi-cluster` section, the full `bindy scout` flag table and current annotations (it listed only `recordKind`). `docs/src/operations/env-vars.md`: the missing Scout variables. `docs/src/operations/troubleshooting.md`: one row per new log message. `docs/src/guide/scout-topology.md`: the hardening checklist's admission item is now concrete. `docs/src/development/testing-guide.md`: registering the kind Scout. `README.md`: Scout in key features and the bootstrap example.
+- Fixed in `docs/src/guide/scout.md`: both DNSZone examples used `recordsFrom[].labelSelector`; the CRD field is `selector` (the old snippets selected nothing). `docs/mkdocs.yml`: the migration guide's nav label said "v0.2.x to v0.3.x".
+- Docs: `docs/src/guide/scout.md` (publishing limits, binding each cluster, rename steps), `docs/src/installation/scout.md`, `docs/src/operations/migration-guide.md`, `deploy/admission-policies/README.md`, `deploy/scout/deployment.yaml`, `deploy/scout/remote-cluster-rbac.yaml`; CALM multi-cluster and control-plane models and `docs/src/architecture/calm-multi-cluster.md`; roadmap 27 item 2 cross-linked.
+- `docs/src/security/threat-model.md` v1.28: full pass for ADR-0025 (S4, T5, M-69 to M-72, accepted risk 23); stale Scout asset rows (pre-M-25 Secret read) and the admission-policy count corrected.
+
+### Why
+A tenant on one edge cluster, or that cluster's compromised Scout, could publish into, rewrite or delete another cluster's records: zone grants name bare namespaces, `source-cluster` was self-declared, every check ran inside Scout, and a loose DNSZone selector took any Scout record.
+
+### Impact
+- [ ] Breaking change (opt-in; one behavior change: a hand-made record labelled `managed-by: scout` with a different zone label is no longer selected, see the migration guide)
+- [x] Requires cluster rollout (operator and Scout images; admission policies 21/22 to install)
+- [ ] Config change only
+- [ ] Documentation only
+
+### Verification
+- `cargo fmt`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test` (workspace) pass.
+- Policies 21/22 on kind (Kubernetes 1.36): type checking clean; all accept/reject fixtures as expected; a registered account's delete or relabel of another cluster's record refused (HTTP 422); server-side apply refused the same way; unregistered accounts and a namespace with no registry unaffected. `bindy bootstrap mc` registration and `--revoke` checked against the same cluster: each account's keys owned by its own field manager, revoke removes only those.
+- Not run: the two-cluster Scout e2e (needs a Scout image built from this branch), roadmap 31 phase 5.
+
 ## [2026-10-14 20:00] - Every Secret operation emits one structured audit event (ADR-0024, roadmap 16)
 
 **Author:** Erick Bourgeois

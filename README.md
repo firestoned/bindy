@@ -91,6 +91,10 @@ bindy bootstrap operator
 
 # Deploy Scout (optional Ingress + LoadBalancer Service → ARecord controller)
 bindy bootstrap scout
+
+# Recommended: limit Scout to this cluster's zones and load-balancer range
+bindy bootstrap scout --cluster-name prod \
+  --allowed-zones prod.example.com --allowed-ip-ranges 10.20.0.0/24
 ```
 
 The image tag automatically matches the binary version (e.g. `ghcr.io/firestoned/bindy:v0.5.0`). Override with `--version` if needed.
@@ -380,6 +384,7 @@ Useful for testing or when you need full control over a single instance.
 ✅ **DNSSEC** - Automatic key management and zone signing
 ✅ **High Availability** - Leader election, automatic failover
 ✅ **Zone-Aware Scheduling** - Spread nameservers across availability zones, racks, or any node topology ([guide](docs/src/guide/zone-spreading.md))
+✅ **Scout** - Publishes `ARecord`s for annotated Ingresses, LoadBalancer Services and Gateway API routes, from the same cluster or from many workload clusters into one bindy cluster; each cluster can be limited to its own zones and address ranges, and bound to them on the bindy cluster by an admission policy ([guide](docs/src/guide/scout.md), [ADR-0025](docs/adr/0025-scout-records-bound-to-cluster-and-zones.md))
 ✅ **Compliance** - SOX, NIST 800-53, CIS documented
 ✅ **Secure** - Non-root containers, RBAC, signed releases
 

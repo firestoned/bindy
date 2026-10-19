@@ -265,7 +265,8 @@ nav:
           - Debugging: operations/debugging.md
           - FAQ: operations/faq.md
       - Migration:
-          - v0.2.x to v0.3.x: operations/migration-guide.md
+          - Migration Guide (all releases): operations/migration-guide.md
+          - Scout Source Guardrails (ADR-0025): operations/scout-source-guardrails-migration.md
           - DNSZone Phase 5-6: operations/migration-guide-phase5-6.md
           - RNDC Key Rotation: operations/rndc-key-rotation-migration.md
           - Renaming Zones and Records: operations/renaming-resources.md
