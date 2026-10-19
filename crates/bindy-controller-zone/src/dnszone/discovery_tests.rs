@@ -10,7 +10,63 @@
 #[allow(deprecated)] // DNSZoneSpec::name_server_ips is set to None in test fixtures
 mod tests {
     use crate::crd::LabelSelector;
+    use crate::dnszone::discovery::scout_record_belongs_to_zone;
     use std::collections::BTreeMap;
+
+    // =====================================================================
+    // ADR-0025 decision 5: a Scout record joins only the zone in its label
+    // =====================================================================
+
+    fn labels(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+            .collect()
+    }
+
+    const MANAGED_BY: &str = "bindy.firestoned.io/managed-by";
+    const ZONE: &str = "bindy.firestoned.io/zone";
+
+    #[test]
+    fn a_scout_record_belongs_to_the_zone_its_label_names() {
+        let l = labels(&[(MANAGED_BY, "scout"), (ZONE, "foo.example.com")]);
+        assert!(scout_record_belongs_to_zone(&l, "foo.example.com"));
+    }
+
+    #[test]
+    fn scout_zone_matching_ignores_case_and_a_trailing_dot() {
+        let l = labels(&[(MANAGED_BY, "scout"), (ZONE, "Foo.Example.com")]);
+        assert!(scout_record_belongs_to_zone(&l, "foo.example.com."));
+    }
+
+    #[test]
+    fn a_scout_record_labelled_for_another_zone_does_not_belong() {
+        let l = labels(&[(MANAGED_BY, "scout"), (ZONE, "foo.example.com")]);
+        assert!(!scout_record_belongs_to_zone(&l, "bar.example.com"));
+        assert!(!scout_record_belongs_to_zone(&l, "example.com"));
+    }
+
+    #[test]
+    fn a_scout_record_without_a_zone_label_belongs_nowhere() {
+        let l = labels(&[(MANAGED_BY, "scout")]);
+        assert!(!scout_record_belongs_to_zone(&l, "foo.example.com"));
+    }
+
+    #[test]
+    fn a_record_not_managed_by_scout_is_left_to_the_selector() {
+        assert!(scout_record_belongs_to_zone(
+            &labels(&[(ZONE, "foo.example.com")]),
+            "bar.example.com"
+        ));
+        assert!(scout_record_belongs_to_zone(
+            &labels(&[(MANAGED_BY, "Bind9Instance")]),
+            "bar.example.com"
+        ));
+        assert!(scout_record_belongs_to_zone(
+            &labels(&[]),
+            "bar.example.com"
+        ));
+    }
 
     #[test]
     fn test_label_selector_matches_exact() {

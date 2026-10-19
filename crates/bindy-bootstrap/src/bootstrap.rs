@@ -61,7 +61,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use bindy_controller_sdk::audit::{Actor, AuditReason, SecretApi, SecretPurpose, SecretUse};
 use bindy_controller_sdk::resources::delete_if_present;
 use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{Namespace, Secret, ServiceAccount};
+use k8s_openapi::api::core::v1::{ConfigMap, Namespace, Secret, ServiceAccount};
 use k8s_openapi::api::rbac::v1::{
     ClusterRole, ClusterRoleBinding, PolicyRule, Role, RoleBinding, RoleRef, Subject,
 };
@@ -253,6 +253,12 @@ pub struct ScoutDeploymentOptions<'a> {
     /// Name of the Secret containing the remote cluster kubeconfig.
     /// When set, `BINDY_SCOUT_REMOTE_SECRET` is injected into the Deployment env.
     pub remote_secret: Option<&'a str>,
+    /// Comma-separated zones the scout may publish into (`--allowed-zones`,
+    /// ADR-0025). The scout validates the list at startup.
+    pub allowed_zones: Option<&'a str>,
+    /// Comma-separated IPv4 ranges published addresses must fall in
+    /// (`--allowed-ip-ranges`, ADR-0025). The scout validates the list at startup.
+    pub allowed_ip_ranges: Option<&'a str>,
 }
 
 // ---------------------------------------------------------------------------
@@ -281,6 +287,27 @@ pub(crate) const REMOTE_KUBECONFIG_SECRET_SUFFIX: &str = "-kubeconfig";
 
 /// `app.kubernetes.io/component` label value for all resources created by `bootstrap mc`.
 const MC_COMPONENT_LABEL: &str = "scout-remote";
+
+/// Name of the per-namespace ConfigMap that registers each Scout
+/// ServiceAccount's cluster names and zones. The `bindy-scout-source-binding`
+/// admission policy reads it as its parameter (ADR-0025, decision 3).
+pub const SCOUT_SOURCES_CONFIGMAP_NAME: &str = "bindy-scout-sources";
+
+/// Suffix of the registry key holding a ServiceAccount's cluster names
+/// (`<sa>.clusters`).
+pub const SCOUT_SOURCES_CLUSTERS_SUFFIX: &str = ".clusters";
+
+/// Suffix of the registry key holding a ServiceAccount's zones (`<sa>.zones`).
+pub const SCOUT_SOURCES_ZONES_SUFFIX: &str = ".zones";
+
+/// What `bootstrap mc` registers for a ServiceAccount in the Scout source
+/// registry (ADR-0025, decision 3).
+pub struct ScoutSourceRegistration<'a> {
+    /// Cluster names the account may stamp in `source-cluster`.
+    pub clusters: &'a [String],
+    /// Zones the account may publish into, each with its subzones.
+    pub zones: &'a [String],
+}
 
 /// Maximum polling attempts while waiting for the SA token Secret to be populated.
 const SA_TOKEN_WAIT_MAX_ATTEMPTS: usize = 20;
@@ -1281,6 +1308,7 @@ pub async fn run_bootstrap_multi_cluster(
     server_override: Option<&str>,
     allow_insecure: bool,
     output: &std::path::Path,
+    registration: Option<&ScoutSourceRegistration<'_>>,
 ) -> Result<()> {
     let client = Client::try_default()
         .await
@@ -1309,6 +1337,35 @@ pub async fn run_bootstrap_multi_cluster(
     let rb = build_mc_writer_role_binding(namespace, sa);
     apply(&Api::namespaced(client.clone(), namespace), &rb, fm).await?;
     eprintln!("✓ RoleBinding: {sa} (namespace: {namespace})");
+    match registration {
+        Some(reg) => {
+            let registry = build_scout_source_registry(namespace, sa, reg.clusters, reg.zones);
+            apply(
+                &Api::namespaced(client.clone(), namespace),
+                &registry,
+                &scout_source_field_manager(sa),
+            )
+            .await?;
+            let stored = |suffix: &str| {
+                registry
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.get(&format!("{sa}{suffix}")))
+                    .cloned()
+                    .unwrap_or_default()
+            };
+            eprintln!(
+                "✓ Registered {sa} in ConfigMap {SCOUT_SOURCES_CONFIGMAP_NAME}: clusters [{}], zones [{}]",
+                stored(SCOUT_SOURCES_CLUSTERS_SUFFIX),
+                stored(SCOUT_SOURCES_ZONES_SUFFIX)
+            );
+        }
+        None => eprintln!(
+            "⚠ {sa} is not registered in ConfigMap {SCOUT_SOURCES_CONFIGMAP_NAME}: the \
+             bindy-scout-source-binding admission policy will not constrain it. Pass \
+             --cluster-name and --allowed-zones to bind it to its cluster and zones (ADR-0025)."
+        ),
+    }
 
     let token_secret_name = format!("{sa}{SA_TOKEN_SECRET_SUFFIX}");
     let token_secret = build_mc_sa_token_secret(namespace, sa);
@@ -1489,6 +1546,72 @@ pub(crate) fn build_mc_service_account(namespace: &str, sa_name: &str) -> Servic
             labels: Some(labels(MC_COMPONENT_LABEL)),
             ..Default::default()
         },
+        ..Default::default()
+    }
+}
+
+/// The server-side-apply field manager that owns one ServiceAccount's keys in
+/// the Scout source registry, so registering or revoking one account never
+/// touches another's.
+#[must_use]
+pub(crate) fn scout_source_field_manager(service_account: &str) -> String {
+    format!("{MC_FIELD_MANAGER}.{service_account}")
+}
+
+/// Build the Scout source registry ConfigMap carrying only `service_account`'s
+/// keys: `<sa>.clusters` and `<sa>.zones`, each comma-joined (ADR-0025).
+/// Entries are trimmed and empty ones dropped; zones are lowercased and lose a
+/// trailing dot, the form the admission policy compares against.
+///
+/// Applied under [`scout_source_field_manager`], it adds or replaces this
+/// account's keys and leaves every other account's alone; with no clusters
+/// and no zones it removes the account's keys.
+///
+/// # Arguments
+/// * `namespace` - Namespace the account writes ARecords into
+/// * `service_account` - The account being registered
+/// * `clusters` - Cluster names it may stamp
+/// * `zones` - Zones it may publish into
+#[must_use]
+pub(crate) fn build_scout_source_registry(
+    namespace: &str,
+    service_account: &str,
+    clusters: &[String],
+    zones: &[String],
+) -> ConfigMap {
+    let clusters: Vec<&str> = clusters
+        .iter()
+        .map(|c| c.trim())
+        .filter(|c| !c.is_empty())
+        .collect();
+    let zones: Vec<String> = zones
+        .iter()
+        .map(|z| z.trim().trim_end_matches('.').to_ascii_lowercase())
+        .filter(|z| !z.is_empty())
+        .collect();
+    let mut data = BTreeMap::new();
+    if !clusters.is_empty() {
+        data.insert(
+            format!("{service_account}{SCOUT_SOURCES_CLUSTERS_SUFFIX}"),
+            clusters.join(","),
+        );
+    }
+    if !zones.is_empty() {
+        data.insert(
+            format!("{service_account}{SCOUT_SOURCES_ZONES_SUFFIX}"),
+            zones.join(","),
+        );
+    }
+    ConfigMap {
+        metadata: ObjectMeta {
+            name: Some(SCOUT_SOURCES_CONFIGMAP_NAME.to_string()),
+            namespace: Some(namespace.to_string()),
+            labels: Some(labels(MC_COMPONENT_LABEL)),
+            ..Default::default()
+        },
+        // No `data` at all when there is nothing to register: applied under
+        // the account's field manager, that removes the keys it owned.
+        data: (!data.is_empty()).then_some(data),
         ..Default::default()
     }
 }
@@ -1754,6 +1877,14 @@ pub(crate) fn build_scout_deployment(
         args.push(serde_json::json!("--default-zone"));
         args.push(serde_json::json!(zone));
     }
+    if let Some(zones) = opts.allowed_zones {
+        args.push(serde_json::json!("--allowed-zones"));
+        args.push(serde_json::json!(zones));
+    }
+    if let Some(ranges) = opts.allowed_ip_ranges {
+        args.push(serde_json::json!("--allowed-ip-ranges"));
+        args.push(serde_json::json!(ranges));
+    }
 
     let mut env: Vec<serde_json::Value> = vec![
         serde_json::json!({
@@ -1873,7 +2004,38 @@ pub async fn run_revoke_multi_cluster(namespace: &str, service_account: &str) ->
 
     delete_mc_resource::<ServiceAccount>(&client, namespace, service_account).await?;
 
+    unregister_scout_source(&client, namespace, service_account).await?;
+
     eprintln!("\n✓ Revoked multi-cluster access for: {service_account} (namespace: {namespace})");
+    Ok(())
+}
+
+/// Remove `service_account`'s keys from the Scout source registry
+/// (ADR-0025), leaving every other account's keys.
+///
+/// Applies the account's entry with no keys under its own field manager,
+/// which drops the keys that manager owned. A namespace without a registry is
+/// skipped. Keys written some other way (by hand) are not removed.
+///
+/// # Errors
+/// Returns an error if reading or applying the ConfigMap fails.
+async fn unregister_scout_source(
+    client: &Client,
+    namespace: &str,
+    service_account: &str,
+) -> Result<()> {
+    let api: Api<ConfigMap> = Api::namespaced(client.clone(), namespace);
+    let existing = api
+        .get_opt(SCOUT_SOURCES_CONFIGMAP_NAME)
+        .await
+        .with_context(|| format!("Failed to read ConfigMap/{SCOUT_SOURCES_CONFIGMAP_NAME}"))?;
+    if existing.is_none() {
+        eprintln!("  ConfigMap/{SCOUT_SOURCES_CONFIGMAP_NAME} not found, skipping");
+        return Ok(());
+    }
+    let empty = build_scout_source_registry(namespace, service_account, &[], &[]);
+    apply(&api, &empty, &scout_source_field_manager(service_account)).await?;
+    eprintln!("✓ Unregistered {service_account} from ConfigMap/{SCOUT_SOURCES_CONFIGMAP_NAME}");
     Ok(())
 }
 

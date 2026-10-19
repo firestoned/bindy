@@ -1,0 +1,105 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: Apache-2.0
+#
+# Scout source guardrails, bindy-cluster side (ADR-0025).
+#
+# Two edge clusters, cluster-a and cluster-b, run Scout and write ARecords into
+# bindy-system on this (bindy / Queen Bee) cluster, each as its own
+# ServiceAccount. This file holds what the bindy cluster needs so that neither
+# can publish into, rewrite or delete the other's records:
+#
+#   1. The registry: which cluster names and zones each account may use.
+#      Normally written by `bindy bootstrap mc --cluster-name --allowed-zones`
+#      (one pair of keys per account, each under its own field manager); shown
+#      here in full for reference and GitOps installs.
+#   2. One DNSZone per cluster, selecting Scout records by their zone label.
+#      A DNSZone only takes a Scout record whose bindy.firestoned.io/zone label
+#      equals its zoneName, whatever the selector says.
+#
+# Also install the admission policy (once per bindy cluster):
+#   kubectl apply -f deploy/admission-policies/21-bindy-scout-source-binding-policy.yaml
+#   kubectl apply -f deploy/admission-policies/22-bindy-scout-source-binding-binding.yaml
+#
+# The accounts themselves come from:
+#   bindy bootstrap mc --service-account bindy-scout-cluster-a \
+#     --cluster-name cluster-a --allowed-zones cluster-a.example.com -o cluster-a.yaml
+#   bindy bootstrap mc --service-account bindy-scout-cluster-b \
+#     --cluster-name cluster-b --allowed-zones cluster-b.example.com -o cluster-b.yaml
+#
+# Edge-cluster side: examples/scout-guardrails-edge-cluster.yaml
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bindy-scout-sources
+  namespace: bindy-system
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/component: scout-remote
+data:
+  # <ServiceAccount>.clusters: cluster names it may stamp in
+  #   bindy.firestoned.io/source-cluster (comma-separated; list two while
+  #   renaming a cluster)
+  # <ServiceAccount>.zones: zones it may publish into, each with its subzones
+  bindy-scout-cluster-a.clusters: "cluster-a"
+  bindy-scout-cluster-a.zones: "cluster-a.example.com"
+  bindy-scout-cluster-b.clusters: "cluster-b"
+  bindy-scout-cluster-b.zones: "cluster-b.example.com"
+---
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: cluster-a-example-com
+  namespace: bindy-system
+spec:
+  zoneName: cluster-a.example.com
+  bind9InstancesFrom:
+    - selector:
+        matchLabels:
+          bindy.firestoned.io/cluster: production-dns
+  nameServers:
+    - hostname: ns1.example.com.
+      ipv4Address: "192.0.2.53"
+  recordsFrom:
+    - selector:
+        matchLabels:
+          bindy.firestoned.io/managed-by: scout
+          bindy.firestoned.io/zone: cluster-a.example.com
+  soaRecord:
+    primaryNs: ns1.example.com.
+    adminEmail: admin.example.com.
+    serial: 2026101901
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTtl: 86400
+  ttl: 300
+---
+apiVersion: bindy.firestoned.io/v1beta1
+kind: DNSZone
+metadata:
+  name: cluster-b-example-com
+  namespace: bindy-system
+spec:
+  zoneName: cluster-b.example.com
+  bind9InstancesFrom:
+    - selector:
+        matchLabels:
+          bindy.firestoned.io/cluster: production-dns
+  nameServers:
+    - hostname: ns1.example.com.
+      ipv4Address: "192.0.2.53"
+  recordsFrom:
+    - selector:
+        matchLabels:
+          bindy.firestoned.io/managed-by: scout
+          bindy.firestoned.io/zone: cluster-b.example.com
+  soaRecord:
+    primaryNs: ns1.example.com.
+    adminEmail: admin.example.com.
+    serial: 2026101901
+    refresh: 3600
+    retry: 600
+    expire: 604800
+    negativeTtl: 86400
+  ttl: 300

@@ -103,6 +103,14 @@ pub(crate) enum BootstrapCommands {
         /// Sets `BINDY_SCOUT_REMOTE_SECRET` in the scout Deployment.
         #[arg(long)]
         remote_secret: Option<String>,
+        /// Comma-separated zones the scout may publish into, each with its subzones
+        /// (ADR-0025). Passed to the scout container as `--allowed-zones`.
+        #[arg(long)]
+        allowed_zones: Option<String>,
+        /// Comma-separated IPv4 ranges published addresses must fall in (ADR-0025).
+        /// Passed to the scout container as `--allowed-ip-ranges`.
+        #[arg(long)]
+        allowed_ip_ranges: Option<String>,
     },
     /// Bootstrap multi-cluster access: create a service account on the queen-ship
     /// and write a `bindy.firestoned.io/remote-kubeconfig` Secret YAML to a file
@@ -148,6 +156,25 @@ pub(crate) enum BootstrapCommands {
         /// (e.g. kind) where MITM is not a concern.
         #[arg(long, default_value_t = false)]
         insecure_skip_tls_verify: bool,
+        /// Cluster name(s), comma-separated, this account's scout may stamp in the
+        /// `bindy.firestoned.io/source-cluster` label (its `--cluster-name`). With
+        /// --allowed-zones, registers the account in the `bindy-scout-sources`
+        /// ConfigMap so the `bindy-scout-source-binding` admission policy binds it to
+        /// them (ADR-0025). List a second name while renaming a cluster.
+        #[arg(
+            long = "cluster-name",
+            value_delimiter = ',',
+            requires = "allowed_zones"
+        )]
+        cluster_name: Vec<String>,
+        /// Zones, comma-separated, this account may publish into, each with its
+        /// subzones. Requires --cluster-name.
+        #[arg(
+            long = "allowed-zones",
+            value_delimiter = ',',
+            requires = "cluster_name"
+        )]
+        allowed_zones: Vec<String>,
     },
 }
 
@@ -190,6 +217,20 @@ pub(crate) struct ScoutArgs {
     /// BINDY_SCOUT_NAMESPACE_SELECTOR environment variable.
     #[arg(long = "namespace-selector")]
     pub(crate) namespace_selector: Option<String>,
+    /// Comma-separated zones scout may publish into; each entry also allows
+    /// its subzones. A source naming any other zone publishes nothing. When
+    /// unset, every zone is allowed (ADR-0025). Overrides the
+    /// BINDY_SCOUT_ALLOWED_ZONES environment variable.
+    /// Example: --allowed-zones foo.example.com
+    #[arg(long = "allowed-zones")]
+    pub(crate) allowed_zones: Option<String>,
+    /// Comma-separated IPv4 ranges (CIDR, or a bare address for /32) every
+    /// published address must fall in. A source with any address outside
+    /// publishes nothing. When unset, every address is allowed (ADR-0025).
+    /// Overrides the BINDY_SCOUT_ALLOWED_IP_RANGES environment variable.
+    /// Example: --allowed-ip-ranges 10.0.10.0/24
+    #[arg(long = "allowed-ip-ranges")]
+    pub(crate) allowed_ip_ranges: Option<String>,
     /// Bindy cluster API URL for the endpoint remote mode (ADR-0008): a
     /// Linkerd-mirrored meshed proxy, a konnectivity endpoint, or the API
     /// server itself. Requires --remote-token-file. Mutually exclusive with
@@ -260,6 +301,8 @@ pub(crate) async fn run_scout(args: ScoutArgs) -> Result<()> {
         gateway_service,
         default_zone,
         namespace_selector,
+        allowed_zones,
+        allowed_ip_ranges,
         remote_endpoint,
         remote_token_file,
         remote_ca_file,
@@ -267,19 +310,21 @@ pub(crate) async fn run_scout(args: ScoutArgs) -> Result<()> {
     // Phase 1 (same-cluster) and Phase 2 (remote cluster) are tracked in
     // `.github/community/12-scout-ingress-controller.md`.
     info!("Starting Scout controller");
-    bindy_scout::run_scout(
+    bindy_scout::run_scout(bindy_scout::ScoutCli {
         cluster_name,
         namespace,
         default_ips,
-        gateway_service,
+        gateway_services: gateway_service,
         default_zone,
         namespace_selector,
-        bindy_scout::ScoutRemoteOverrides {
+        allowed_zones,
+        allowed_ip_ranges,
+        remote: bindy_scout::ScoutRemoteOverrides {
             endpoint: remote_endpoint,
             token_file: remote_token_file,
             ca_file: remote_ca_file,
         },
-    )
+    })
     .await
 }
 
@@ -314,6 +359,8 @@ pub(crate) async fn run_bootstrap(subcommand: BootstrapCommands) -> Result<()> {
             default_ips,
             default_zone,
             remote_secret,
+            allowed_zones,
+            allowed_ip_ranges,
         } => {
             let opts = bindy_bootstrap::ScoutDeploymentOptions {
                 image_tag: &version,
@@ -322,6 +369,8 @@ pub(crate) async fn run_bootstrap(subcommand: BootstrapCommands) -> Result<()> {
                 default_ips: &default_ips,
                 default_zone: default_zone.as_deref(),
                 remote_secret: remote_secret.as_deref(),
+                allowed_zones: allowed_zones.as_deref(),
+                allowed_ip_ranges: allowed_ip_ranges.as_deref(),
             };
             bindy_bootstrap::run_bootstrap_scout(&namespace, dry_run, &opts).await
         }
@@ -335,17 +384,25 @@ pub(crate) async fn run_bootstrap(subcommand: BootstrapCommands) -> Result<()> {
             output,
             revoke,
             insecure_skip_tls_verify,
+            cluster_name,
+            allowed_zones,
         } => {
             if revoke {
                 bindy_bootstrap::run_revoke_multi_cluster(&namespace, &service_account).await
             } else {
                 let output = bindy_bootstrap::mc_output_path(output.as_deref(), &service_account)?;
+                let registration =
+                    (!cluster_name.is_empty()).then(|| bindy_bootstrap::ScoutSourceRegistration {
+                        clusters: &cluster_name,
+                        zones: &allowed_zones,
+                    });
                 bindy_bootstrap::run_bootstrap_multi_cluster(
                     &namespace,
                     &service_account,
                     server.as_deref(),
                     insecure_skip_tls_verify,
                     &output,
+                    registration.as_ref(),
                 )
                 .await
             }

@@ -1,0 +1,97 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: Apache-2.0
+#
+# Scout source guardrails, edge-cluster side (ADR-0025).
+#
+# Scout on edge cluster cluster-a, writing to the bindy cluster with the
+# kubeconfig Secret from `bindy bootstrap mc --service-account
+# bindy-scout-cluster-a ...` (apply that file to this cluster first).
+#
+# BINDY_SCOUT_ALLOWED_ZONES and BINDY_SCOUT_ALLOWED_IP_RANGES make this Scout
+# refuse, before anything reaches the bindy cluster, any source whose zone is
+# not cluster-a.example.com (or a subzone) or whose address is outside the
+# cluster's load-balancer range, whatever a tenant writes in its annotations.
+# Keep the zones the same as the account's registration on the bindy cluster
+# (examples/scout-guardrails-bindy-cluster.yaml).
+#
+# The same Deployment comes from:
+#   bindy bootstrap scout --cluster-name cluster-a \
+#     --remote-secret bindy-scout-cluster-a-kubeconfig \
+#     --allowed-zones cluster-a.example.com --allowed-ip-ranges 10.20.0.0/24
+#
+# The ServiceAccount and RBAC are in deploy/scout/ (or come from
+# `bindy bootstrap scout`).
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bindy-scout
+  namespace: bindy-system
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/component: scout
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: bindy
+      app.kubernetes.io/component: scout
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bindy
+        app.kubernetes.io/component: scout
+    spec:
+      serviceAccountName: bindy-scout
+      securityContext:
+        fsGroup: 65534
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: scout
+          image: ghcr.io/firestoned/bindy:latest
+          imagePullPolicy: IfNotPresent
+          args: ["scout"]
+          env:
+            - name: BINDY_SCOUT_CLUSTER_NAME
+              value: "cluster-a"
+            - name: BINDY_SCOUT_NAMESPACE
+              value: "bindy-system"
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: BINDY_SCOUT_REMOTE_SECRET
+              value: "bindy-scout-cluster-a-kubeconfig"
+            # The guardrails: this cluster's zone (and subzones) and its
+            # load-balancer range.
+            - name: BINDY_SCOUT_ALLOWED_ZONES
+              value: "cluster-a.example.com"
+            - name: BINDY_SCOUT_ALLOWED_IP_RANGES
+              value: "10.20.0.0/24"
+            - name: BINDY_SCOUT_NAMESPACE_SELECTOR
+              value: "bindy.firestoned.io/scout-enabled=true"
+            - name: RUST_LOG
+              value: "info"
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 65534
+          resources:
+            limits:
+              cpu: 200m
+              memory: 128Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

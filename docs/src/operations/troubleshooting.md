@@ -264,6 +264,35 @@ skipping it used to leave the deleted record served forever (v0.8.0-rc.7).
 If the pod never becomes ready (a crash-looping container), fix it or delete
 the pod: its data goes with it and the deletion completes.
 
+### Scout Publishes Nothing for a Source, or a Scout Record Is Not Served
+
+Scout's publishing limits and the bindy cluster's source binding
+([ADR-0025](https://github.com/firestoned/bindy/blob/main/docs/adr/0025-scout-records-bound-to-cluster-and-zones.md))
+each log one distinct message. Find it, then apply the matching fix:
+
+```bash
+# On the child (edge) cluster
+kubectl logs -n bindy-system deploy/bindy-scout | grep -E 'allowed zones|allowed ranges|refused|ValidatingAdmissionPolicy'
+# On the bindy cluster
+kubectl logs -n bindy-system deploy/bindy | grep 'labelled for another zone'
+```
+
+| Message | Where | Cause | Fix |
+|---|---|---|---|
+| `Zone is not in this Scout's allowed zones (BINDY_SCOUT_ALLOWED_ZONES), publishing nothing for this source` | Scout | The source's zone (annotation or `--default-zone`) is outside `--allowed-zones`. Records published earlier are kept. | Correct the source's `bindy.firestoned.io/zone`, or add the zone to `--allowed-zones` if this cluster really owns it. Scout picks the source up again when it changes or Scout restarts. |
+| `Address is outside this Scout's allowed ranges (BINDY_SCOUT_ALLOWED_IP_RANGES), publishing nothing for this source` (with `ip=`) | Scout | An annotated, discovered or default address is outside `--allowed-ip-ranges`. | Correct the `bindy.firestoned.io/ip` annotation or the load balancer, or widen `--allowed-ip-ranges`. Retried every 30 seconds. |
+| `Failed to apply ARecord <name>` ... `ValidatingAdmissionPolicy 'bindy-scout-source-binding' ... denied request: ServiceAccount '<sa>' may only publish into zones [...]` (or `may only write ARecords for clusters [...]`) | Scout | The bindy cluster refused the write: the account is registered for other zones or cluster names. | Register the account for this zone or name (`bindy bootstrap mc --service-account <sa> --cluster-name ... --allowed-zones ...`), or set Scout's `--allowed-zones` to match its registration so the source is refused on the edge cluster with a clearer message. |
+| `The bindy cluster refused deleting another cluster's ARecord; leaving it` | Scout | Scout tried to clean up a record left under another cluster name, and its account is not registered for that name. Not retried. | If the record really is this cluster's leftover from a rename, add the old name to the registration (`--cluster-name new,old`) and touch the source, or delete the record by hand. Otherwise nothing to do: the record belongs to another cluster. |
+| `... matches the selector of DNSZone <ns>/<zone> but is a Scout record labelled for another zone (...); not selecting it (ADR-0025)` | Operator | A record labelled `bindy.firestoned.io/managed-by: scout` has a `bindy.firestoned.io/zone` label different from (or missing for) the zone selecting it. | Scout never writes such a record. For a hand-made record, fix its zone label, or remove `managed-by: scout`. |
+| `default zone ... is not in BINDY_SCOUT_ALLOWED_ZONES` / `default IP ... is outside BINDY_SCOUT_ALLOWED_IP_RANGES` / `... may not contain '*'` / `... is not a DNS name` | Scout, at startup (pod in `CrashLoopBackOff`) | The configuration contradicts itself or is malformed. | Fix the named setting; `*` is refused on purpose, leave `--allowed-zones` unset to allow every zone. |
+| `⚠ <sa> is not registered in ConfigMap bindy-scout-sources` | `bindy bootstrap mc` output | The account was created without `--cluster-name` and `--allowed-zones`, so the admission policy does not constrain it. | Re-run with both flags. |
+
+To see what an account is registered for:
+
+```bash
+kubectl get configmap bindy-scout-sources -n bindy-system -o jsonpath='{.data}'
+```
+
 ## Debugging Steps
 
 See [Debugging Guide](./debugging.md) for detailed debugging procedures.

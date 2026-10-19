@@ -1,0 +1,49 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: Apache-2.0
+#
+# Test setup for the bindy-scout-source-binding fixtures (ADR-0025). Applied
+# for real (not dry-run) before the fixtures run: the policy reads the
+# registry ConfigMap at admission time, and the impersonated ServiceAccount
+# needs RBAC on ARecords, because authorization runs before admission.
+#
+# Registers ServiceAccount `scout-fixture` for cluster `edge-foo` and zone
+# `foo.example.com` (with its subzones). Test clusters only.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: scout-fixture
+  namespace: bindy-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: scout-fixture
+  namespace: bindy-system
+rules:
+  - apiGroups: ["bindy.firestoned.io"]
+    resources: ["arecords"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: scout-fixture
+  namespace: bindy-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: scout-fixture
+subjects:
+  - kind: ServiceAccount
+    name: scout-fixture
+    namespace: bindy-system
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bindy-scout-sources
+  namespace: bindy-system
+data:
+  scout-fixture.clusters: "edge-foo"
+  scout-fixture.zones: "foo.example.com"

@@ -401,3 +401,99 @@ mod shutdown_wiring_tests {
 // 2. Press Ctrl+C
 // 3. Verify logs show graceful shutdown messages
 // 4. Verify process exits immediately
+
+/// ADR-0025: the scout allowlist and source-registration flags parse.
+#[cfg(test)]
+mod scout_guardrail_flag_tests {
+    use crate::cli::{BootstrapCommands, Cli, Commands};
+    use clap::Parser;
+
+    #[test]
+    fn scout_accepts_the_allowlists() {
+        let cli = Cli::try_parse_from([
+            "bindy",
+            "scout",
+            "--allowed-zones",
+            "foo.example.com",
+            "--allowed-ip-ranges",
+            "10.0.0.0/24",
+        ])
+        .unwrap_or_else(|e| panic!("should parse: {e}"));
+        let Commands::Scout(args) = cli.command else {
+            panic!("expected scout");
+        };
+        assert_eq!(args.allowed_zones.as_deref(), Some("foo.example.com"));
+        assert_eq!(args.allowed_ip_ranges.as_deref(), Some("10.0.0.0/24"));
+    }
+
+    #[test]
+    fn bootstrap_mc_registers_clusters_and_zones() {
+        let cli = Cli::try_parse_from([
+            "bindy",
+            "bootstrap",
+            "mc",
+            "--service-account",
+            "edge-foo",
+            "--cluster-name",
+            "foo,foo-old",
+            "--allowed-zones",
+            "foo.example.com",
+        ])
+        .unwrap_or_else(|e| panic!("should parse: {e}"));
+        let Commands::Bootstrap {
+            subcommand:
+                BootstrapCommands::MultiCluster {
+                    cluster_name,
+                    allowed_zones,
+                    ..
+                },
+        } = cli.command
+        else {
+            panic!("expected bootstrap mc");
+        };
+        assert_eq!(cluster_name, vec!["foo", "foo-old"]);
+        assert_eq!(allowed_zones, vec!["foo.example.com"]);
+    }
+
+    #[test]
+    fn bootstrap_mc_cluster_name_and_zones_come_together() {
+        for half in [
+            ["--cluster-name", "foo"],
+            ["--allowed-zones", "foo.example.com"],
+        ] {
+            let args = ["bindy", "bootstrap", "mc", half[0], half[1]];
+            assert!(
+                Cli::try_parse_from(args).is_err(),
+                "{half:?} alone must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn bootstrap_scout_passes_the_allowlists() {
+        let cli = Cli::try_parse_from([
+            "bindy",
+            "bootstrap",
+            "scout",
+            "--dry-run",
+            "--allowed-zones",
+            "foo.example.com",
+            "--allowed-ip-ranges",
+            "10.0.0.0/24",
+        ])
+        .unwrap_or_else(|e| panic!("should parse: {e}"));
+        let Commands::Bootstrap {
+            subcommand:
+                BootstrapCommands::Scout {
+                    allowed_zones,
+                    allowed_ip_ranges,
+                    ..
+                },
+        } = cli.command
+        else {
+            panic!("expected bootstrap scout");
+        };
+        assert_eq!(allowed_zones.as_deref(), Some("foo.example.com"));
+        assert_eq!(allowed_ip_ranges.as_deref(), Some("10.0.0.0/24"));
+    }
+}

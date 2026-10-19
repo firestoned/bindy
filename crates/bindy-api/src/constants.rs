@@ -559,6 +559,18 @@ pub const HTTP_NOT_FOUND: u16 = 404;
 /// (`Conflict`) with this code.
 pub const HTTP_CONFLICT: u16 = 409;
 
+/// HTTP 403 Forbidden.
+///
+/// The Kubernetes API answers a request RBAC does not allow, and one an
+/// admission policy denies with reason `Forbidden`, with this code.
+pub const HTTP_FORBIDDEN: u16 = 403;
+
+/// HTTP 422 Unprocessable Entity.
+///
+/// The Kubernetes API answers a request a ValidatingAdmissionPolicy denies
+/// with its default reason (`Invalid`) with this code.
+pub const HTTP_UNPROCESSABLE_ENTITY: u16 = 422;
+
 /// Server-side apply field manager for every object the operator's
 /// controllers own (`metadata.managedFields`). One value, so two controllers
 /// writing the same object never split field ownership between names.

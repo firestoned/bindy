@@ -13,6 +13,7 @@
 mod tests {
     use crate::constants::ANNOTATION_ALLOW_ZONE_NAMESPACES;
     use crate::crd::DNSZone;
+    use crate::guardrails::{parse_allowed_ip_ranges, parse_allowed_zones, Ipv4Range};
     use crate::scout::{GatewayServiceTarget, HTTPRoute, NamespacedName, TCPRoute, TLSRoute};
     use crate::scout::{
         ScoutContext, ScoutError, ANNOTATION_IP, ANNOTATION_RECORD_NAME, ANNOTATION_SCOUT_ENABLED,
@@ -67,6 +68,9 @@ mod tests {
         /// Otherwise every apply returns a served record, as if the operator
         /// had reconciled it already.
         records_unserved: bool,
+        /// ARecords whose DELETE the API server refuses with this status,
+        /// as an admission policy (ADR-0025) or RBAC would.
+        refused_deletes: BTreeMap<String, u16>,
     }
 
     /// The status the operator writes once a record is bound to its zone and
@@ -181,6 +185,10 @@ mod tests {
                     "DELETE",
                     ["apis", "bindy.firestoned.io", "v1beta1", "namespaces", _, "arecords", name],
                 ) => {
+                    if let Some(code) = self.refused_deletes.get(*name) {
+                        self.log.push(format!("REFUSED DELETE {name}"));
+                        return error(*code);
+                    }
                     self.log.push(format!("DELETE {name}"));
                     match self.arecords.remove(*name) {
                         Some(obj) => ResponseTemplate::new(200).set_body_json(obj),
@@ -279,6 +287,8 @@ mod tests {
         default_ips: Vec<String>,
         namespace_selector: Option<String>,
         gateway_services: BTreeMap<String, GatewayServiceTarget>,
+        allowed_zones: Option<Vec<String>>,
+        allowed_ip_ranges: Option<Vec<Ipv4Range>>,
     }
 
     impl Harness {
@@ -306,7 +316,25 @@ mod tests {
                 default_ips: Vec::new(),
                 namespace_selector: None,
                 gateway_services: BTreeMap::new(),
+                allowed_zones: None,
+                allowed_ip_ranges: None,
             }
+        }
+
+        /// Makes the API server refuse deleting ARecord `name` with `code`.
+        fn refuse_delete(&self, name: &str, code: u16) {
+            self.state
+                .lock()
+                .expect("lock")
+                .refused_deletes
+                .insert(name.to_string(), code);
+        }
+
+        fn refused(&self) -> Vec<String> {
+            self.log()
+                .iter()
+                .filter_map(|l| l.strip_prefix("REFUSED DELETE ").map(ToString::to_string))
+                .collect()
         }
 
         fn add_zone(&mut self, namespace: &str, grant: Option<&str>) {
@@ -349,6 +377,8 @@ mod tests {
                 gateway_services: self.gateway_services.clone(),
                 default_zone: None,
                 namespace_selector: self.namespace_selector.clone(),
+                allowed_zones: self.allowed_zones.clone(),
+                allowed_ip_ranges: self.allowed_ip_ranges.clone(),
                 zone_store: store,
             })
         }
@@ -1126,6 +1156,132 @@ mod tests {
             assert_eq!(h.deleted(), vec!["stale"], "{}", src.kind());
             assert!(h.record_names().contains(&"other-zone".to_string()));
         }
+    }
+
+    // =====================================================================
+    // ADR-0025: zone and address allowlists, refused deletes
+    // =====================================================================
+
+    #[tokio::test]
+    async fn a_zone_outside_the_allowed_zones_publishes_nothing() {
+        for src in every_kind(&meta("web")) {
+            let mut h = Harness::new().await;
+            h.allowed_zones = Some(parse_allowed_zones("other.org").expect("zones"));
+            let action = h.run(&src).await.expect("reconcile");
+            assert_eq!(action, Action::await_change(), "{}", src.kind());
+            assert!(h.applied().is_empty(), "{}", src.kind());
+            assert!(
+                !h.log().iter().any(|l| l.starts_with("GET dnszone")),
+                "{}: the refusal comes before the zone lookup",
+                src.kind()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_zone_keeps_the_records_already_published() {
+        for src in every_kind(&meta("web")) {
+            let mut h = Harness::new().await;
+            h.allowed_zones = Some(parse_allowed_zones("other.org").expect("zones"));
+            h.seed(record("own", CLUSTER, "web", ZONE, Some(src.kind())));
+            h.run(&src).await.expect("reconcile");
+            assert!(h.deleted().is_empty(), "{}", src.kind());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_zone_inside_the_allowed_zones_publishes() {
+        for src in every_kind(&meta("web")) {
+            let mut h = Harness::new().await;
+            h.allowed_zones = Some(parse_allowed_zones("other.org, Example.com").expect("zones"));
+            h.run(&src).await.expect("reconcile");
+            assert_eq!(h.applied().len(), 1, "{}", src.kind());
+        }
+    }
+
+    #[tokio::test]
+    async fn an_address_outside_the_allowed_ranges_publishes_nothing() {
+        for src in every_kind(&meta("web")) {
+            let mut h = Harness::new().await;
+            h.allowed_ip_ranges = Some(parse_allowed_ip_ranges("10.0.0.0/24").expect("ranges"));
+            let action = h.run(&src).await.expect("reconcile");
+            assert!(requeued(&action), "{}", src.kind());
+            assert!(h.applied().is_empty(), "{}", src.kind());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_discovered_address_outside_the_allowed_ranges_publishes_nothing() {
+        let mut h = Harness::new().await;
+        h.allowed_ip_ranges = Some(parse_allowed_ip_ranges("192.0.2.0/24").expect("ranges"));
+        let action = h
+            .run(&ingress(&meta("web"), &["api.example.com"], &[LB_IP]))
+            .await
+            .expect("reconcile");
+        assert!(requeued(&action));
+        assert!(h.applied().is_empty());
+    }
+
+    #[tokio::test]
+    async fn addresses_inside_the_allowed_ranges_publish() {
+        for src in every_kind(&meta("web")) {
+            let mut h = Harness::new().await;
+            h.allowed_ip_ranges = Some(parse_allowed_ip_ranges("10.9.9.0/24").expect("ranges"));
+            h.run(&src).await.expect("reconcile");
+            assert_eq!(h.applied().len(), 1, "{}", src.kind());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_delete_of_another_clusters_record_is_skipped_on_publish() {
+        for code in [403, 422] {
+            for src in every_kind(&meta("web")) {
+                let h = Harness::new().await;
+                h.seed(record("stale", "old-prod", "web", ZONE, Some(src.kind())));
+                h.refuse_delete("stale", code);
+                let action = h
+                    .run(&src)
+                    .await
+                    .expect("a refusal does not fail the reconcile");
+                assert_eq!(action, Action::await_change(), "{} {code}", src.kind());
+                assert_eq!(h.refused(), vec!["stale"], "{} {code}", src.kind());
+                assert_eq!(h.applied().len(), 1, "{} {code}", src.kind());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_delete_of_another_clusters_record_does_not_hold_the_finalizer() {
+        for src in every_kind(&meta("web").deleting(1)) {
+            let h = Harness::new().await;
+            h.seed(record("own", CLUSTER, "web", ZONE, Some(src.kind())));
+            h.seed(record("stale", "old-prod", "web", ZONE, Some(src.kind())));
+            h.refuse_delete("stale", 422);
+            let action = h.run(&src).await.expect("reconcile");
+            assert_eq!(action, Action::await_change(), "{}", src.kind());
+            assert_eq!(h.deleted(), vec!["own"], "{}", src.kind());
+            assert_eq!(h.finalizer_ops(), vec!["remove"], "{}", src.kind());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_delete_of_the_sources_own_record_still_fails() {
+        let h = Harness::new().await;
+        h.seed(record(
+            "scout-prod-team-a-web-1",
+            CLUSTER,
+            "web",
+            ZONE,
+            Some("Ingress"),
+        ));
+        h.refuse_delete("scout-prod-team-a-web-1", 422);
+        let result = h
+            .run(&ingress(&meta("web"), &["api.example.com"], &[LB_IP]))
+            .await;
+        assert!(
+            result.is_err(),
+            "pruning its own record must not be skipped"
+        );
     }
 
     #[tokio::test]

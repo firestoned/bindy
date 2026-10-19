@@ -2066,6 +2066,113 @@ mod tests {
         assert_eq!(c.default_zone.as_deref(), Some("cli.example.com"));
     }
 
+    // =========================================================================
+    // ADR-0025 decisions 1 and 2: zone and address allowlists
+    // =========================================================================
+
+    #[test]
+    fn allowlists_are_unrestricted_when_unset() {
+        let c = config(&[], ScoutCli::default()).expect("valid");
+        assert_eq!(c.allowed_zones, None);
+        assert!(c.allowed_ip_ranges.is_none());
+    }
+
+    #[test]
+    fn allowlists_load_from_the_environment() {
+        let c = config(
+            &[
+                (
+                    "BINDY_SCOUT_ALLOWED_ZONES",
+                    "Foo.Example.com., bar.example.com",
+                ),
+                ("BINDY_SCOUT_ALLOWED_IP_RANGES", "10.0.0.0/24,192.0.2.7"),
+            ],
+            ScoutCli::default(),
+        )
+        .expect("valid");
+        assert_eq!(
+            c.allowed_zones,
+            Some(vec![
+                "foo.example.com".to_string(),
+                "bar.example.com".to_string()
+            ])
+        );
+        assert_eq!(c.allowed_ip_ranges.map(|r| r.len()), Some(2));
+    }
+
+    #[test]
+    fn allowlist_flags_override_their_variables() {
+        let cli = ScoutCli {
+            allowed_zones: Some("cli.example.com".into()),
+            allowed_ip_ranges: Some("10.1.0.0/16".into()),
+            ..ScoutCli::default()
+        };
+        let c = config(
+            &[
+                ("BINDY_SCOUT_ALLOWED_ZONES", "env.example.com"),
+                ("BINDY_SCOUT_ALLOWED_IP_RANGES", "10.0.0.0/24,10.2.0.0/24"),
+            ],
+            cli,
+        )
+        .expect("valid");
+        assert_eq!(c.allowed_zones, Some(vec!["cli.example.com".to_string()]));
+        assert_eq!(c.allowed_ip_ranges.map(|r| r.len()), Some(1));
+    }
+
+    #[test]
+    fn an_empty_allowlist_variable_fails_startup() {
+        for var in ["BINDY_SCOUT_ALLOWED_ZONES", "BINDY_SCOUT_ALLOWED_IP_RANGES"] {
+            let err = config(&[(var, "")], ScoutCli::default())
+                .expect_err("an empty value must fail startup");
+            assert!(err.to_string().contains(var), "{var}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_wildcard_or_malformed_allowlist_fails_startup() {
+        assert!(config(&[("BINDY_SCOUT_ALLOWED_ZONES", "*")], ScoutCli::default()).is_err());
+        assert!(config(
+            &[("BINDY_SCOUT_ALLOWED_IP_RANGES", "10.0.0.0/40")],
+            ScoutCli::default()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn a_default_zone_outside_the_allowed_zones_fails_startup() {
+        let err = config(
+            &[
+                ("BINDY_SCOUT_ALLOWED_ZONES", "foo.example.com"),
+                ("BINDY_SCOUT_DEFAULT_ZONE", "bar.example.com"),
+            ],
+            ScoutCli::default(),
+        )
+        .expect_err("default zone must be allowed");
+        assert!(err.to_string().contains("bar.example.com"), "{err}");
+
+        assert!(config(
+            &[
+                ("BINDY_SCOUT_ALLOWED_ZONES", "foo.example.com"),
+                ("BINDY_SCOUT_DEFAULT_ZONE", "api.foo.example.com"),
+            ],
+            ScoutCli::default(),
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn a_default_ip_outside_the_allowed_ranges_fails_startup() {
+        let err = config(
+            &[
+                ("BINDY_SCOUT_ALLOWED_IP_RANGES", "10.0.0.0/24"),
+                ("BINDY_SCOUT_DEFAULT_IPS", "10.0.0.1,10.9.9.9"),
+            ],
+            ScoutCli::default(),
+        )
+        .expect_err("default IPs must be inside the ranges");
+        assert!(err.to_string().contains("10.9.9.9"), "{err}");
+    }
+
     // ------------------------------------------------------------------
     // kind_served
     //

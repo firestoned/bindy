@@ -78,6 +78,16 @@ pub const MANAGED_BY_CLUSTER_BIND9_PROVIDER: &str = "ClusterBind9Provider";
 /// Label indicating which controller manages this resource (`Bind9Instance` or `Bind9Cluster`)
 pub const BINDY_MANAGED_BY_LABEL: &str = "bindy.firestoned.io/managed-by";
 
+/// Value of [`BINDY_MANAGED_BY_LABEL`] on the `ARecord`s Scout writes
+pub const MANAGED_BY_SCOUT: &str = "scout";
+
+/// Label carrying the DNS zone a Scout-written record belongs to. A `DNSZone`
+/// takes a Scout record only when this equals its `spec.zoneName` (ADR-0025)
+pub const BINDY_ZONE_LABEL: &str = "bindy.firestoned.io/zone";
+
+/// Label carrying the cluster name of the Scout that wrote a record
+pub const BINDY_SOURCE_CLUSTER_LABEL: &str = "bindy.firestoned.io/source-cluster";
+
 /// Label indicating which `Bind9Cluster` this resource belongs to
 pub const BINDY_CLUSTER_LABEL: &str = "bindy.firestoned.io/cluster";
 

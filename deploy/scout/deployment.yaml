@@ -52,6 +52,14 @@ spec:
             # Optional: comma-separated list of additional namespaces to exclude
             # - name: BINDY_SCOUT_EXCLUDE_NAMESPACES
             #   value: "kube-system,kube-public,kube-node-lease"
+            # Recommended (ADR-0025): the zones this cluster may publish into (each
+            # with its subzones), and the IPv4 ranges its published addresses must
+            # fall in. A source naming another zone, or resolving to an address
+            # outside the ranges, publishes nothing. Unset means unrestricted.
+            # - name: BINDY_SCOUT_ALLOWED_ZONES
+            #   value: "test-cluster.example.com"
+            # - name: BINDY_SCOUT_ALLOWED_IP_RANGES
+            #   value: "192.0.2.0/24"
             - name: RUST_LOG
               value: "info"
             - name: RUST_LOG_FORMAT

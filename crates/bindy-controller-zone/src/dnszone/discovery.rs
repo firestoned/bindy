@@ -12,7 +12,7 @@ use kube::{
     Client, ResourceExt,
 };
 use serde_json::json;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use tracing::{debug, info, warn};
 
 use crate::crd::DNSZone;
@@ -287,6 +287,35 @@ fn unselected_previous_records(
         .filter(|r| !current_keys.contains(&format!("{}/{}", r.kind, r.name)))
         .cloned()
         .collect()
+}
+
+/// Whether a record that matched a zone's selector may join that zone.
+///
+/// A record Scout wrote (`bindy.firestoned.io/managed-by: scout`) joins only
+/// the zone its `bindy.firestoned.io/zone` label names, compared ignoring case
+/// and a trailing dot, whatever the zone's `recordsFrom` selector says. That
+/// label is what the Scout source-binding admission policy checks, so a
+/// selector that omits it cannot hand another cluster's records to this zone
+/// (ADR-0025 decision 5). Every other record is left to the selector.
+///
+/// # Arguments
+///
+/// * `labels` - The record's labels
+/// * `zone_fqdn` - The zone's DNS name (`spec.zoneName`)
+#[must_use]
+pub(crate) fn scout_record_belongs_to_zone(
+    labels: &BTreeMap<String, String>,
+    zone_fqdn: &str,
+) -> bool {
+    use bindy_api::labels::{BINDY_MANAGED_BY_LABEL, BINDY_ZONE_LABEL, MANAGED_BY_SCOUT};
+
+    if labels.get(BINDY_MANAGED_BY_LABEL).map(String::as_str) != Some(MANAGED_BY_SCOUT) {
+        return true;
+    }
+    let normalize = |name: &str| name.trim_end_matches('.').to_ascii_lowercase();
+    labels
+        .get(BINDY_ZONE_LABEL)
+        .is_some_and(|zone| normalize(zone) == normalize(zone_fqdn))
 }
 
 /// Whether a record's `status.zoneRef` already names this zone.
@@ -807,8 +836,6 @@ async fn discover_records_generic<T>(
 where
     T: bindy_controller_sdk::context::RecordKind,
 {
-    use std::collections::BTreeMap;
-
     let namespace = dnszone.namespace().unwrap_or_default();
     let zone_resource_name = dnszone.name_any();
     let zone_fqdn = &dnszone.spec.zone_name;
@@ -820,6 +847,18 @@ where
         let labels: BTreeMap<String, String> = record.meta().labels.clone().unwrap_or_default();
 
         if !selector.matches(&labels) {
+            continue;
+        }
+        if !scout_record_belongs_to_zone(&labels, zone_fqdn) {
+            warn!(
+                "{} {}/{} matches the selector of DNSZone {}/{} but is a Scout record labelled for another zone ({:?}); not selecting it (ADR-0025)",
+                T::KIND,
+                namespace,
+                record.name_any(),
+                namespace,
+                zone_resource_name,
+                labels.get(bindy_api::labels::BINDY_ZONE_LABEL),
+            );
             continue;
         }
 

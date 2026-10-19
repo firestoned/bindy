@@ -198,6 +198,9 @@ phase_a() {
 
     echo -e "${GREEN}🛡  Applying all ValidatingAdmissionPolicies + bindings...${NC}"
     ${KUBECTL} apply -f "${PROJECT_ROOT}/deploy/admission-policies/" >/dev/null
+    # Objects some fixtures need to exist for real: the Scout source-binding
+    # fixtures impersonate a registered ServiceAccount (ADR-0025).
+    ${KUBECTL} apply -f "${PROJECT_ROOT}/deploy/admission-policies/tests/setup/" >/dev/null
 
     # Wait for the VAPs to become active. Canary: the trailing-dot CNAME
     # fixture is rejected ONLY by VAP 13 (the CRD schema has no pattern on

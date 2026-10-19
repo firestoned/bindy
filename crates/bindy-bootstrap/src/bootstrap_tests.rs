@@ -9,19 +9,21 @@ mod tests {
         build_mc_writer_role, build_mc_writer_role_binding, build_namespace,
         build_scout_cluster_role, build_scout_cluster_role_binding, build_scout_deployment,
         build_scout_secrets_reader_role, build_scout_secrets_reader_role_binding,
-        build_scout_service_account, build_scout_writer_role, build_scout_writer_role_binding,
-        build_secrets_writer_role, build_secrets_writer_role_binding, build_service_account,
+        build_scout_service_account, build_scout_source_registry, build_scout_writer_role,
+        build_scout_writer_role_binding, build_secrets_writer_role,
+        build_secrets_writer_role_binding, build_service_account,
         build_tokenreview_cluster_role_binding, parse_cluster_role, resolve_image,
-        ScoutDeploymentOptions, BINDCAR_TOKENREVIEW_CLUSTER_ROLE_YAML, BINDCAR_TOKENREVIEW_NAME,
-        BINDCAR_TOKEN_EXPIRATION_SECONDS, BINDCAR_TOKEN_FILENAME, BINDCAR_TOKEN_MOUNT_PATH,
-        BINDCAR_TOKEN_VOLUME_NAME, BINDY_ADMIN_ROLE_YAML, BINDY_ROLE_YAML,
-        CLUSTER_ROLE_BINDING_NAME, DEFAULT_IMAGE_TAG, DEFAULT_NAMESPACE,
+        scout_source_field_manager, ScoutDeploymentOptions, BINDCAR_TOKENREVIEW_CLUSTER_ROLE_YAML,
+        BINDCAR_TOKENREVIEW_NAME, BINDCAR_TOKEN_EXPIRATION_SECONDS, BINDCAR_TOKEN_FILENAME,
+        BINDCAR_TOKEN_MOUNT_PATH, BINDCAR_TOKEN_VOLUME_NAME, BINDY_ADMIN_ROLE_YAML,
+        BINDY_ROLE_YAML, CLUSTER_ROLE_BINDING_NAME, DEFAULT_IMAGE_TAG, DEFAULT_NAMESPACE,
         DEFAULT_SCOUT_CLUSTER_NAME, MC_DEFAULT_SERVICE_ACCOUNT_NAME, OPERATOR_CLUSTER_ROLE_YAMLS,
         OPERATOR_DEPLOYMENT_NAME, OPERATOR_IMAGE_BASE, OPERATOR_ROLE_NAME, POD_NAMESPACE_ENV,
         REMOTE_KUBECONFIG_SECRET_SUFFIX, REMOTE_KUBECONFIG_SECRET_TYPE, SA_TOKEN_SECRET_SUFFIX,
         SCOUT_CLUSTER_ROLE_BINDING_NAME, SCOUT_CLUSTER_ROLE_NAME, SCOUT_DEPLOYMENT_NAME,
         SCOUT_SECRETS_READER_ROLE_BINDING_NAME, SCOUT_SECRETS_READER_ROLE_NAME,
-        SCOUT_SERVICE_ACCOUNT_NAME, SCOUT_TARGET_NAMESPACE_ENV, SCOUT_WRITER_ROLE_BINDING_NAME,
+        SCOUT_SERVICE_ACCOUNT_NAME, SCOUT_SOURCES_CLUSTERS_SUFFIX, SCOUT_SOURCES_CONFIGMAP_NAME,
+        SCOUT_SOURCES_ZONES_SUFFIX, SCOUT_TARGET_NAMESPACE_ENV, SCOUT_WRITER_ROLE_BINDING_NAME,
         SCOUT_WRITER_ROLE_NAME, SECRETS_WRITER_ROLE_BINDING_NAME, SECRETS_WRITER_ROLE_NAME,
         SERVICE_ACCOUNT_NAME,
     };
@@ -56,6 +58,8 @@ mod tests {
             default_ips,
             default_zone,
             remote_secret,
+            allowed_zones: None,
+            allowed_ip_ranges: None,
         }
     }
 
@@ -1441,6 +1445,34 @@ mod tests {
     }
 
     #[test]
+    fn test_build_scout_deployment_passes_the_allowlists() {
+        let mut opts = scout_opts("latest", None, "edge-foo", &[], None, None);
+        opts.allowed_zones = Some("foo.example.com");
+        opts.allowed_ip_ranges = Some("10.0.0.0/24");
+        let d = build_scout_deployment("foo", &opts).unwrap();
+        assert_eq!(
+            scout_container_args(d),
+            vec![
+                "scout",
+                "--cluster-name",
+                "edge-foo",
+                "--allowed-zones",
+                "foo.example.com",
+                "--allowed-ip-ranges",
+                "10.0.0.0/24"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_build_scout_deployment_no_allowlists_omits_flags() {
+        let opts = scout_opts("latest", None, DEFAULT_SCOUT_CLUSTER_NAME, &[], None, None);
+        let args = scout_container_args(build_scout_deployment("foo", &opts).unwrap());
+        assert!(!args.contains(&"--allowed-zones".to_string()));
+        assert!(!args.contains(&"--allowed-ip-ranges".to_string()));
+    }
+
+    #[test]
     fn test_build_scout_deployment_no_default_ips_omits_flag() {
         let opts = scout_opts("latest", None, DEFAULT_SCOUT_CLUSTER_NAME, &[], None, None);
         let d = build_scout_deployment("foo", &opts).unwrap();
@@ -1701,6 +1733,71 @@ mod tests {
         assert!(
             !verbs.iter().any(|v| v == "delete"),
             "dnszones: must NOT allow delete"
+        );
+    }
+
+    // --- Multi-cluster (MC) Scout source registry (ADR-0025) ---
+
+    #[test]
+    fn test_scout_source_registry_names_the_configmap_the_policy_reads() {
+        let cm = build_scout_source_registry(
+            "bindy-system",
+            "edge-foo",
+            &["foo".into()],
+            &["foo.example.com".into()],
+        );
+        assert_eq!(SCOUT_SOURCES_CONFIGMAP_NAME, "bindy-scout-sources");
+        assert_eq!(
+            cm.metadata.name.as_deref(),
+            Some(SCOUT_SOURCES_CONFIGMAP_NAME)
+        );
+        assert_eq!(cm.metadata.namespace.as_deref(), Some("bindy-system"));
+    }
+
+    #[test]
+    fn test_scout_source_registry_writes_only_this_accounts_keys() {
+        let cm = build_scout_source_registry(
+            "bindy-system",
+            "edge-foo",
+            &["foo".into(), "foo-old".into()],
+            &["foo.example.com".into(), "foo.example.org".into()],
+        );
+        let data = cm.data.expect("data");
+        assert_eq!(SCOUT_SOURCES_CLUSTERS_SUFFIX, ".clusters");
+        assert_eq!(SCOUT_SOURCES_ZONES_SUFFIX, ".zones");
+        assert_eq!(data.len(), 2, "{data:?}");
+        assert_eq!(data["edge-foo.clusters"], "foo,foo-old");
+        assert_eq!(data["edge-foo.zones"], "foo.example.com,foo.example.org");
+    }
+
+    #[test]
+    fn test_scout_source_registry_normalizes_entries() {
+        let cm = build_scout_source_registry(
+            "bindy-system",
+            "edge-foo",
+            &[" foo ".into(), String::new()],
+            &[" Foo.Example.com. ".into()],
+        );
+        let data = cm.data.expect("data");
+        assert_eq!(data["edge-foo.clusters"], "foo");
+        assert_eq!(data["edge-foo.zones"], "foo.example.com");
+    }
+
+    #[test]
+    fn test_scout_source_registry_without_entries_writes_no_keys() {
+        let cm = build_scout_source_registry("bindy-system", "edge-foo", &[], &[]);
+        assert!(cm.data.unwrap_or_default().is_empty());
+    }
+
+    #[test]
+    fn test_scout_source_field_manager_is_per_service_account() {
+        assert_eq!(
+            scout_source_field_manager("edge-foo"),
+            "bindy-bootstrap-mc.edge-foo"
+        );
+        assert_ne!(
+            scout_source_field_manager("edge-foo"),
+            scout_source_field_manager("edge-bar")
         );
     }
 
@@ -2710,6 +2807,8 @@ mod plan_tests {
             default_ips: ips,
             default_zone: Some(ZONE),
             remote_secret,
+            allowed_zones: None,
+            allowed_ip_ranges: None,
         }
     }
 

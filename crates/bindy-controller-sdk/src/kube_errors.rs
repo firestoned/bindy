@@ -28,7 +28,9 @@
 //! }
 //! ```
 
-use bindy_api::constants::{HTTP_CONFLICT, HTTP_NOT_FOUND};
+use bindy_api::constants::{
+    HTTP_CONFLICT, HTTP_FORBIDDEN, HTTP_NOT_FOUND, HTTP_UNPROCESSABLE_ENTITY,
+};
 
 /// The HTTP status code of a Kubernetes API error, if `e` is one.
 fn api_code(e: &kube::Error) -> Option<u16> {
@@ -72,6 +74,25 @@ pub fn is_not_found(e: &kube::Error) -> bool {
 #[must_use]
 pub fn is_conflict(e: &kube::Error) -> bool {
     api_code(e) == Some(HTTP_CONFLICT)
+}
+
+/// Whether `e` is the API server refusing the request rather than failing
+/// it: HTTP 403 (RBAC, or an admission policy denying with reason
+/// `Forbidden`) or 422 (an admission policy denying with its default reason
+/// `Invalid`, or a schema rejection). Retrying a refused request unchanged
+/// cannot succeed.
+///
+/// # Arguments
+/// * `e` - The error from a `kube::Api` call
+///
+/// # Returns
+/// `true` only for a `kube::Error::Api` with code 403 or 422.
+#[must_use]
+pub fn is_refused(e: &kube::Error) -> bool {
+    matches!(
+        api_code(e),
+        Some(HTTP_FORBIDDEN | HTTP_UNPROCESSABLE_ENTITY)
+    )
 }
 
 /// [`is_not_found`] for an `anyhow::Error`: whether any error in its chain is

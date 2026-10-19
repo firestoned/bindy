@@ -249,8 +249,10 @@ admission-policies-install: ## Install bindy ValidatingAdmissionPolicies (k8s 1.
 	@kubectl apply -f deploy/admission-policies/16-bindy-image-provenance-binding.yaml
 	@kubectl apply -f deploy/admission-policies/17-bindy-configmap-integrity-policy.yaml
 	@kubectl apply -f deploy/admission-policies/18-bindy-configmap-integrity-binding.yaml
+	@kubectl apply -f deploy/admission-policies/21-bindy-scout-source-binding-policy.yaml
+	@kubectl apply -f deploy/admission-policies/22-bindy-scout-source-binding-binding.yaml
 	@echo "✓ Admission policies installed (07/08 pod-shape, 11/12 operator-workload-SA,"
-	@echo "  17/18 ConfigMap integrity,"
+	@echo "  17/18 ConfigMap integrity, 21/22 Scout source binding,"
 	@echo "  15/16 image-provenance included; 11/12 is the compensating control for the"
 	@echo "  cluster-wide operator Deployment grant, so it must not be skipped)."
 	@echo "  Opt-in (breaking for clusters with existing hmac-sha1 RNDC keys):"
@@ -265,6 +267,7 @@ admission-policies-uninstall: ## Remove bindy ValidatingAdmissionPolicies
 # named reject-* must fail. Requires the policies to be installed first.
 admission-policies-test: ## Validate VAPs against accept/reject fixtures
 	@echo "Testing ValidatingAdmissionPolicies against fixtures..."
+	@kubectl apply -f deploy/admission-policies/tests/setup/ >/dev/null
 	@fail=0; \
 	for f in deploy/admission-policies/tests/accept-*.yaml; do \
 	  as_flag=$$(grep -oE -- '--as=[^ ]+' "$$f" 2>/dev/null | head -1); \

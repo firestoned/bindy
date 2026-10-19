@@ -24,7 +24,7 @@
       "unique-id": "admission-policies",
       "node-type": "policy",
       "name": "ValidatingAdmissionPolicies",
-      "description": "Seven CEL-based ValidatingAdmissionPolicies (acl, zone-name, rndc-strict, pod-shape, dnssec-policy, operator-workload-sa, record-value) enforced by the API server on CR and pod admission."
+      "description": "Eleven CEL-based ValidatingAdmissionPolicies (acl, zone-name, rndc-strict, pod-shape, dnssec-policy, operator-workload-sa, record-value, image-provenance, configmap-integrity, bindcar-env, scout-source-binding) enforced by the API server on CR and pod admission. scout-source-binding ties ARecord writes by a registered Scout ServiceAccount to its cluster names and zones (ADR-0025)."
     },
     {
       "unique-id": "crd-provider",

@@ -1,0 +1,22 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: Apache-2.0
+#
+# Should be REJECTED by bindy-scout-source-binding: a registered Scout account may only write records labelled managed-by=scout.
+# Needs tests/setup/scout-source-binding.yaml applied, and must be applied
+# while impersonating the registered Scout ServiceAccount:
+#
+#   kubectl apply --dry-run=server --as=system:serviceaccount:bindy-system:scout-fixture \
+#     -f reject-arecord-scout-unmanaged.yaml
+#
+apiVersion: bindy.firestoned.io/v1beta1
+kind: ARecord
+metadata:
+  name: vap-reject-arecord-scout-unmanaged
+  namespace: bindy-system
+  labels:
+    bindy.firestoned.io/source-cluster: edge-foo
+    bindy.firestoned.io/zone: foo.example.com
+spec:
+  name: api
+  ipv4Addresses:
+    - "192.0.2.10"

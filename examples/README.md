@@ -107,6 +107,13 @@ metadata:
    - ServiceAccounts, Roles, RoleBindings, and ClusterRoleBindings
    - Example zones and records for both tenancy models
 
+### Scout Across Clusters (ADR-0025)
+
+- **[scout-guardrails-bindy-cluster.yaml](scout-guardrails-bindy-cluster.yaml)** - The bindy-cluster side: the `bindy-scout-sources` registry binding two edge clusters' ServiceAccounts to their own cluster names and zones, and one DNSZone per cluster selecting Scout records by zone label. Pair with admission policies `21`/`22`.
+- **[scout-guardrails-edge-cluster.yaml](scout-guardrails-edge-cluster.yaml)** - The edge-cluster side: a Scout limited to its zone (`BINDY_SCOUT_ALLOWED_ZONES`) and load-balancer range (`BINDY_SCOUT_ALLOWED_IP_RANGES`), writing to the bindy cluster.
+
+See [Binding each cluster to its names and zones](../docs/src/guide/scout.md#binding-each-cluster-to-its-names-and-zones).
+
 ### Basic Setup
 
 1. **[bind9-cluster.yaml](bind9-cluster.yaml)** - Basic Bind9Cluster configuration

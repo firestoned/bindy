@@ -1,0 +1,22 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: Apache-2.0
+#
+# Binds bindy-scout-source-binding (ADR-0025). The paramRef has no namespace,
+# so each ARecord is checked against the `bindy-scout-sources` ConfigMap of
+# its own namespace; a namespace without one is not constrained.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: bindy-scout-source-binding-binding
+  labels:
+    app.kubernetes.io/name: bindy
+    app.kubernetes.io/part-of: bindy
+    app.kubernetes.io/component: admission-policy
+spec:
+  policyName: bindy-scout-source-binding
+  paramRef:
+    name: bindy-scout-sources
+    parameterNotFoundAction: Allow
+  validationActions:
+    - Deny

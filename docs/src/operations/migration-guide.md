@@ -2,6 +2,46 @@
 
 This document collects the breaking-change migrations for Bindy, newest first.
 
+## Scout records bound to their cluster and zones (ADR-0025)
+
+No CRD change, and nothing changes until you opt in, with one exception
+(the zone label rule below). The full step-by-step procedure, with
+pre-checks, a warn-only phase, verification commands and rollback, is in
+[Migrating to Scout Source Guardrails](scout-source-guardrails-migration.md).
+In short, per edge cluster:
+
+- **Limit what each Scout publishes.** Set `--allowed-zones` (or
+  `BINDY_SCOUT_ALLOWED_ZONES`) to the zones the cluster owns, and
+  `--allowed-ip-ranges` (`BINDY_SCOUT_ALLOWED_IP_RANGES`) to its
+  load-balancer ranges; `bindy bootstrap scout` takes both flags. A Scout
+  that has neither logs a startup warning. A `--default-zone` or
+  `--default-ips` outside them fails Scout at startup.
+
+- **Register each Scout's ServiceAccount on the bindy cluster.** Re-run
+  `bindy bootstrap mc` with the account's existing `--service-account` plus
+  `--cluster-name <the Scout's --cluster-name>` and `--allowed-zones`. It
+  re-applies the same ServiceAccount and RBAC and adds the account's keys to
+  the `bindy-scout-sources` ConfigMap. Then install policies `21` and `22`
+  (`make admission-policies-install`, or the release's
+  `admission-policies.yaml`). An account that is not registered stays
+  unconstrained. The default `bindy-scout-remote` account shared by several
+  clusters can only be registered for all of their names and zones at once;
+  give each cluster its own account first.
+
+- **Check `DNSZone` selectors that pick up Scout records (behavior change).**
+  A `DNSZone` now takes a record labelled
+  `bindy.firestoned.io/managed-by: scout` only when the record's
+  `bindy.firestoned.io/zone` label equals its `spec.zoneName`. Scout always
+  writes that label with the zone it authorized against, so its records are
+  unaffected. A hand-made record carrying `managed-by: scout` with a
+  different or missing zone label stops being served by the zone; the
+  operator logs a warning naming it. Fix its label, or drop `managed-by:
+  scout` from records Scout did not write.
+
+- **Renaming a registered cluster** now takes two steps: register the new
+  name next to the old one, restart Scout with the new name and let it clean
+  up, then drop the old name. See [Changing the Cluster Name](../guide/scout.md#changing-the-cluster-name).
+
 ## Secret operations are audited (ADR-0024)
 
 No CRD, RBAC or flag change.
