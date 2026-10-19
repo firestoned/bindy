@@ -102,13 +102,13 @@ jobs:
       # restores a cache over target/ and a stale restore clobbers the freshly
       # built x86_64 binary (root cause of the v0.3.3/v0.4.0 leg failures).
       - name: Setup Rust build environment (x86_64)
-        uses: firestoned/github-actions/rust/setup-rust-build@e034489c3a17ffaaaf7f8fb799156ce768d899d5 # v1.3.9
+        uses: firestoned/github-actions/rust/setup-rust-build@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
           target: x86_64-unknown-linux-gnu
           cache-key: ${{ matrix.tag }}
 
       - name: Build binary (x86_64)
-        uses: firestoned/github-actions/rust/build-binary@e034489c3a17ffaaaf7f8fb799156ce768d899d5 # v1.3.9
+        uses: firestoned/github-actions/rust/build-binary@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
           # Virtual workspace root (ADR-0009): the action cannot infer the
           # binary name from Cargo.toml, so name it.
@@ -122,13 +122,13 @@ jobs:
           cp target/x86_64-unknown-linux-gnu/release/bindy binaries/amd64/bindy
 
       - name: Setup Rust build environment (aarch64)
-        uses: firestoned/github-actions/rust/setup-rust-build@e034489c3a17ffaaaf7f8fb799156ce768d899d5 # v1.3.9
+        uses: firestoned/github-actions/rust/setup-rust-build@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
           target: aarch64-unknown-linux-gnu
           cache-key: ${{ matrix.tag }}
 
       - name: Build binary (aarch64)
-        uses: firestoned/github-actions/rust/build-binary@e034489c3a17ffaaaf7f8fb799156ce768d899d5 # v1.3.9
+        uses: firestoned/github-actions/rust/build-binary@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
           # Virtual workspace root (ADR-0009): the action cannot infer the
           # binary name from Cargo.toml, so name it.
@@ -157,7 +157,7 @@ jobs:
           echo "Version ${VERSION}; alias '${ALIAS:-<none>}'"
 
       - name: Setup Docker environment
-        uses: firestoned/github-actions/docker/setup-docker@e034489c3a17ffaaaf7f8fb799156ce768d899d5 # v1.3.9
+        uses: firestoned/github-actions/docker/setup-docker@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -179,7 +179,7 @@ jobs:
           provenance: true
 
       - name: Sign Chainguard image with Cosign
-        uses: firestoned/github-actions/security/cosign-sign@e034489c3a17ffaaaf7f8fb799156ce768d899d5 # v1.3.9
+        uses: firestoned/github-actions/security/cosign-sign@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
           image-digest: ${{ steps.docker_chainguard.outputs.digest }}
           image-tags: ${{ matrix.tag }}
@@ -204,7 +204,7 @@ jobs:
           provenance: true
 
       - name: Sign Distroless image with Cosign
-        uses: firestoned/github-actions/security/cosign-sign@e034489c3a17ffaaaf7f8fb799156ce768d899d5 # v1.3.9
+        uses: firestoned/github-actions/security/cosign-sign@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
         with:
           image-digest: ${{ steps.docker_distroless.outputs.digest }}
           image-tags: ${{ matrix.tag }}-distroless
