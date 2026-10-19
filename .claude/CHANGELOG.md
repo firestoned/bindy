@@ -1,3 +1,18 @@
+## [2026-10-15 10:00] - Base images refreshed for glibc CVEs; Dependabot raises digest-only bumps daily
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docker/Dockerfile.chainguard`: `cgr.dev/chainguard/wolfi-base` to `256c88bb…` and `cgr.dev/chainguard/glibc-dynamic` to `2a3f1ec8…`; both carry `glibc`, `ld-linux` and `glibc-locale-posix` 2.44-r8 (CVE-2026-8674, CVE-2026-86805, CVE-2026-89092, CVE-2026-95818; Trivy flagged 2.44-r7).
+- `docker/Dockerfile`: `debian:13-slim` to `a29215f6…`, the tag's current digest. `distroless/cc-debian13:nonroot` unchanged. All four pins verified as multi-arch indexes (linux/amd64 and linux/arm64).
+- `.github/dependabot.yml`: the Docker update runs daily (the Chainguard images ship fixes daily under the same `latest` tag), and the `docker-base-images` group no longer filters on `update-types`. Every image is pinned by digest on a fixed tag, so a digest-only bump has no semver type and fell outside the group: September's bumps came as one PR per image, and the grouped run of 2026-10-13 raised none.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (new images)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-14 20:00] - Every Secret operation emits one structured audit event (ADR-0024, roadmap 16)
 
 **Author:** Erick Bourgeois
