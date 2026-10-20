@@ -445,7 +445,12 @@ jobs:
   docker:
     name: Build and Push Docker Image - ${{ matrix.variant.name }}
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    # Fork PRs get a read-only GITHUB_TOKEN, so the GHCR push can never
+    # succeed; skip them (Trivy then skips too, and the PR gate accepts it).
+    if: >-
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name == github.repository) ||
+      github.event_name == 'push'
     needs: [build, extract-version]
     permissions:
       contents: read

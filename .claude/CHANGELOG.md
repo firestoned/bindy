@@ -1,3 +1,20 @@
+## [2026-10-20 16:45] - CI: RustSec bumps (rustls-webpki, webpki-root-certs); skip image push on fork PRs
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.lock`: `rustls-webpki` 0.103.15 to 0.103.16 (RUSTSEC-2026-0382, certificate verification may accept distrusted intermediates) and `webpki-root-certs` 1.0.9 to 1.0.10 (RUSTSEC-2026-0383, bundled roots trusted distrusted emSign intermediates). Both reach us through `reqwest` and `kube-client` via `rustls-platform-verifier`.
+- `.github/workflows/build.yaml`: the `docker` job no longer runs on pull requests from forks. A fork PR's `GITHUB_TOKEN` is read-only, so the GHCR push was always denied (`installation not allowed to Write organization package`) and failed the PR gate. The Trivy job already skips when `docker` did not succeed, and the gate accepts skipped jobs. Same-repo PRs and pushes to main are unchanged.
+
+### Why
+Both advisories were published 2026-10-19/20 and fail `cargo audit` on every run, main included. The fork-PR docker failure surfaced on PR #560 (from `slauney/bindy`) once its build went green.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (rebuilt images carry the patched TLS crates)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-20 07:40] - Scout publishes one record per DNS name (ADR-0026, issue #556, roadmap 32 phases 3 to 7)
 
 **Author:** Erick Bourgeois
