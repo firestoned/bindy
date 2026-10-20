@@ -13,20 +13,20 @@ mod tests {
         remove_scout_finalizer, SourceRef,
     };
     use crate::scout::{
-        arecord_cr_name, arecord_label_selector, authorizing_zone, check_zone_authorization,
-        cleanup_grace_expired, derive_record_name, env_or, gateway_addresses_as_ips,
+        arecord_label_selector, authorizing_zone, check_zone_authorization, cleanup_grace_expired,
+        derive_record_name, dns_name_record_cr_name, env_or, gateway_addresses_as_ips,
         gateway_parent_refs, get_record_name_annotation, get_zone_annotation, is_arecord_enabled,
         is_being_deleted, is_loadbalancer_service, is_scout_opted_in, is_valid_zone_label_value,
-        legacy_arecord_label_selector, parse_gateway_service_entry, parse_gateway_services,
-        parse_ttl_annotation, resolve_ip_from_lb_status, resolve_ip_from_service_lb_status,
-        resolve_ips_from_annotation, resolve_record_name, resolve_usable_zone, resolve_zone,
-        retain_ipv4, service_ref_from_str, source_identity_hash, stale_arecord_label_selector,
-        stale_cleanup_zones, stale_selector_base, zone_allows_source_namespace,
-        zone_namespace_grant, Gateway, GatewayServiceTarget, NamespaceGrant, NamespacedName,
-        ParentReference, ScoutCli, ScoutConfig, StaleKind, ZoneAuthz, ZoneResolution,
-        ANNOTATION_TTL, FINALIZER_SCOUT, LABEL_MANAGED_BY, LABEL_MANAGED_BY_SCOUT,
-        LABEL_SOURCE_CLUSTER, LABEL_SOURCE_KIND, LABEL_SOURCE_NAME, LABEL_SOURCE_NAMESPACE,
-        LABEL_ZONE, REMOTE_CLEANUP_GRACE_SECS,
+        legacy_arecord_label_selector, name_identity_hash, parse_gateway_service_entry,
+        parse_gateway_services, parse_ttl_annotation, resolve_ips_from_annotation,
+        resolve_ips_from_lb_status, resolve_ips_from_service_lb_status, resolve_record_name,
+        resolve_usable_zone, resolve_zone, retain_ipv4, service_ref_from_str,
+        stale_arecord_label_selector, stale_cleanup_zones, stale_selector_base,
+        zone_allows_source_namespace, zone_namespace_grant, Gateway, GatewayServiceTarget,
+        NamespaceGrant, NamespacedName, ParentReference, ScoutCli, ScoutConfig, StaleKind,
+        ZoneAuthz, ZoneResolution, ANNOTATION_TTL, FINALIZER_SCOUT, LABEL_MANAGED_BY,
+        LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER, LABEL_SOURCE_KIND, LABEL_SOURCE_NAME,
+        LABEL_SOURCE_NAMESPACE, LABEL_ZONE, REMOTE_CLEANUP_GRACE_SECS,
     };
     use crate::scout::{kind_served, HTTPRoute, TLSRoute};
     use k8s_openapi::jiff::{SignedDuration, Timestamp};
@@ -1095,7 +1095,7 @@ mod tests {
     }
 
     // =========================================================================
-    // resolve_ip_from_service_lb_status
+    // resolve_ips_from_service_lb_status
     // =========================================================================
 
     fn service_with_lb_ip(ip: &str) -> Service {
@@ -1115,16 +1115,48 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_ip_from_service_lb_status_has_ip() {
+    fn test_resolve_ips_from_service_lb_status_has_ip() {
         let svc = service_with_lb_ip("1.2.3.4");
+        assert_eq!(resolve_ips_from_service_lb_status(&svc), vec!["1.2.3.4"]);
+    }
+
+    #[test]
+    fn test_resolve_ips_from_service_lb_status_returns_every_ipv4_in_order() {
+        // Issue #556: one Service with several LoadBalancer IPs publishes all
+        // of them, not only the first
+        let svc: Service = serde_json::from_value(serde_json::json!({
+            "metadata": {"name": "kube-api"},
+            "status": {"loadBalancer": {"ingress": [
+                {"ip": "10.0.0.246"},
+                {"hostname": "lb.example.com"},
+                {"ip": "10.0.0.241"},
+                {"ip": "10.0.0.240"}
+            ]}}
+        }))
+        .expect("valid Service");
         assert_eq!(
-            resolve_ip_from_service_lb_status(&svc),
-            Some("1.2.3.4".to_string())
+            resolve_ips_from_service_lb_status(&svc),
+            vec!["10.0.0.246", "10.0.0.241", "10.0.0.240"]
         );
     }
 
     #[test]
-    fn test_resolve_ip_from_service_lb_status_empty_list() {
+    fn test_resolve_ips_from_service_lb_status_removes_duplicates() {
+        let svc: Service = serde_json::from_value(serde_json::json!({
+            "metadata": {"name": "kube-api"},
+            "status": {"loadBalancer": {"ingress": [
+                {"ip": "10.0.0.2"}, {"ip": "10.0.0.1"}, {"ip": "10.0.0.2"}
+            ]}}
+        }))
+        .expect("valid Service");
+        assert_eq!(
+            resolve_ips_from_service_lb_status(&svc),
+            vec!["10.0.0.2", "10.0.0.1"]
+        );
+    }
+
+    #[test]
+    fn test_resolve_ips_from_service_lb_status_empty_list() {
         let svc = Service {
             status: Some(ServiceStatus {
                 load_balancer: Some(LoadBalancerStatus {
@@ -1134,18 +1166,18 @@ mod tests {
             }),
             ..Default::default()
         };
-        assert_eq!(resolve_ip_from_service_lb_status(&svc), None);
+        assert!(resolve_ips_from_service_lb_status(&svc).is_empty());
     }
 
     #[test]
-    fn test_resolve_ip_from_service_lb_status_no_status() {
+    fn test_resolve_ips_from_service_lb_status_no_status() {
         let svc = Service::default();
-        assert_eq!(resolve_ip_from_service_lb_status(&svc), None);
+        assert!(resolve_ips_from_service_lb_status(&svc).is_empty());
     }
 
     #[test]
-    fn test_resolve_ip_from_service_lb_status_hostname_only() {
-        // hostname-only LB entries have no IP — should return None
+    fn test_resolve_ips_from_service_lb_status_hostname_only() {
+        // hostname-only LB entries have no IP, so nothing is returned
         let svc = Service {
             status: Some(ServiceStatus {
                 load_balancer: Some(LoadBalancerStatus {
@@ -1159,7 +1191,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        assert_eq!(resolve_ip_from_service_lb_status(&svc), None);
+        assert!(resolve_ips_from_service_lb_status(&svc).is_empty());
     }
 
     // =========================================================================
@@ -1177,79 +1209,6 @@ mod tests {
     // =========================================================================
     // HTTPRoute & TLSRoute (Gateway API), Phase 2 feature
     // =========================================================================
-
-    // =========================================================================
-    // Builder ↔ override-annotation contract
-    //
-    // These tests pin down what the reconcilers actually produce when the
-    // `bindy.firestoned.io/record-name` and comma-separated `bindy.firestoned.io/ip`
-    // annotations are resolved upstream and threaded into the builders. They
-    // protect against regressions in `spec.name` and `spec.ipv4_addresses`
-    // for all four source kinds (Ingress, Service, HTTPRoute, TLSRoute).
-    // =========================================================================
-
-    #[test]
-    fn test_build_arecord_propagates_record_name_override() {
-        // Simulates resolve_record_name returning the annotation override "myapp"
-        let arecord = crate::scout::build_arecord(crate::scout::ARecordParams {
-            name: "scout-prod-default-my-ingress-0",
-            target_namespace: "bindy-system",
-            record_name: "myapp",
-            ips: &["10.0.0.1".to_string()],
-            ttl: None,
-            cluster_name: "prod",
-            source_kind: "Ingress",
-            source_namespace: "default",
-            source_name: "my-ingress",
-            zone: "example.com",
-        });
-
-        assert_eq!(arecord.spec.name, "myapp");
-        assert_eq!(arecord.spec.ipv4_addresses, vec!["10.0.0.1".to_string()]);
-    }
-
-    #[test]
-    fn test_build_arecord_accepts_apex_record_name() {
-        // record-name="@" must pass through to spec.name unchanged
-        let arecord = crate::scout::build_arecord(crate::scout::ARecordParams {
-            name: "scout-prod-default-apex-0",
-            target_namespace: "bindy-system",
-            record_name: "@",
-            ips: &["10.0.0.1".to_string()],
-            ttl: None,
-            cluster_name: "prod",
-            source_kind: "Ingress",
-            source_namespace: "default",
-            source_name: "apex",
-            zone: "example.com",
-        });
-
-        assert_eq!(arecord.spec.name, "@");
-    }
-
-    #[test]
-    fn test_build_arecord_propagates_multi_ip_in_order() {
-        // Simulates resolve_ips_from_annotation returning a 3-IP list; order preserved
-        let ips = vec![
-            "10.0.0.1".to_string(),
-            "10.0.0.2".to_string(),
-            "10.0.0.3".to_string(),
-        ];
-        let arecord = crate::scout::build_arecord(crate::scout::ARecordParams {
-            name: "scout-prod-default-multi-0",
-            target_namespace: "bindy-system",
-            record_name: "multi",
-            ips: &ips,
-            ttl: None,
-            cluster_name: "prod",
-            source_kind: "Ingress",
-            source_namespace: "default",
-            source_name: "multi",
-            zone: "example.com",
-        });
-
-        assert_eq!(arecord.spec.ipv4_addresses, ips);
-    }
 
     // ========================================================================
     // Gateway-chain IP resolution: pure helpers
@@ -1664,75 +1623,90 @@ mod tests {
     }
 
     // =========================================================================
-    // ADR-0022: record names, selectors, TTL, IPv4, record-name planning
+    // ADR-0022 and ADR-0026: record names, selectors, TTL, IPv4, record-name planning
     // =========================================================================
 
     #[test]
-    fn arecord_cr_name_is_readable_prefix_hash_and_index() {
-        let hash = source_identity_hash("prod", "Ingress", "default", "my-ingress");
+    fn dns_name_record_cr_name_is_readable_prefix_and_name_hash() {
+        let hash = name_identity_hash("prod", "example.com", "api");
         assert_eq!(hash.len(), 8);
         assert!(hash
             .chars()
             .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
         assert_eq!(
-            arecord_cr_name("prod", "Ingress", "default", "my-ingress", 2),
-            format!("scout-prod-default-my-ingress-{hash}-2")
+            dns_name_record_cr_name("prod", "example.com", "api"),
+            format!("scout-prod-api-example-com-{hash}")
         );
     }
 
     #[test]
-    fn source_identity_hash_is_the_sha256_of_the_nul_joined_identity() {
+    fn name_identity_hash_is_the_sha256_of_the_nul_joined_identity() {
         use sha2::{Digest, Sha256};
-        let digest = Sha256::digest(b"prod\0Ingress\0default\0my-ingress");
+        let digest = Sha256::digest(b"prod\0example.com\0api");
         let expected: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
+        assert_eq!(name_identity_hash("prod", "example.com", "api"), expected);
+    }
+
+    #[test]
+    fn dns_name_record_cr_name_spells_the_apex_out() {
+        let hash = name_identity_hash("prod", "example.com", "@");
         assert_eq!(
-            source_identity_hash("prod", "Ingress", "default", "my-ingress"),
-            expected
+            dns_name_record_cr_name("prod", "example.com", "@"),
+            format!("scout-prod-apex-example-com-{hash}")
+        );
+        assert_ne!(
+            dns_name_record_cr_name("prod", "example.com", "@"),
+            dns_name_record_cr_name("prod", "example.com", "apex"),
+            "a name literally called apex is a different record"
         );
     }
 
     #[test]
-    fn arecord_cr_name_differs_by_kind() {
-        let names: std::collections::BTreeSet<String> =
-            ["Ingress", "Service", "HTTPRoute", "TLSRoute", "TCPRoute"]
-                .iter()
-                .map(|k| arecord_cr_name("prod", k, "default", "web", 0))
-                .collect();
-        assert_eq!(names.len(), 5);
+    fn dns_name_record_cr_name_ignores_dns_case() {
+        assert_eq!(
+            dns_name_record_cr_name("prod", "Example.COM", "API"),
+            dns_name_record_cr_name("prod", "example.com", "api")
+        );
     }
 
     #[test]
-    fn arecord_cr_name_differs_when_joined_namespace_and_name_collide() {
-        let a = arecord_cr_name("prod", "Ingress", "team-a", "web", 0);
-        let b = arecord_cr_name("prod", "Ingress", "team", "a-web", 0);
-        assert_ne!(a, b);
-        // The readable parts are equal: only the hash tells them apart.
-        assert_eq!(a.rsplitn(3, '-').nth(2), b.rsplitn(3, '-').nth(2));
+    fn dns_name_record_cr_name_differs_by_cluster_zone_and_name() {
+        let names: std::collections::BTreeSet<String> = [
+            ("prod", "example.com", "api"),
+            ("dev", "example.com", "api"),
+            ("prod", "example.org", "api"),
+            ("prod", "example.com", "www"),
+        ]
+        .iter()
+        .map(|(c, z, n)| dns_name_record_cr_name(c, z, n))
+        .collect();
+        assert_eq!(names.len(), 4);
     }
 
     #[test]
-    fn arecord_cr_name_sanitizes_and_lowercases() {
-        let name = arecord_cr_name("PROD", "Ingress", "My_Namespace", "My.Ingress", 1);
-        assert!(name.starts_with("scout-prod-my-namespace-my-ingress-"));
-        assert_eq!(name, name.to_lowercase());
+    fn dns_name_record_cr_name_is_the_same_for_every_source_of_one_name() {
+        // ADR-0026 Decision 1: the record identifies the name, not the source.
+        let a = dns_name_record_cr_name("prod", "example.com", "@");
+        let b = dns_name_record_cr_name("prod", "example.com", "@");
+        assert_eq!(a, b);
     }
 
     #[test]
-    fn arecord_cr_name_fits_253_chars_and_keeps_hash_and_index() {
-        let long = "c".repeat(300);
-        let name = arecord_cr_name("prod", "Ingress", "default", &long, 7);
-        assert_eq!(name.len(), 253);
-        let hash = source_identity_hash("prod", "Ingress", "default", &long);
-        assert!(name.ends_with(&format!("-{hash}-7")));
+    fn dns_name_record_cr_name_fits_253_chars_and_keeps_the_hash() {
+        let long = format!("{}.{}", "a".repeat(63), "b".repeat(63));
+        let zone = format!("{}.example.com", "c".repeat(63));
+        let name = dns_name_record_cr_name(&"p".repeat(63), &zone, &long);
+        assert!(name.len() <= 253, "{} chars", name.len());
+        let hash = name_identity_hash(&"p".repeat(63), &zone, &long);
+        assert!(name.ends_with(&format!("-{hash}")));
     }
 
     #[test]
-    fn arecord_cr_name_never_leaves_a_hyphen_at_the_truncation_point() {
-        // Try every cut position: a hyphen-separated readable part lands a
-        // hyphen on the boundary for one of them.
+    fn dns_name_record_cr_name_never_leaves_a_hyphen_at_the_truncation_point() {
         for pad in 0..20 {
-            let name_part = format!("{}-{}", "a".repeat(200 + pad), "b".repeat(60));
-            let name = arecord_cr_name("prod", "Ingress", "default", &name_part, 0);
+            let dns_name = format!("{}.{}", "a".repeat(40 + pad), "b".repeat(60));
+            let zone = format!("{}.{}.example.com", "c".repeat(60), "d".repeat(60));
+            let name = dns_name_record_cr_name("prod", &zone, &dns_name);
             assert!(name.len() <= 253, "{} chars", name.len());
             assert!(!name.contains("--"), "double hyphen in {name}");
             assert!(name
@@ -1788,30 +1762,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn build_arecord_stamps_every_ownership_label() {
-        let ar = crate::scout::build_arecord(crate::scout::ARecordParams {
-            name: "n",
-            target_namespace: "bindy-system",
-            record_name: "api",
-            ips: &["10.0.0.1".to_string()],
-            ttl: Some(300),
-            cluster_name: "prod",
-            source_kind: "TLSRoute",
-            source_namespace: "team-a",
-            source_name: "web",
-            zone: "example.com",
-        });
-        let labels = ar.metadata.labels.expect("labels");
-        assert_eq!(labels[LABEL_MANAGED_BY], LABEL_MANAGED_BY_SCOUT);
-        assert_eq!(labels[LABEL_SOURCE_CLUSTER], "prod");
-        assert_eq!(labels[LABEL_SOURCE_KIND], "TLSRoute");
-        assert_eq!(labels[LABEL_SOURCE_NAMESPACE], "team-a");
-        assert_eq!(labels[LABEL_SOURCE_NAME], "web");
-        assert_eq!(labels[LABEL_ZONE], "example.com");
-        assert_eq!(ar.spec.ttl, Some(300));
-    }
-
     fn ttl(value: &str) -> std::collections::BTreeMap<String, String> {
         [(ANNOTATION_TTL.to_string(), value.to_string())].into()
     }
@@ -1852,16 +1802,28 @@ mod tests {
             "status": {"loadBalancer": {"ingress": [{"ip": "2001:db8::1"}, {"ip": "10.0.0.9"}]}}
         }))
         .expect("valid Ingress");
-        assert_eq!(
-            resolve_ip_from_lb_status(&ingress),
-            Some("10.0.0.9".to_string())
-        );
+        assert_eq!(resolve_ips_from_lb_status(&ingress), vec!["10.0.0.9"]);
         let svc: Service = serde_json::from_value(serde_json::json!({
             "metadata": {"name": "db"},
             "status": {"loadBalancer": {"ingress": [{"ip": "2001:db8::1"}]}}
         }))
         .expect("valid Service");
-        assert_eq!(resolve_ip_from_service_lb_status(&svc), None);
+        assert!(resolve_ips_from_service_lb_status(&svc).is_empty());
+    }
+
+    #[test]
+    fn ingress_lb_status_returns_every_ipv4_without_duplicates() {
+        let ingress: Ingress = serde_json::from_value(serde_json::json!({
+            "metadata": {"name": "web"},
+            "status": {"loadBalancer": {"ingress": [
+                {"ip": "10.0.0.3"}, {"ip": "10.0.0.4"}, {"ip": "10.0.0.3"}
+            ]}}
+        }))
+        .expect("valid Ingress");
+        assert_eq!(
+            resolve_ips_from_lb_status(&ingress),
+            vec!["10.0.0.3", "10.0.0.4"]
+        );
     }
 
     #[test]

@@ -2,6 +2,75 @@
 
 This document collects the breaking-change migrations for Bindy, newest first.
 
+## Scout publishes one record per DNS name (ADR-0026)
+
+Scout used to write one `ARecord` per resource host. Several resources that
+publish the same DNS name (one `LoadBalancer` Service per availability zone,
+all at the apex, as in issue #556) wrote one record each, the records
+replaced each other's addresses, and BIND9 served whichever was written last.
+Scout now writes one record per DNS name with every resource's addresses. No
+CRD, RBAC, flag or admission-policy change.
+
+- **Run an operator that includes ADR-0022 first.** The handover below
+  briefly has two records for one name; that operator keeps the name served
+  when the old record is deleted (ADR-0022, Decision 5).
+- **Every Scout `ARecord` is replaced once, on the first reconcile after the
+  upgrade.** The new record is named after the DNS name,
+  `scout-{cluster}-{dns-name}-{zone}-{hash}`, and carries
+  `managed-by`, `source-cluster`, `zone`, one
+  `contributor.scout.bindy.firestoned.io/<hash>` label per resource, and the
+  `bindy.firestoned.io/scout-contributors` annotation. Scout writes it first
+  and deletes the old per-resource record only once the operator reports the
+  new one bound to its zone and `Ready`, rechecking every 10 seconds, so the
+  name keeps resolving. Every source reconciles when Scout starts, so the
+  migration completes shortly after startup.
+  `kubectl get arecords -n bindy-system -l bindy.firestoned.io/managed-by=scout,bindy.firestoned.io/source-kind`
+  lists the per-resource records still waiting.
+- **Resources that share a name are merged.** Before upgrading, check that
+  every shared name is meant to be shared. Two resources that publish the same
+  name in one zone, in any namespace and of any kind, now publish all of their
+  addresses instead of overwriting each other. This lists the names more than
+  one current record publishes:
+
+  ```bash
+  kubectl get arecords -n bindy-system -l bindy.firestoned.io/managed-by=scout \
+    -o jsonpath='{range .items[*]}{.metadata.labels.bindy\.firestoned\.io/source-cluster}{" "}{.metadata.labels.bindy\.firestoned\.io/zone}{" "}{.spec.name}{"\n"}{end}' \
+    | sort | uniq -d
+  ```
+
+  Give a resource that should not share its name a different
+  `bindy.firestoned.io/record-name`, or opt it out, before upgrading.
+- **Addresses are listed in numeric order**, each once, instead of in the
+  order of the `bindy.firestoned.io/ip` annotation or the load-balancer
+  status. DNS clients do not depend on that order.
+- **Different TTLs on one name publish the lowest.** Scout logs a warning
+  for each change.
+- **Tools that select Scout records by `source-name` must change.** The new
+  records carry no `source-kind`, `source-namespace` or `source-name` labels.
+  Select a resource's records by its contributor label, the first 16 hex
+  characters of the SHA-256 of its kind, namespace and name joined by NUL
+  bytes:
+
+  ```bash
+  kubectl get arecords -n bindy-system -l \
+    "contributor.scout.bindy.firestoned.io/$(printf '%s\0%s\0%s' Ingress team-a web | sha256sum | cut -c1-16)"
+  ```
+
+- **Do not edit the contributor annotation.** Scout rebuilds the addresses
+  and TTL from it on every write, and refuses to write a record whose
+  annotation it cannot parse.
+
+**Rollback.** An older Scout does not know the per-name records. It
+recreates its per-resource records next to them, and the two compete for the
+name. After rolling Scout back, wait for its records to be `Ready`, then
+delete the per-name records:
+
+```bash
+kubectl get arecords -n bindy-system -l bindy.firestoned.io/managed-by=scout -o json \
+  | jq -r '.items[] | select(.metadata.annotations["bindy.firestoned.io/scout-contributors"]) | .metadata.name' \
+  | xargs -r kubectl delete arecord -n bindy-system
+```
+
 ## Scout records bound to their cluster and zones (ADR-0025)
 
 No CRD change, and nothing changes until you opt in, with one exception

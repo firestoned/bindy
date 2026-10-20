@@ -27,12 +27,18 @@ mod tests {
     use kube::runtime::{reflector, watcher};
     use serde_json::{json, Value};
     use std::collections::BTreeMap;
+    use std::fmt::Write as _;
     use std::sync::{Arc, Mutex};
     use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
     /// The source-kind label (ADR-0022). Spelled out here so a rename in
     /// `scout.rs` fails these tests instead of moving in lockstep.
     const LABEL_SOURCE_KIND: &str = "bindy.firestoned.io/source-kind";
+
+    /// The contributor map annotation and label prefix (ADR-0026), spelled
+    /// out for the same reason.
+    const ANNOTATION_CONTRIBUTORS: &str = "bindy.firestoned.io/scout-contributors";
+    const CONTRIBUTOR_LABEL_PREFIX: &str = "contributor.scout.bindy.firestoned.io/";
 
     const CLUSTER: &str = "prod";
     const TARGET_NS: &str = "bindy-system";
@@ -71,6 +77,15 @@ mod tests {
         /// ARecords whose DELETE the API server refuses with this status,
         /// as an admission policy (ADR-0025) or RBAC would.
         refused_deletes: BTreeMap<String, u16>,
+        /// `ARecord`s whose replace (PUT) the API server refuses with this
+        /// status.
+        refused_writes: BTreeMap<String, u16>,
+        /// The last `resourceVersion` handed out.
+        resource_version: u64,
+        /// A concurrent writer: the next `ARecord` create or replace first
+        /// stores this record (as another Scout reconcile would have), then
+        /// fails with 409 because the caller's view is now stale.
+        concurrent_write: Option<Value>,
     }
 
     /// The status the operator writes once a record is bound to its zone and
@@ -129,6 +144,53 @@ mod tests {
     }
 
     impl FakeState {
+        fn next_resource_version(&mut self) -> String {
+            self.resource_version += 1;
+            self.resource_version.to_string()
+        }
+
+        /// Stores `body` as `ARecord` `name` with a new `resourceVersion` and the
+        /// status the operator would have written by now (see
+        /// [`FakeState::records_unserved`]).
+        fn store_arecord(&mut self, ns: &str, name: &str, mut body: Value) -> Value {
+            body["metadata"]["namespace"] = json!(ns);
+            body["metadata"]["resourceVersion"] = json!(self.next_resource_version());
+            let status = if self.records_unserved {
+                self.arecords
+                    .get(name)
+                    .and_then(|o| o.get("status"))
+                    .cloned()
+            } else {
+                Some(served_status())
+            };
+            match status {
+                Some(status) => body["status"] = status,
+                None => {
+                    if let Some(obj) = body.as_object_mut() {
+                        obj.remove("status");
+                    }
+                }
+            }
+            self.arecords.insert(name.to_string(), body.clone());
+            body
+        }
+
+        /// Runs the pending concurrent write, if any: returns `true` when the
+        /// caller's write must now fail with 409.
+        fn concurrent_write_happened(&mut self) -> bool {
+            let Some(record) = self.concurrent_write.take() else {
+                return false;
+            };
+            let name = record
+                .pointer("/metadata/name")
+                .and_then(Value::as_str)
+                .expect("concurrent record has a name")
+                .to_string();
+            self.log.push(format!("CONCURRENT {name}"));
+            self.store_arecord(TARGET_NS, &name, record);
+            true
+        }
+
         fn handle(&mut self, req: &Request) -> ResponseTemplate {
             let path = req.url.path().trim_start_matches('/').to_string();
             let segs: Vec<&str> = path.split('/').collect();
@@ -161,25 +223,67 @@ mod tests {
                 }
                 (
                     "PATCH",
+                    ["apis", "bindy.firestoned.io", "v1beta1", "namespaces", _, "arecords", name],
+                ) => {
+                    // ADR-0026: records are written by conditional replace,
+                    // never by server-side apply.
+                    self.log.push(format!("UNEXPECTED APPLY {name}"));
+                    error(405)
+                }
+                (
+                    "GET",
+                    ["apis", "bindy.firestoned.io", "v1beta1", "namespaces", _, "arecords", name],
+                ) => {
+                    self.log.push(format!("GET arecord {name}"));
+                    self.arecords.get(*name).map_or_else(
+                        || error(404),
+                        |o| ResponseTemplate::new(200).set_body_json(o.clone()),
+                    )
+                }
+                (
+                    "POST",
+                    ["apis", "bindy.firestoned.io", "v1beta1", "namespaces", ns, "arecords"],
+                ) => {
+                    let body: Value =
+                        serde_json::from_slice(&req.body).expect("create body is JSON");
+                    let name = body
+                        .pointer("/metadata/name")
+                        .and_then(Value::as_str)
+                        .expect("created record has a name")
+                        .to_string();
+                    if self.concurrent_write_happened() || self.arecords.contains_key(&name) {
+                        self.log.push(format!("CONFLICT CREATE {name}"));
+                        return error(409);
+                    }
+                    self.log.push(format!("CREATE {name}"));
+                    let stored = self.store_arecord(ns, &name, body);
+                    ResponseTemplate::new(201).set_body_json(stored)
+                }
+                (
+                    "PUT",
                     ["apis", "bindy.firestoned.io", "v1beta1", "namespaces", ns, "arecords", name],
                 ) => {
-                    let mut body: Value =
-                        serde_json::from_slice(&req.body).expect("apply body is JSON");
-                    body["metadata"]["namespace"] = json!(ns);
-                    let status = if self.records_unserved {
-                        self.arecords
-                            .get(*name)
-                            .and_then(|o| o.get("status"))
-                            .cloned()
-                    } else {
-                        Some(served_status())
-                    };
-                    if let Some(status) = status {
-                        body["status"] = status;
+                    if let Some(code) = self.refused_writes.get(*name) {
+                        self.log.push(format!("REFUSED REPLACE {name}"));
+                        return error(*code);
                     }
-                    self.log.push(format!("APPLY {name}"));
-                    self.arecords.insert((*name).to_string(), body.clone());
-                    ResponseTemplate::new(200).set_body_json(body)
+                    let body: Value =
+                        serde_json::from_slice(&req.body).expect("replace body is JSON");
+                    if self.concurrent_write_happened() {
+                        self.log.push(format!("CONFLICT REPLACE {name}"));
+                        return error(409);
+                    }
+                    let Some(current) = self.arecords.get(*name) else {
+                        return error(404);
+                    };
+                    let sent = body.pointer("/metadata/resourceVersion");
+                    if sent.is_some() && sent != current.pointer("/metadata/resourceVersion") {
+                        self.log.push(format!("CONFLICT REPLACE {name}"));
+                        return error(409);
+                    }
+                    self.log.push(format!("REPLACE {name}"));
+                    let stored = self.store_arecord(ns, name, body);
+                    ResponseTemplate::new(200).set_body_json(stored)
                 }
                 (
                     "DELETE",
@@ -188,6 +292,17 @@ mod tests {
                     if let Some(code) = self.refused_deletes.get(*name) {
                         self.log.push(format!("REFUSED DELETE {name}"));
                         return error(*code);
+                    }
+                    let body: Value = serde_json::from_slice(&req.body).unwrap_or(Value::Null);
+                    if let Some(wanted) = body.pointer("/preconditions/resourceVersion") {
+                        let current = self
+                            .arecords
+                            .get(*name)
+                            .and_then(|o| o.pointer("/metadata/resourceVersion"));
+                        if current.is_some() && current != Some(wanted) {
+                            self.log.push(format!("CONFLICT DELETE {name}"));
+                            return error(409);
+                        }
                     }
                     self.log.push(format!("DELETE {name}"));
                     match self.arecords.remove(*name) {
@@ -337,6 +452,31 @@ mod tests {
                 .collect()
         }
 
+        /// Makes the API server refuse replacing `ARecord` `name` with `code`.
+        fn refuse_write(&self, name: &str, code: u16) {
+            self.state
+                .lock()
+                .expect("lock")
+                .refused_writes
+                .insert(name.to_string(), code);
+        }
+
+        /// Makes the next `ARecord` create or replace lose a race: `record` is
+        /// stored first, and the write fails with 409.
+        fn race_next_write(&self, record: Value) {
+            self.state.lock().expect("lock").concurrent_write = Some(record);
+        }
+
+        fn record(&self, name: &str) -> Value {
+            self.state
+                .lock()
+                .expect("lock")
+                .arecords
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| panic!("no ARecord {name}"))
+        }
+
         fn add_zone(&mut self, namespace: &str, grant: Option<&str>) {
             let annotations = grant.map_or(
                 Value::Null,
@@ -383,17 +523,17 @@ mod tests {
             })
         }
 
-        fn seed(&self, record: Value) {
+        fn seed(&self, mut record: Value) {
             let name = record
                 .pointer("/metadata/name")
                 .and_then(Value::as_str)
                 .expect("seeded record has a name")
                 .to_string();
-            self.state
-                .lock()
-                .expect("lock")
-                .arecords
-                .insert(name, record);
+            let mut state = self.state.lock().expect("lock");
+            if record.pointer("/metadata/resourceVersion").is_none() {
+                record["metadata"]["resourceVersion"] = json!(state.next_resource_version());
+            }
+            state.arecords.insert(name, record);
         }
 
         fn log(&self) -> Vec<String> {
@@ -402,8 +542,17 @@ mod tests {
 
         /// Whether the operator has bound the records Scout applies (see
         /// [`FakeState::records_unserved`]).
+        /// Serving also binds the records already stored, as the operator
+        /// would by the next reconcile: since ADR-0026 an unchanged record is
+        /// not rewritten, so only the operator updates its status.
         fn set_records_served(&self, served: bool) {
-            self.state.lock().expect("lock").records_unserved = !served;
+            let mut state = self.state.lock().expect("lock");
+            state.records_unserved = !served;
+            if served {
+                for record in state.arecords.values_mut() {
+                    record["status"] = served_status();
+                }
+            }
         }
 
         fn clear_log(&self) {
@@ -430,10 +579,15 @@ mod tests {
                 .collect()
         }
 
+        /// The `ARecord`s written (created or replaced), in order.
         fn applied(&self) -> Vec<String> {
             self.log()
                 .iter()
-                .filter_map(|l| l.strip_prefix("APPLY ").map(ToString::to_string))
+                .filter_map(|l| {
+                    l.strip_prefix("CREATE ")
+                        .or_else(|| l.strip_prefix("REPLACE "))
+                        .map(ToString::to_string)
+                })
                 .collect()
         }
 
@@ -745,6 +899,102 @@ mod tests {
     }
 
     // =====================================================================
+    // ADR-0026 helpers, computed independently of `scout.rs` and
+    // `contributors.rs`
+    // =====================================================================
+
+    fn sha256_hex(input: &str, bytes: usize) -> String {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(input.as_bytes())
+            .iter()
+            .take(bytes)
+            .fold(String::new(), |mut hex, b| {
+                let _ = write!(hex, "{b:02x}");
+                hex
+            })
+    }
+
+    /// The per-name record ADR-0026 Decision 1 specifies for `dns_name` in
+    /// [`ZONE`], written by `cluster`.
+    fn expected_name_in(cluster: &str, dns_name: &str) -> String {
+        let readable = if dns_name == "@" { "apex" } else { dns_name };
+        let hash = sha256_hex(&format!("{cluster}\0{ZONE}\0{dns_name}"), 4);
+        format!(
+            "scout-{cluster}-{}-{}-{hash}",
+            readable.replace('.', "-"),
+            ZONE.replace('.', "-")
+        )
+    }
+
+    /// [`expected_name_in`] for this Scout's cluster.
+    fn expected_name(dns_name: &str) -> String {
+        expected_name_in(CLUSTER, dns_name)
+    }
+
+    fn contributor_key(kind: &str, namespace: &str, name: &str) -> String {
+        format!("{kind}/{namespace}/{name}")
+    }
+
+    fn contributor_label(kind: &str, namespace: &str, name: &str) -> String {
+        format!(
+            "{CONTRIBUTOR_LABEL_PREFIX}{}",
+            sha256_hex(&format!("{kind}\0{namespace}\0{name}"), 8)
+        )
+    }
+
+    /// The contributor map of a stored record.
+    fn contributors(record: &Value) -> BTreeMap<String, Value> {
+        let raw = record
+            .pointer("/metadata/annotations")
+            .and_then(|a| a.get(ANNOTATION_CONTRIBUTORS))
+            .and_then(Value::as_str)
+            .expect("record has a contributor map");
+        serde_json::from_str(raw).expect("contributor map is JSON")
+    }
+
+    /// A per-name record as an earlier reconcile left it: `entries` are
+    /// `(kind, namespace, name, ips)`.
+    fn name_record(
+        cluster: &str,
+        dns_name: &str,
+        entries: &[(&str, &str, &str, &[&str])],
+    ) -> Value {
+        let mut labels = json!({
+            LABEL_MANAGED_BY: LABEL_MANAGED_BY_SCOUT,
+            LABEL_SOURCE_CLUSTER: cluster,
+            LABEL_ZONE: ZONE,
+        });
+        let mut map = serde_json::Map::new();
+        let mut ips: Vec<String> = Vec::new();
+        for (kind, ns, name, entry_ips) in entries {
+            labels[contributor_label(kind, ns, name)] = json!("true");
+            map.insert(contributor_key(kind, ns, name), json!({ "ips": entry_ips }));
+            ips.extend(entry_ips.iter().map(ToString::to_string));
+        }
+        ips.sort();
+        ips.dedup();
+        json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1", "kind": "ARecord",
+            "metadata": {
+                "name": expected_name_in(cluster, dns_name), "namespace": TARGET_NS,
+                "labels": labels,
+                "annotations": { ANNOTATION_CONTRIBUTORS: Value::Object(map).to_string() },
+            },
+            "spec": {"name": dns_name, "ipv4Addresses": ips},
+        })
+    }
+
+    /// A `LoadBalancer` Service in [`SRC_NS`] published at the zone apex, as
+    /// in issue #556 (one Service per availability zone).
+    fn apex_service(name: &str, ip: &str) -> Src {
+        service(
+            &meta(name).ann(ANNOTATION_RECORD_NAME, "@"),
+            "LoadBalancer",
+            &[ip],
+        )
+    }
+
+    // =====================================================================
     // Pinned behaviour: what each kind publishes
     // =====================================================================
 
@@ -767,9 +1017,16 @@ mod tests {
             let labels = labels_of(r);
             assert_eq!(labels[LABEL_MANAGED_BY], json!(LABEL_MANAGED_BY_SCOUT));
             assert_eq!(labels[LABEL_SOURCE_CLUSTER], json!(CLUSTER));
-            assert_eq!(labels[LABEL_SOURCE_NAMESPACE], json!(SRC_NS));
-            assert_eq!(labels[LABEL_SOURCE_NAME], json!("web"));
             assert_eq!(labels[LABEL_ZONE], json!(ZONE));
+            assert!(labels.contains_key(&contributor_label("Ingress", SRC_NS, "web")));
+            assert!(
+                !labels.contains_key(LABEL_SOURCE_NAME),
+                "a per-name record names no single source (ADR-0026)"
+            );
+            assert_eq!(
+                contributors(r).keys().collect::<Vec<_>>(),
+                vec![&contributor_key("Ingress", SRC_NS, "web")]
+            );
             assert_eq!(r.pointer("/metadata/namespace"), Some(&json!(TARGET_NS)));
         }
     }
@@ -1318,35 +1575,39 @@ mod tests {
     // =====================================================================
 
     #[tokio::test]
-    async fn every_record_carries_its_source_kind_label() {
+    async fn every_record_lists_its_source_as_a_contributor() {
         for src in every_kind(&meta("web")) {
             let h = Harness::new().await;
             h.run(&src).await.expect("reconcile");
+            let r = only_record(&h);
             assert_eq!(
-                labels_of(&only_record(&h)).get(LABEL_SOURCE_KIND),
-                Some(&json!(src.kind())),
+                contributors(&r).keys().collect::<Vec<_>>(),
+                vec![&contributor_key(src.kind(), SRC_NS, "web")],
+                "{}",
+                src.kind()
+            );
+            assert!(
+                labels_of(&r).contains_key(&contributor_label(src.kind(), SRC_NS, "web")),
                 "{}",
                 src.kind()
             );
         }
     }
 
-    /// The name the ADR specifies, computed independently of `scout.rs`.
-    fn expected_name(kind: &str, namespace: &str, name: &str, index: usize) -> String {
-        use sha2::{Digest, Sha256};
-        let digest = Sha256::digest(format!("{CLUSTER}\0{kind}\0{namespace}\0{name}").as_bytes());
-        let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
-        format!("scout-{CLUSTER}-{namespace}-{name}-{}-{index}", &hex[..8])
-    }
-
     #[tokio::test]
-    async fn a_record_is_named_from_a_readable_prefix_a_hash_and_the_host_index() {
+    async fn a_record_is_named_from_its_cluster_zone_and_dns_name() {
         for src in every_kind(&meta("web")) {
             let h = Harness::new().await;
             h.run(&src).await.expect("reconcile");
+            // A Service publishes its own name; every other kind here "api".
+            let dns_name = if src.kind() == "Service" {
+                "web"
+            } else {
+                "api"
+            };
             assert_eq!(
                 h.record_names(),
-                vec![expected_name(src.kind(), SRC_NS, "web", 0)],
+                vec![expected_name(dns_name)],
                 "{}",
                 src.kind()
             );
@@ -1354,30 +1615,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn same_named_sources_of_different_kinds_keep_separate_records() {
+    async fn sources_of_different_kinds_that_share_a_name_share_one_record() {
         let h = Harness::new().await;
         for src in every_kind(&meta("web")) {
             h.run(&src).await.expect("reconcile");
         }
-        let names = h.record_names();
-        assert_eq!(names.len(), 5, "one record per kind, got {names:?}");
-        let mut kinds: Vec<String> = h
-            .records()
-            .iter()
-            .filter_map(|r| labels_of(r).get(LABEL_SOURCE_KIND).cloned())
-            .filter_map(|v| v.as_str().map(ToString::to_string))
+        let mut names = h.record_names();
+        names.sort();
+        let mut expected = vec![expected_name("api"), expected_name("web")];
+        expected.sort();
+        assert_eq!(names, expected);
+        let mut keys: Vec<String> = contributors(&h.record(&expected_name("api")))
+            .into_keys()
             .collect();
-        kinds.sort();
+        keys.sort();
         assert_eq!(
-            kinds,
-            vec!["HTTPRoute", "Ingress", "Service", "TCPRoute", "TLSRoute"]
+            keys,
+            ["HTTPRoute", "Ingress", "TCPRoute", "TLSRoute"]
+                .map(|k| contributor_key(k, SRC_NS, "web"))
         );
-        // Reconciling every kind again prunes nothing of another kind's.
+        // Reconciling every kind again changes nothing.
         h.clear_log();
         for src in every_kind(&meta("web")) {
             h.run(&src).await.expect("reconcile");
         }
         assert!(h.deleted().is_empty(), "deleted {:?}", h.deleted());
+        assert!(h.applied().is_empty(), "wrote {:?}", h.applied());
     }
 
     #[tokio::test]
@@ -1404,10 +1667,7 @@ mod tests {
         h.run(&service(&meta("web"), "ClusterIP", &[]))
             .await
             .expect("reconcile");
-        assert_eq!(
-            h.record_names(),
-            vec![expected_name("Ingress", SRC_NS, "web", 0)]
-        );
+        assert_eq!(h.record_names(), vec![expected_name("api")]);
     }
 
     #[tokio::test]
@@ -1424,12 +1684,12 @@ mod tests {
             .await
             .expect("reconcile");
 
-        let new_name = expected_name("Ingress", SRC_NS, "web", 0);
+        let new_name = expected_name("api");
         let log = h.log();
         let applied_at = log
             .iter()
-            .position(|l| *l == format!("APPLY {new_name}"))
-            .expect("new record applied");
+            .position(|l| *l == format!("CREATE {new_name}"))
+            .expect("new record created");
         let deleted_at = log
             .iter()
             .position(|l| l == "DELETE scout-prod-team-a-web-0")
@@ -1496,23 +1756,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_dropped_host_is_pruned_even_while_the_new_records_are_unserved() {
-        // Pruning removes this source's own record for a host it no longer
-        // declares: no other record takes over that name, so there is
+    async fn a_dropped_host_is_withdrawn_even_while_the_new_records_are_unserved() {
+        // Withdrawing removes this source's own entry for a name it no
+        // longer declares: no other record takes over that name, so there is
         // nothing to wait for.
         let h = Harness::new().await;
         h.set_records_served(false);
-        h.seed(record(
-            "scout-prod-team-a-web-1",
+        h.seed(name_record(
             CLUSTER,
-            "web",
-            ZONE,
-            Some("Ingress"),
+            "old",
+            &[("Ingress", SRC_NS, "web", &[LB_IP])],
         ));
         h.run(&ingress(&meta("web"), &["api.example.com"], &[LB_IP]))
             .await
             .expect("reconcile");
-        assert_eq!(h.deleted(), vec!["scout-prod-team-a-web-1"]);
+        assert_eq!(h.deleted(), vec![expected_name("old")]);
     }
 
     #[test]
@@ -1729,5 +1987,345 @@ mod tests {
             .expect("reconcile");
         assert!(h.log().contains(&"LIST namespaces".to_string()));
         assert_eq!(h.records().len(), 1);
+    }
+
+    // =====================================================================
+    // ADR-0026: one record per DNS name (issue #556)
+    // =====================================================================
+
+    const VIP_A: &str = "10.0.0.246";
+    const VIP_B: &str = "10.0.0.241";
+    const VIP_C: &str = "10.0.0.240";
+
+    /// Publishes the three Services of issue #556 at the apex.
+    async fn publish_three_apex_services(h: &Harness) {
+        for (name, ip) in [("svc-a", VIP_A), ("svc-b", VIP_B), ("svc-c", VIP_C)] {
+            h.run(&apex_service(name, ip)).await.expect("reconcile");
+        }
+    }
+
+    #[tokio::test]
+    async fn sources_sharing_a_name_publish_one_record_with_every_address() {
+        let h = Harness::new().await;
+        publish_three_apex_services(&h).await;
+
+        let r = only_record(&h);
+        assert_eq!(
+            r.pointer("/metadata/name"),
+            Some(&json!(expected_name("@")))
+        );
+        assert_eq!(r.pointer("/spec/name"), Some(&json!("@")));
+        assert_eq!(ips_of(&r), vec![VIP_C, VIP_B, VIP_A], "sorted numerically");
+        let mut keys: Vec<String> = contributors(&r).into_keys().collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            ["svc-a", "svc-b", "svc-c"].map(|n| contributor_key("Service", SRC_NS, n))
+        );
+        for n in ["svc-a", "svc-b", "svc-c"] {
+            assert!(labels_of(&r).contains_key(&contributor_label("Service", SRC_NS, n)));
+        }
+    }
+
+    #[tokio::test]
+    async fn every_write_after_the_first_is_conditional_on_the_version_read() {
+        let h = Harness::new().await;
+        publish_three_apex_services(&h).await;
+        let name = expected_name("@");
+        assert_eq!(
+            h.applied(),
+            vec![name.clone(), name.clone(), name],
+            "one create, then two replaces, never an apply"
+        );
+        assert!(
+            !h.log().iter().any(|l| l.starts_with("UNEXPECTED")),
+            "{:?}",
+            h.log()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_source_leaving_a_shared_name_removes_only_its_own_addresses() {
+        let h = Harness::new().await;
+        publish_three_apex_services(&h).await;
+        h.clear_log();
+
+        let gone = service(
+            &meta("svc-b").ann(ANNOTATION_RECORD_NAME, "@").deleting(1),
+            "LoadBalancer",
+            &[VIP_B],
+        );
+        h.run(&gone).await.expect("reconcile");
+
+        assert!(h.deleted().is_empty(), "the name stays: {:?}", h.log());
+        let r = only_record(&h);
+        assert_eq!(ips_of(&r), vec![VIP_C, VIP_A]);
+        assert!(!contributors(&r).contains_key(&contributor_key("Service", SRC_NS, "svc-b")));
+        assert!(!labels_of(&r).contains_key(&contributor_label("Service", SRC_NS, "svc-b")));
+        assert_eq!(h.finalizer_ops(), vec!["remove"]);
+    }
+
+    #[tokio::test]
+    async fn the_last_source_leaving_a_name_deletes_its_record() {
+        let h = Harness::new().await;
+        h.run(&apex_service("svc-a", VIP_A))
+            .await
+            .expect("reconcile");
+        let opted_out = service(
+            &meta("svc-a")
+                .ann(ANNOTATION_RECORD_NAME, "@")
+                .without(ANNOTATION_SCOUT_ENABLED),
+            "LoadBalancer",
+            &[VIP_A],
+        );
+        h.run(&opted_out).await.expect("reconcile");
+        assert_eq!(h.deleted(), vec![expected_name("@")]);
+        assert!(h.records().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_address_change_rewrites_only_that_sources_entry() {
+        let h = Harness::new().await;
+        publish_three_apex_services(&h).await;
+        h.run(&apex_service("svc-a", "10.0.0.250"))
+            .await
+            .expect("reconcile");
+        assert_eq!(ips_of(&only_record(&h)), vec![VIP_C, VIP_B, "10.0.0.250"]);
+    }
+
+    #[tokio::test]
+    async fn nothing_is_written_when_the_set_is_unchanged() {
+        let h = Harness::new().await;
+        publish_three_apex_services(&h).await;
+        h.clear_log();
+        publish_three_apex_services(&h).await;
+        assert!(h.applied().is_empty(), "wrote {:?}", h.log());
+        assert!(h.deleted().is_empty());
+    }
+
+    #[tokio::test]
+    async fn contributors_with_different_ttls_publish_the_lowest() {
+        let h = Harness::new().await;
+        for (name, ip, ttl) in [("svc-a", VIP_A, "300"), ("svc-b", VIP_B, "60")] {
+            let src = service(
+                &meta(name)
+                    .ann(ANNOTATION_RECORD_NAME, "@")
+                    .ann(ANNOTATION_TTL, ttl),
+                "LoadBalancer",
+                &[ip],
+            );
+            h.run(&src).await.expect("reconcile");
+        }
+        h.run(&apex_service("svc-c", VIP_C))
+            .await
+            .expect("reconcile");
+        assert_eq!(only_record(&h).pointer("/spec/ttl"), Some(&json!(60)));
+    }
+
+    #[tokio::test]
+    async fn a_lost_race_is_retried_and_keeps_the_concurrent_contributor() {
+        let h = Harness::new().await;
+        h.run(&apex_service("svc-a", VIP_A))
+            .await
+            .expect("reconcile");
+        // While svc-c reconciles, svc-b's reconcile writes first.
+        h.race_next_write(name_record(
+            CLUSTER,
+            "@",
+            &[
+                ("Service", SRC_NS, "svc-a", &[VIP_A]),
+                ("Service", SRC_NS, "svc-b", &[VIP_B]),
+            ],
+        ));
+        h.run(&apex_service("svc-c", VIP_C))
+            .await
+            .expect("reconcile");
+
+        assert!(
+            h.log().iter().any(|l| l.starts_with("CONFLICT")),
+            "{:?}",
+            h.log()
+        );
+        assert_eq!(ips_of(&only_record(&h)), vec![VIP_C, VIP_B, VIP_A]);
+    }
+
+    #[tokio::test]
+    async fn a_lost_race_on_the_first_create_is_retried_as_a_replace() {
+        let h = Harness::new().await;
+        h.race_next_write(name_record(
+            CLUSTER,
+            "@",
+            &[("Service", SRC_NS, "svc-b", &[VIP_B])],
+        ));
+        h.run(&apex_service("svc-a", VIP_A))
+            .await
+            .expect("reconcile");
+        assert_eq!(ips_of(&only_record(&h)), vec![VIP_B, VIP_A]);
+    }
+
+    #[tokio::test]
+    async fn the_hosts_of_one_source_that_share_a_name_write_it_once() {
+        let h = Harness::new().await;
+        let src = ingress(
+            &meta("web").ann(ANNOTATION_RECORD_NAME, "@"),
+            &["a.example.com", "b.example.com"],
+            &[LB_IP],
+        );
+        h.run(&src).await.expect("reconcile");
+        assert_eq!(h.applied(), vec![expected_name("@")]);
+        assert_eq!(contributors(&only_record(&h)).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_host_dropped_from_a_shared_name_keeps_the_other_contributors() {
+        let h = Harness::new().await;
+        h.seed(name_record(
+            CLUSTER,
+            "old",
+            &[
+                ("Ingress", SRC_NS, "web", &[LB_IP]),
+                ("Service", SRC_NS, "other", &[VIP_A]),
+            ],
+        ));
+        h.run(&ingress(&meta("web"), &["api.example.com"], &[LB_IP]))
+            .await
+            .expect("reconcile");
+        let old = h.record(&expected_name("old"));
+        assert_eq!(ips_of(&old), vec![VIP_A]);
+        assert_eq!(
+            contributors(&old).keys().collect::<Vec<_>>(),
+            vec![&contributor_key("Service", SRC_NS, "other")]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_per_source_record_from_before_adr_0026_is_handed_over() {
+        let h = Harness::new().await;
+        h.set_records_served(false);
+        h.seed(record(
+            "per-source",
+            CLUSTER,
+            "svc-a",
+            ZONE,
+            Some("Service"),
+        ));
+        let src = apex_service("svc-a", VIP_A);
+
+        let action = h.run(&src).await.expect("reconcile");
+        assert!(h.deleted().is_empty(), "deleted {:?}", h.deleted());
+        assert!(requeued(&action), "the handover must be rechecked");
+
+        h.set_records_served(true);
+        h.run(&src).await.expect("reconcile");
+        assert_eq!(h.deleted(), vec!["per-source"]);
+        assert_eq!(h.record_names(), vec![expected_name("@")]);
+    }
+
+    #[tokio::test]
+    async fn a_previous_cluster_names_shared_record_loses_only_this_sources_entry() {
+        let h = Harness::new().await;
+        let stale = name_record(
+            "old-prod",
+            "@",
+            &[
+                ("Service", SRC_NS, "svc-a", &[VIP_A]),
+                ("Service", SRC_NS, "svc-b", &[VIP_B]),
+            ],
+        );
+        let stale_name = expected_name_in("old-prod", "@");
+        h.seed(stale);
+        h.run(&apex_service("svc-a", VIP_A))
+            .await
+            .expect("reconcile");
+
+        let left = h.record(&stale_name);
+        assert_eq!(
+            contributors(&left).keys().collect::<Vec<_>>(),
+            vec![&contributor_key("Service", SRC_NS, "svc-b")]
+        );
+        assert_eq!(ips_of(&left), vec![VIP_B]);
+        assert!(h.record_names().contains(&expected_name("@")));
+    }
+
+    #[tokio::test]
+    async fn a_refused_withdrawal_from_another_clusters_record_is_skipped() {
+        for code in [403, 422] {
+            let h = Harness::new().await;
+            h.seed(name_record(
+                "old-prod",
+                "@",
+                &[
+                    ("Service", SRC_NS, "svc-a", &[VIP_A]),
+                    ("Service", SRC_NS, "svc-b", &[VIP_B]),
+                ],
+            ));
+            h.refuse_write(&expected_name_in("old-prod", "@"), code);
+            let action = h
+                .run(&apex_service("svc-a", VIP_A))
+                .await
+                .expect("a refusal does not fail the reconcile");
+            assert_eq!(action, Action::await_change(), "{code}");
+            assert!(h.record_names().contains(&expected_name("@")), "{code}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_refused_withdrawal_from_the_sources_own_record_still_fails() {
+        let h = Harness::new().await;
+        h.seed(name_record(
+            CLUSTER,
+            "old",
+            &[
+                ("Ingress", SRC_NS, "web", &[LB_IP]),
+                ("Service", SRC_NS, "other", &[VIP_A]),
+            ],
+        ));
+        h.refuse_write(&expected_name("old"), 422);
+        let result = h
+            .run(&ingress(&meta("web"), &["api.example.com"], &[LB_IP]))
+            .await;
+        assert!(
+            result.is_err(),
+            "withdrawing from its own record must not be skipped"
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_source_withdraws_it_from_every_name_it_publishes() {
+        let h = Harness::new().await;
+        h.seed(name_record(
+            CLUSTER,
+            "api",
+            &[
+                ("Ingress", SRC_NS, "web", &[LB_IP]),
+                ("Service", SRC_NS, "other", &[VIP_A]),
+            ],
+        ));
+        h.seed(name_record(
+            CLUSTER,
+            "www",
+            &[("Ingress", SRC_NS, "web", &[LB_IP])],
+        ));
+        h.run(&ingress(
+            &meta("web").deleting(1),
+            &["api.example.com", "www.example.com"],
+            &[LB_IP],
+        ))
+        .await
+        .expect("reconcile");
+        assert_eq!(h.deleted(), vec![expected_name("www")]);
+        assert_eq!(ips_of(&h.record(&expected_name("api"))), vec![VIP_A]);
+        assert_eq!(h.finalizer_ops(), vec!["remove"]);
+    }
+
+    #[tokio::test]
+    async fn a_malformed_contributor_map_fails_the_reconcile() {
+        let h = Harness::new().await;
+        let mut broken = name_record(CLUSTER, "@", &[("Service", SRC_NS, "svc-b", &[VIP_B])]);
+        broken["metadata"]["annotations"][ANNOTATION_CONTRIBUTORS] = json!("{not json");
+        h.seed(broken);
+        let result = h.run(&apex_service("svc-a", VIP_A)).await;
+        assert!(result.is_err(), "got {result:?}");
+        assert!(h.applied().is_empty());
     }
 }

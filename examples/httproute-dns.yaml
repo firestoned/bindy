@@ -16,7 +16,8 @@
 #   kubectl apply -f examples/httproute-dns.yaml
 #
 # Verify Scout created the ARecords:
-#   kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-name=api-gateway
+#   (one ARecord per DNS name, shared with any other resource publishing it; ADR-0026)
+#   kubectl get arecords -n bindy-system -l "contributor.scout.bindy.firestoned.io/$(printf '%s\0%s\0%s' HTTPRoute gateway-apps api-gateway | sha256sum | cut -c1-16)"
 #
 # Verify DNS resolution:
 #   kubectl run -it --rm drill --image=alpine/drill:latest -- drill @<dns-server> api.example.com
@@ -129,9 +130,9 @@ metadata:
     bindy.firestoned.io/ttl: "300"
 spec:
   # hostnames[] is the list of hostnames this route accepts.
-  # Scout creates one ARecord per hostname with an index suffix.
-  # Example: scout-{cluster}-gateway-apps-api-gateway-0 for api.example.com
-  #          scout-{cluster}-gateway-apps-api-gateway-1 for secure-api.example.com
+  # Scout publishes one ARecord per DNS name (ADR-0026).
+  # Example: scout-{cluster}-api-example-com-{hash} for api.example.com
+  #          scout-{cluster}-secure-api-example-com-{hash} for secure-api.example.com
   hostnames:
     - api.example.com
     - secure-api.example.com

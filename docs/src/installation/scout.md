@@ -327,15 +327,15 @@ You should see Scout announce which namespaces it is watching and confirm it is 
               port: 9090
     ```
 
-Within seconds, Scout creates an `ARecord` in `bindy-system`, named `scout-<cluster>-<namespace>-<name>-<hash>-<index>` (see [Record names](../guide/scout.md#record-names)). Find records by label, not by name:
+Within seconds, Scout creates an `ARecord` in `bindy-system` for each DNS name, named `scout-<cluster>-<dns-name>-<zone>-<hash>` (see [Record names](../guide/scout.md#record-names)). Resources that publish the same name share one record. Find records by label, not by name:
 
 ```bash
 # All Scout-managed records
 kubectl get arecords -n bindy-system -l bindy.firestoned.io/managed-by=scout
 
-# Records from one source resource: kind is Ingress, Service, HTTPRoute, TLSRoute or TCPRoute
-kubectl get arecords -n bindy-system \
-  -l bindy.firestoned.io/source-kind=<kind>,bindy.firestoned.io/source-name=<resource-name>
+# Records one resource contributes to: kind is Ingress, Service, HTTPRoute, TLSRoute or TCPRoute
+kubectl get arecords -n bindy-system -l \
+  "contributor.scout.bindy.firestoned.io/$(printf '%s\0%s\0%s' <kind> <namespace> <name> | sha256sum | cut -c1-16)"
 ```
 
 ---

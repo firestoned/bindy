@@ -4,11 +4,11 @@
 #
 # E2E suite: Scout's zone-scoped stale-cluster ARecord cleanup (#474, #497).
 #
-# Scout labels every ARecord it creates with managed-by, source-cluster,
-# source-namespace, source-name and zone, then deletes "stale" records — ones
-# for the same source namespace + name written under a DIFFERENT cluster name —
-# on every reconcile, so a Scout restarted under a new --cluster-name cleans up
-# after itself.
+# Scout writes one ARecord per DNS name (ADR-0026), labelled with managed-by,
+# source-cluster, zone and one contributor label per source, then removes
+# "stale" records: ones the same source contributed to under a DIFFERENT
+# cluster name. It does that on every reconcile, so a Scout restarted under a
+# new --cluster-name cleans up after itself.
 #
 # Before #474 that selector did not match on zone, so two unrelated clusters
 # that happened to run the same namespace/name deleted each other's LIVE
@@ -68,17 +68,27 @@ wait_for_arecord() {
     return 1
 }
 
-# The name Scout gives the Ingress's first record (ADR-0022):
-# scout-{cluster}-{namespace}-{name}-{hash}-{index}, where {hash} is the first
-# 8 hex characters of the SHA-256 of "cluster NUL kind NUL namespace NUL name".
-# Computed here independently of Scout, so a naming regression fails the suite.
+# The name of the record Scout writes for the Ingress's host "app" in
+# ${ZONE_ALPHA} (ADR-0026, Decision 1): scout-{cluster}-{dns-name}-{zone}-{hash},
+# where {hash} is the first 8 hex characters of the SHA-256 of
+# "cluster NUL zone NUL dns-name". Computed here independently of Scout, so a
+# naming regression fails the suite.
 #
 # $1: cluster name
 scout_record_name() {
     local hash
-    hash=$(printf '%s\0%s\0%s\0%s' "$1" Ingress "${SOURCE_NS}" "${INGRESS_NAME}" \
-        | sha256sum | cut -c1-8)
-    echo "scout-$1-${SOURCE_NS}-${INGRESS_NAME}-${hash}-0"
+    hash=$(printf '%s\0%s\0%s' "$1" "${ZONE_ALPHA}" app | sha256sum | cut -c1-8)
+    echo "scout-$1-app-$(echo "${ZONE_ALPHA}" | tr '.' '-')-${hash}"
+}
+
+# The label a source sets on every record it contributes to (ADR-0026,
+# Decision 2): the first 16 hex characters of the SHA-256 of
+# "kind NUL namespace NUL name".
+#
+# $1: kind, $2: namespace, $3: name
+contributor_label() {
+    echo "contributor.scout.bindy.firestoned.io/$(printf '%s\0%s\0%s' "$1" "$2" "$3" \
+        | sha256sum | cut -c1-16)"
 }
 
 # Stands in for the operator, which this suite does not run: binds a record to
@@ -292,12 +302,13 @@ else
     fail "zone label was '${ACTUAL_ZONE}', expected '${ZONE_ALPHA}'"
 fi
 
-ACTUAL_KIND=$(${KUBECTL} get arecord "${OWN_RECORD}" -n "${NAMESPACE}" \
-    -o jsonpath='{.metadata.labels.bindy\.firestoned\.io/source-kind}' 2>/dev/null || true)
-if [ "${ACTUAL_KIND}" = "Ingress" ]; then
-    pass "source-kind label is Ingress"
+CONTRIBUTORS=$(${KUBECTL} get arecord "${OWN_RECORD}" -n "${NAMESPACE}" \
+    -o jsonpath='{.metadata.annotations.bindy\.firestoned\.io/scout-contributors}' \
+    2>/dev/null || true)
+if echo "${CONTRIBUTORS}" | grep -q "\"Ingress/${SOURCE_NS}/${INGRESS_NAME}\""; then
+    pass "the Ingress is listed as the record's contributor"
 else
-    fail "source-kind label was '${ACTUAL_KIND}', expected 'Ingress'"
+    fail "contributor map was '${CONTRIBUTORS}', expected an Ingress/${SOURCE_NS}/${INGRESS_NAME} entry"
 fi
 
 summary_row "Scout creates an ARecord labelled with its zone" \
@@ -418,7 +429,7 @@ zone at the guard"
 fi
 
 if ${KUBECTL} get arecord -n "${NAMESPACE}" \
-       -l "bindy.firestoned.io/source-name=overlong-zone" \
+       -l "$(contributor_label Ingress "${SOURCE_NS}" overlong-zone)" \
        -o name 2>/dev/null | grep -q .; then
     fail "Scout created an ARecord for a zone it cannot label"
 else

@@ -30,7 +30,7 @@
       "unique-id": "arecords",
       "node-type": "data-asset",
       "name": "ARecord CRs (bindy-system)",
-      "description": "Canonical ARecord resources in the Queen Bee bindy-system namespace, fanned in from every child cluster and stamped with source-cluster and zone labels. A record written by a registered Scout ServiceAccount carries one of that account's cluster names and an allowed zone; a DNSZone takes a Scout record only when its zone label equals the zone's name (ADR-0025)."
+      "description": "Canonical ARecord resources in the Queen Bee bindy-system namespace, fanned in from every child cluster and stamped with source-cluster and zone labels. A record written by a registered Scout ServiceAccount carries one of that account's cluster names and an allowed zone; a DNSZone takes a Scout record only when its zone label equals the zone's name (ADR-0025). A Scout writes one ARecord per cluster, zone and DNS name, not one per source: the bindy.firestoned.io/scout-contributors annotation holds every contributing source's addresses and TTL, spec.ipv4Addresses is their union and spec.ttl the lowest, and the record is deleted with its last contributor (ADR-0026)."
     },
     {
       "unique-id": "scout-source-registry",
@@ -54,7 +54,7 @@
       "unique-id": "scout-a",
       "node-type": "service",
       "name": "Bindy Scout A",
-      "description": "Scout Deployment (image bindy, args=[scout]) on Child Cluster A. Watches local Ingress / LoadBalancer Service / HTTPRoute / TLSRoute / TCPRoute through the shared watch layer (one watch and cache per kind, ADR-0009) and derives DNS names. Publishes only zones in --allowed-zones and addresses in --allowed-ip-ranges when those are set (ADR-0025).",
+      "description": "Scout Deployment (image bindy, args=[scout]) on Child Cluster A. Watches local Ingress / LoadBalancer Service / HTTPRoute / TLSRoute / TCPRoute through the shared watch layer (one watch and cache per kind, ADR-0009) and derives DNS names. Publishes only zones in --allowed-zones and addresses in --allowed-ip-ranges when those are set (ADR-0025). Sources (of any kind or namespace) that resolve to the same zone and DNS name are merged into one record with the complete address set (ADR-0026).",
       "development-language": "Rust"
     },
     {
@@ -138,7 +138,7 @@
     },
     {
       "unique-id": "scout-a-applies",
-      "description": "server-side-applies ARecord CRs via remote kubeconfig Secret or endpoint + token-file override, as its own ServiceAccount minted by the queen cluster (ADR-0008) and registered for its cluster names and zones (ADR-0025)",
+      "description": "writes one ARecord per DNS name as a complete, conditional replace (read, update its own contributor entry, write with the read resourceVersion as precondition, retry on 409; ADR-0026) via remote kubeconfig Secret or endpoint + token-file override, as its own ServiceAccount minted by the queen cluster (ADR-0008) and registered for its cluster names and zones (ADR-0025)",
       "protocol": "HTTPS",
       "relationship-type": {
         "connects": {
@@ -149,7 +149,7 @@
     },
     {
       "unique-id": "scout-b-applies",
-      "description": "server-side-applies ARecord CRs via remote kubeconfig Secret or endpoint + token-file override, as its own ServiceAccount minted by the queen cluster (ADR-0008) and registered for its cluster names and zones (ADR-0025)",
+      "description": "writes one ARecord per DNS name as a complete, conditional replace (read, update its own contributor entry, write with the read resourceVersion as precondition, retry on 409; ADR-0026) via remote kubeconfig Secret or endpoint + token-file override, as its own ServiceAccount minted by the queen cluster (ADR-0008) and registered for its cluster names and zones (ADR-0025)",
       "protocol": "HTTPS",
       "relationship-type": {
         "connects": {

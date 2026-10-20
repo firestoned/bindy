@@ -114,11 +114,12 @@ spec:
                   number: 80
 ```
 
-Scout will create an `ARecord` named `scout-<cluster>-my-app-ns-my-app-<hash>-0` in the `bindy-system` namespace (see [Record names](#record-names)), with:
+Scout will create an `ARecord` named `scout-<cluster>-my-app-example-com-<hash>` in the `bindy-system` namespace (see [Record names](#record-names)), with:
 
 - `spec.name`: `my-app` (derived by stripping the zone suffix from the host)
-- `spec.ipv4Addresses`: the IP from the Ingress LoadBalancer status
-- Labels: `bindy.firestoned.io/source-cluster`, `source-kind`, `source-namespace`, `source-name`, `zone`
+- `spec.ipv4Addresses`: every IPv4 address in the Ingress LoadBalancer status
+- Labels: `bindy.firestoned.io/managed-by`, `source-cluster`, `zone`, and one contributor label for the Ingress
+- Annotation `bindy.firestoned.io/scout-contributors`: the Ingress and the addresses it resolved
 
 **For a LoadBalancer Service:**
 
@@ -140,7 +141,7 @@ spec:
       targetPort: 9090
 ```
 
-Scout will create an `ARecord` named `scout-<cluster>-my-app-ns-my-grpc-api` in the `bindy-system` namespace, resolving to `my-grpc-api.example.com`.
+Scout will create an `ARecord` named `scout-<cluster>-my-grpc-api-example-com-<hash>` in the `bindy-system` namespace, resolving to `my-grpc-api.example.com`.
 
 ### 2. Deploy Scout
 
@@ -189,11 +190,11 @@ These annotations apply to both `Ingress` and `LoadBalancer Service` resources.
 | `bindy.firestoned.io/scout-enabled` | **Yes** (preferred) | Set to `"true"` to opt this Ingress or Service into Scout management. The record kind always defaults to `ARecord`. |
 | `bindy.firestoned.io/recordKind` | *(legacy, Ingress only)* | Accepted for backward compatibility. `"ARecord"` opts in. Prefer `scout-enabled: "true"` for new deployments. |
 | `bindy.firestoned.io/zone` | **Yes** (unless `--default-zone` is set) | The DNS zone for this resource (e.g. `example.com`). Overrides the operator's `--default-zone`. For Ingress: hosts outside the zone are skipped with a warning. |
-| `bindy.firestoned.io/ip` | No | Explicit IP address(es) for the A record. Accepts a single IP (`"10.0.0.1"`) or a comma-separated list (`"10.0.0.1,10.0.0.2,10.0.0.3"`) — every entry becomes one address on the resulting `ARecord`, in the order given. Whitespace around each entry is trimmed and empty entries are skipped. When set, overrides both `--default-ips` and the LoadBalancer status IP. |
+| `bindy.firestoned.io/ip` | No | Explicit IP address(es) for the A record. Accepts a single IP (`"10.0.0.1"`) or a comma-separated list (`"10.0.0.1,10.0.0.2,10.0.0.3"`): every entry becomes one address on the resulting `ARecord` (the record lists its addresses sorted numerically, each once). Whitespace around each entry is trimmed and empty entries are skipped. When set, overrides both `--default-ips` and the LoadBalancer status IP. |
 | `bindy.firestoned.io/ttl` | No | TTL override in seconds, a positive integer. When absent, the created `ARecord` inherits the TTL from the `DNSZone` spec. A value that is not a positive integer (`"abc"`, `"0"`, `"-5"`, `"1.5"`) is an error: Scout logs a warning, publishes nothing for that resource, and retries every 30s until the annotation is fixed. Records it already published are left as they are. |
-| `bindy.firestoned.io/record-name` | No | Override the `spec.name` of the created `ARecord`. When set, replaces the name normally derived by stripping the zone suffix from the host. Use `"@"` for the zone apex. On multi-host resources (`Ingress`, `HTTPRoute`, `TLSRoute`) the override is applied to every record produced, so it is intended for single-host use cases. An override that is not a legal DNS name is treated like an invalid TTL: a warning, nothing published for that resource, a retry, and existing records left in place. |
+| `bindy.firestoned.io/record-name` | No | Override the `spec.name` of the created `ARecord`. When set, replaces the name normally derived by stripping the zone suffix from the host. Use `"@"` for the zone apex. On multi-host resources (`Ingress`, `HTTPRoute`, `TLSRoute`) the override applies to every host, so all of them publish that one name and the resource adds its addresses to it once. An override that is not a legal DNS name is treated like an invalid TTL: a warning, nothing published for that resource, a retry, and existing records left in place. |
 
-Scout only writes IPv4 addresses (`ARecord` is IPv4-only). An address read from a status field (an Ingress or Service `status.loadBalancer`, or a Gateway's `status.addresses`) that is not IPv4 is skipped with a warning.
+Scout only writes IPv4 addresses (`ARecord` is IPv4-only). An address read from a status field (an Ingress or Service `status.loadBalancer`, or a Gateway's `status.addresses`) that is not IPv4 is skipped with a warning. Every IPv4 address in a load balancer status is published, in status order and each address once: a `LoadBalancer` Service with three ingress IPs gets one `ARecord` with three addresses. Several resources that publish the same name share one `ARecord`: see [Several resources publishing one name](#several-resources-publishing-one-name).
 
 ### Zone authorization (cross-namespace)
 
@@ -273,8 +274,8 @@ Scout processes **each rule in the Ingress spec independently**. For a multi-hos
 ```yaml
 spec:
   rules:
-    - host: api.example.com      # → ARecord "scout-prod-ns-name-<hash>-0"  (name: "api")
-    - host: www.example.com      # → ARecord "scout-prod-ns-name-<hash>-1"  (name: "www")
+    - host: api.example.com      # → ARecord "scout-prod-api-example-com-<hash>"  (name: "api")
+    - host: www.example.com      # → ARecord "scout-prod-www-example-com-<hash>"  (name: "www")
     - host: other.io             # → skipped (not in zone "example.com")
 ```
 
@@ -287,9 +288,9 @@ The record name is derived by stripping the zone suffix from the host:
 | `example.com` | `example.com` | `@` (apex record) |
 | `other.io` | `example.com` | *(skipped — not in zone)* |
 
-Opt in with the `bindy.firestoned.io/scout-enabled: "true"` annotation. One `ARecord` CR is created per rule host, named `scout-{cluster}-{namespace}-{ingress}-{hash}-{idx}` (see [Record names](#record-names)). The IP is resolved from the `bindy.firestoned.io/ip` annotation, then `--default-ips`, then the Ingress LoadBalancer status.
+Opt in with the `bindy.firestoned.io/scout-enabled: "true"` annotation. Each rule host publishes one DNS name, and each DNS name is one `ARecord`, named `scout-{cluster}-{name}-{zone}-{hash}` (see [Record names](#record-names)). The IP is resolved from the `bindy.firestoned.io/ip` annotation, then `--default-ips`, then the Ingress LoadBalancer status.
 
-When a host is removed from the Ingress, or stops matching the zone, Scout deletes that host's `ARecord` on the next reconcile. The same applies to `HTTPRoute` and `TLSRoute` hostnames.
+When a host is removed from the Ingress, or stops matching the zone, Scout removes the Ingress's addresses from that name's `ARecord` on the next reconcile, and deletes the record if no other resource still publishes the name. The same applies to `HTTPRoute` and `TLSRoute` hostnames.
 
 ---
 
@@ -319,12 +320,12 @@ spec:
       targetPort: 8443
 ```
 
-Scout creates an `ARecord` named `scout-{cluster}-{namespace}-{service}-{hash}-0` with:
+Scout writes the `ARecord` named `scout-{cluster}-{service-name}-{zone}-{hash}`, with:
 
 - DNS record name: `{service-name}` (relative to the zone) → resolves to `my-grpc-api.example.com`
-- IP: from `bindy.firestoned.io/ip` annotation → `--default-ips` → `status.loadBalancer.ingress[].ip`
+- IP: from `bindy.firestoned.io/ip` annotation → `--default-ips` → every IPv4 `status.loadBalancer.ingress[].ip`
 
-**`ClusterIP` and `NodePort` services are skipped**, because they have no routable external IP. If an opted-in `LoadBalancer` Service is changed to one of those types, Scout deletes its `ARecord` and removes its finalizer, just as when the opt-in annotation is removed.
+**`ClusterIP` and `NodePort` services are skipped**, because they have no routable external IP. If an opted-in `LoadBalancer` Service is changed to one of those types, Scout removes its addresses (deleting the `ARecord` when no other resource publishes the name) and removes its finalizer, just as when the opt-in annotation is removed.
 
 If no external IP has been assigned yet, Scout logs a warning and re-queues after 30s:
 
@@ -336,17 +337,13 @@ WARN scout: service my-app/my-grpc-api has no external IP yet; requeueing in 30s
 
 | | Ingress | Service |
 |---|---|---|
-| ARecord per rule | Yes (one per `rules[].host`) | No, exactly one record |
-| CR name suffix | `...-{hash}-{idx}` (rule index) | `...-{hash}-0` |
+| DNS names published | One per `rules[].host` | Exactly one |
 | IP source | annotation, `--default-ips`, LB status | annotation, `--default-ips`, LB status |
-| Source labels | `source-kind=Ingress`, `source-name` | `source-kind=Service`, `source-name` |
+| Contributor key | `Ingress/<namespace>/<name>` | `Service/<namespace>/<name>` |
 
-Query a Service's ARecords by label (never by name pattern):
-
-```bash
-kubectl get arecords -n bindy-system \
-  -l bindy.firestoned.io/source-kind=Service,bindy.firestoned.io/source-name=<service-name>
-```
+Find the records a resource contributes to through its contributor key in the
+`bindy.firestoned.io/scout-contributors` annotation (see
+[Finding a resource's records](#finding-a-resources-records)).
 
 ---
 
@@ -361,30 +358,126 @@ See [Gateway API Routes](#gateway-api-routes-httproute-tlsroute-and-tcproute) fo
 
 ---
 
-## Labels on Created ARecords
+## Labels and annotations on created ARecords
 
-Every `ARecord` created by Scout carries these labels:
+Scout writes **one `ARecord` per DNS name**, shared by every resource of this
+cluster that publishes that name
+([ADR-0026](https://github.com/firestoned/bindy/blob/main/docs/adr/0026-scout-one-record-per-dns-name.md)).
+Every such record carries these labels:
 
-| Label | Value | Source |
-|---|---|---|
-| `bindy.firestoned.io/managed-by` | `scout` | All |
-| `bindy.firestoned.io/source-cluster` | `<BINDY_SCOUT_CLUSTER_NAME>` | All |
-| `bindy.firestoned.io/source-kind` | `Ingress`, `Service`, `HTTPRoute`, `TLSRoute` or `TCPRoute` | All |
-| `bindy.firestoned.io/source-namespace` | Resource namespace | All |
-| `bindy.firestoned.io/source-name` | Resource name | All |
-| `bindy.firestoned.io/zone` | Zone name | All |
+| Label | Value |
+|---|---|
+| `bindy.firestoned.io/managed-by` | `scout` |
+| `bindy.firestoned.io/source-cluster` | `<BINDY_SCOUT_CLUSTER_NAME>` |
+| `bindy.firestoned.io/zone` | Zone name |
+| `contributor.scout.bindy.firestoned.io/<hash>` | `true`, one label per contributing resource. `<hash>` is the first 16 hex characters of the SHA-256 of the resource's kind, namespace and name joined by NUL bytes |
 
-The `source-cluster`, `source-kind`, `source-namespace` and `source-name` labels together identify exactly one source object, and Scout finds its own records by them (for pruning, opt-out and deletion cleanup, and stale-cluster cleanup). Same-named objects of different kinds in one namespace (an `Ingress` and an `HTTPRoute` both called `web`, say) therefore keep separate records and never prune or delete each other's ([ADR-0022](https://github.com/firestoned/bindy/blob/main/docs/adr/0022-scout-sources-share-one-pipeline.md)). Select Scout's records by these labels, not by name.
+and the annotation `bindy.firestoned.io/scout-contributors`, a JSON map from
+each contributing resource (`<kind>/<namespace>/<name>`) to the addresses and
+TTL it resolved:
+
+```json
+{
+  "Service/kube-system/kube-api-a": {"ips": ["10.0.0.246"]},
+  "Service/kube-system/kube-api-b": {"ips": ["10.0.0.241"], "ttl": 60}
+}
+```
+
+`spec.ipv4Addresses` is always the union of the map, sorted numerically with
+each address once, and `spec.ttl` is the lowest TTL any contributor sets (none
+set means the zone's TTL). Scout rebuilds both from the map on every write, so
+editing them by hand is undone on the next reconcile. Do not edit the
+annotation: a record whose map cannot be parsed stops Scout from writing it
+until the annotation is fixed or removed.
+
+Records written before ADR-0026 (one per resource, labelled
+`source-kind`, `source-namespace` and `source-name`) are replaced
+automatically: see the [Migration Guide](../operations/migration-guide.md).
+
+### Several resources publishing one name
+
+When two or more resources resolve to the same zone and DNS name, Scout
+publishes **one** record holding all of their addresses. For example, one
+kube-API `LoadBalancer` Service per availability zone, all at the apex:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kube-api-a          # likewise kube-api-b (10.0.0.241), kube-api-c (10.0.0.240)
+  namespace: kube-system
+  annotations:
+    bindy.firestoned.io/scout-enabled: "true"
+    bindy.firestoned.io/zone: "cluster.example.com"
+    bindy.firestoned.io/record-name: "@"
+spec:
+  type: LoadBalancer
+status:
+  loadBalancer:
+    ingress:
+      - ip: 10.0.0.246
+```
+
+Scout writes one `ARecord`, `scout-<cluster>-apex-cluster-example-com-<hash>`,
+with `ipv4Addresses: [10.0.0.240, 10.0.0.241, 10.0.0.246]`, and BIND9 serves
+all three addresses for `cluster.example.com`.
+
+- **Any kind, any namespace.** An `Ingress`, a `Service` and an `HTTPRoute`
+  that publish one name share the record, as do resources in different
+  namespaces. Each resource is still checked on its own (zone authorization,
+  `--allowed-zones`, `--allowed-ip-ranges`) before it adds its addresses, and
+  Scout logs at info level when a resource joins a name others already publish.
+- **Removing one resource removes only its addresses.** Deleting `kube-api-b`,
+  opting it out, or changing its `record-name` rewrites the record with the
+  other two addresses. The record is deleted only when the last resource
+  leaves the name.
+- **Different TTLs publish the lowest.** If the resources set different
+  `bindy.firestoned.io/ttl` values, the record uses the lowest and Scout logs a
+  warning.
+- **Writes are atomic.** Scout reads the record, changes only its own entry,
+  rebuilds the full address list, and writes it back only if the record has
+  not changed since it read it (otherwise it starts again). The operator then
+  replaces the DNS answer in one update. No reconcile ever publishes a partial
+  set.
+- **One cluster only.** Each Scout writes its own records (the record name
+  includes the cluster name). Two clusters publishing the same name in one
+  zone still produce two records, and the last one written wins; only
+  register a zone for clusters that should not share names
+  ([ADR-0025](https://github.com/firestoned/bindy/blob/main/docs/adr/0025-scout-records-bound-to-cluster-and-zones.md)).
+
+### Finding a resource's records
+
+Select by the resource's contributor label:
+
+```bash
+LABEL="contributor.scout.bindy.firestoned.io/$(printf '%s\0%s\0%s' Service kube-system kube-api-a | sha256sum | cut -c1-16)"
+kubectl get arecords -n bindy-system -l "${LABEL}"
+```
+
+or list a cluster's records and read the contributor annotation:
+
+```bash
+kubectl get arecords -n bindy-system \
+  -l bindy.firestoned.io/managed-by=scout,bindy.firestoned.io/source-cluster=<cluster> \
+  -o custom-columns='NAME:.spec.name,ADDRESSES:.spec.ipv4Addresses,CONTRIBUTORS:.metadata.annotations.bindy\.firestoned\.io/scout-contributors'
+```
 
 ### Record names
 
-A Scout `ARecord` is named `scout-{cluster}-{namespace}-{name}-{hash}-{index}`:
+A Scout `ARecord` is named `scout-{cluster}-{dns-name}-{zone}-{hash}`:
 
-- `scout-{cluster}-{namespace}-{name}` is a readable prefix, lowercased, with every character other than `a-z`, `0-9` and `-` replaced by `-`, and truncated (with any hyphen left at the cut removed) so the whole name fits the 253-character Kubernetes limit;
-- `{hash}` is the first 8 hex characters of the SHA-256 of `cluster`, `kind`, `namespace` and `name` joined by NUL bytes, so the name is unique to the source even when the readable prefix is not (an `Ingress` and an `HTTPRoute` of the same name, or `team-a`/`web` and `team`/`a-web`, which join to the same prefix);
-- `{index}` is the host's position in the source (`rules[]` for an Ingress, `spec.hostnames[]` for a route, `0` for a Service or TCPRoute).
+- `scout-{cluster}-{dns-name}-{zone}` is a readable prefix, with the apex
+  (`@`) spelled `apex`, lowercased, with every character other than `a-z`,
+  `0-9` and `-` replaced by `-`, and truncated (with any hyphen left at the cut
+  removed) so the whole name fits the 253-character Kubernetes limit;
+- `{hash}` is the first 8 hex characters of the SHA-256 of `cluster`, `zone`
+  and `dns-name` (the last two lowercased) joined by NUL bytes, so the name is
+  unique to the DNS name even when the readable prefix is not (`a.b` and
+  `a-b`, or the apex and a name called `apex`).
 
-The name is an implementation detail: the published DNS name comes from `spec.name`, and tools should select records by label.
+Every resource that publishes the same name in the same zone therefore writes
+the same record. The name is an implementation detail: the published DNS name
+comes from `spec.name`.
 
 The `zone` label is particularly important: it lets you configure a `DNSZone` to automatically pull in all ARecords created by Scout for that zone:
 
@@ -724,7 +817,7 @@ metadata:
   namespace: my-app
   annotations:
     bindy.firestoned.io/scout-enabled: "true"
-    bindy.firestoned.io/zone: "api.example.com"
+    bindy.firestoned.io/zone: "example.com"
     bindy.firestoned.io/ip: "192.168.1.100"
 spec:
   hostnames:
@@ -739,9 +832,9 @@ spec:
           port: 8080
 ```
 
-Scout will create two ARecords:
-- `scout-{cluster}-my-app-api-gateway-{hash}-0` for `api.example.com`
-- `scout-{cluster}-my-app-api-gateway-{hash}-1` for `secure-api.example.com`
+Scout will publish two names, one `ARecord` each:
+- `scout-{cluster}-api-example-com-{hash}` for `api.example.com`
+- `scout-{cluster}-secure-api-example-com-{hash}` for `secure-api.example.com`
 
 ### Quick Example: TLSRoute
 
@@ -753,7 +846,7 @@ metadata:
   namespace: my-app
   annotations:
     bindy.firestoned.io/scout-enabled: "true"
-    bindy.firestoned.io/zone: "secure.example.com"
+    bindy.firestoned.io/zone: "example.com"
     bindy.firestoned.io/ip: "192.168.1.101"
 spec:
   hostnames:
@@ -768,9 +861,9 @@ spec:
           port: 5051
 ```
 
-Scout will create two ARecords:
-- `scout-{cluster}-my-app-grpc-gateway-{hash}-0` for `secure.example.com`
-- `scout-{cluster}-my-app-grpc-gateway-{hash}-1` for `grpc.example.com`
+Scout will publish two names, one `ARecord` each:
+- `scout-{cluster}-secure-example-com-{hash}` for `secure.example.com`
+- `scout-{cluster}-grpc-example-com-{hash}` for `grpc.example.com`
 
 ### Quick Example: TCPRoute
 
@@ -799,34 +892,31 @@ Scout will create one ARecord for `db.example.com`.
 
 ### Record Naming for Gateway Routes
 
-Gateway API routes use `spec.hostnames[]` instead of `spec.rules[].host`. Scout creates one ARecord per hostname, named as described in [Record names](#record-names), with the hostname's **index** (0, 1, 2, ...) last. `{hash}` differs per route and per kind, so an `HTTPRoute` and a `TLSRoute` of the same name never share a record:
+Gateway API routes use `spec.hostnames[]` instead of `spec.rules[].host`. Each hostname publishes one DNS name, and each DNS name is one `ARecord`, named as described in [Record names](#record-names). The record is named after the DNS name, not the route, so an `HTTPRoute` and a `TLSRoute` that publish the same hostname share one record (see [Several resources publishing one name](#several-resources-publishing-one-name)):
 
-| Hostname | Record CR Name |
-|---|---|
-| `api.example.com` (HTTPRoute `api-gateway`, index 0) | `scout-prod-my-app-api-gateway-{hash}-0` |
-| `secure-api.example.com` (HTTPRoute `api-gateway`, index 1) | `scout-prod-my-app-api-gateway-{hash}-1` |
-| `grpc.example.com` (TLSRoute `grpc-gateway`, index 1) | `scout-prod-my-app-grpc-gateway-{hash}-1` |
+| Hostname | Zone | Record CR name |
+|---|---|---|
+| `api.example.com` (HTTPRoute `api-gateway`) | `example.com` | `scout-prod-api-example-com-{hash}` |
+| `secure-api.example.com` (HTTPRoute `api-gateway`) | `example.com` | `scout-prod-secure-api-example-com-{hash}` |
+| `grpc.example.com` (TLSRoute `grpc-gateway`) | `example.com` | `scout-prod-grpc-example-com-{hash}` |
 
 The record name within the zone is derived identically to Ingress rules:
 
 | Hostname | Zone | Derived record name |
 |---|---|---|
 | `api.example.com` | `api.example.com` | `@` (apex record) |
-| `secure-api.example.com` | `api.example.com` | `secure-api` |
-| `deep.api.example.com` | `api.example.com` | `deep.api` |
+| `secure.api.example.com` | `api.example.com` | `secure` |
+| `deep.sub.api.example.com` | `api.example.com` | `deep.sub` |
+| `secure-api.example.com` | `api.example.com` | *(skipped: not in zone)* |
 
 ### Labels on Gateway Route ARecords
 
-ARecords created from Gateway API routes carry similar labels to Ingress-derived records, with source-specific labels:
-
-| Label | Value | Purpose |
-|---|---|---|
-| `bindy.firestoned.io/managed-by` | `scout` | Identifies Scout as the manager |
-| `bindy.firestoned.io/source-cluster` | `<BINDY_SCOUT_CLUSTER_NAME>` | Cluster where the route lives |
-| `bindy.firestoned.io/source-kind` | `HTTPRoute`, `TLSRoute` or `TCPRoute` | Source route kind |
-| `bindy.firestoned.io/source-namespace` | Route namespace | Source namespace for traceability |
-| `bindy.firestoned.io/source-name` | Route name | Source route name |
-| `bindy.firestoned.io/zone` | Zone name | Allows `DNSZone.spec.recordsFrom` label selectors to discover the record |
+Records published from Gateway API routes carry the same labels and
+contributor annotation as every other Scout record (see
+[Labels and annotations on created ARecords](#labels-and-annotations-on-created-arecords)):
+`managed-by`, `source-cluster`, `zone`, and one contributor label per route.
+The `zone` label lets `DNSZone.spec.recordsFrom` label selectors discover the
+record.
 
 This allows you to configure a `DNSZone` to pull in all ARecords created by Scout from both Ingress and Gateway API routes:
 
@@ -1294,12 +1384,12 @@ If you restart Scout with a different `--cluster-name` (or `BINDY_SCOUT_CLUSTER_
 
 ### How It Works
 
-`ARecord` CRs created by Scout carry `bindy.firestoned.io/source-cluster` and `bindy.firestoned.io/zone` labels identifying the cluster that created them and the DNS zone they publish into. The CR name also embeds the cluster name (e.g., `scout-<cluster>-<namespace>-<ingress>-<hash>-<idx>`).
+`ARecord` CRs created by Scout carry `bindy.firestoned.io/source-cluster` and `bindy.firestoned.io/zone` labels identifying the cluster that created them and the DNS zone they publish into, and one contributor label per resource that publishes the name. The CR name also embeds the cluster name (e.g., `scout-<cluster>-<dns-name>-<zone>-<hash>`).
 
 When Scout reconciles a resource under a new cluster name:
-1. It creates new `ARecord` CRs under the new cluster name.
-2. It selects all `ARecord` CRs for the same kind, namespace and name whose `source-cluster` label does **not** match the current cluster name **and** whose `zone` label matches the resource's currently resolved zone. Records written before the `source-kind` label existed (no `source-kind` label) are matched the same way.
-3. It deletes those stale records automatically.
+1. It writes the resource's addresses to the records of the new cluster name.
+2. It selects the records whose `source-cluster` label does **not** match the current cluster name, whose `zone` label matches the resource's currently resolved zone, and that carry the resource's contributor label. Per-resource records from before ADR-0026, with the resource's kind, namespace and name labels (or no kind label, from before ADR-0022), are matched the same way.
+3. Once the new records are served, it removes the resource's addresses from those stale records (deleting each record when no other resource is left on it) and deletes the per-resource ones.
 
 The zone match matters: two entirely unrelated clusters can happen to run an Ingress with the same namespace + name (e.g. both deploy `team-checkout/web-frontend`) while publishing into **different** DNS zones. Without scoping by zone, each cluster's cleanup would treat the other's live `ARecord` as "stale" purely because the `source-cluster` label differs — and delete it, over and over, on every reconcile. Scoping by zone protects clusters publishing into distinct zones from this.
 
@@ -1312,11 +1402,11 @@ This happens on every reconcile, so all stale records for the reconcile path are
 On the **delete** and **opt-out** paths the zone is not taken from annotations alone. Opting out is documented as removing the `bindy.firestoned.io/*` annotations, and stripping them all in one edit removes the zone along with the opt-in — so by the time cleanup runs there may be no annotation left to read. Scout therefore cleans up every zone in the union of:
 
 - the zone resolved from the resource's annotations (or `BINDY_SCOUT_DEFAULT_ZONE`), if there still is one; and
-- the `zone` labels of the `ARecord`s it just deleted for that resource, which Scout wrote itself and which survive the annotation edit.
+- the `zone` labels of the `ARecord`s it just removed the resource from, which Scout wrote itself and which survive the annotation edit.
 
 The labels also cover a `BINDY_SCOUT_DEFAULT_ZONE` that changed after the records were written, where the resolved zone no longer matches what is actually on disk.
 
-Only if *neither* source yields a usable zone does Scout skip the stale-cluster step. It then logs a warning and lists (without deleting) any candidate stale `ARecord`s left behind under a previous cluster name, before removing the resource's own `ARecord`s and finalizer. Because the resource is gone, there is no future reconcile to retry that skipped cleanup — it is permanent unless an operator acts on the logged candidates.
+Only if *neither* source yields a usable zone does Scout skip the stale-cluster step. It then logs a warning and lists (without deleting) any candidate stale `ARecord`s left behind under a previous cluster name, before removing the resource from its own `ARecord`s and removing its finalizer. Because the resource is gone, there is no future reconcile to retry that skipped cleanup: it is permanent unless an operator acts on the logged candidates.
 
 ### Zones that cannot be used as a label value
 

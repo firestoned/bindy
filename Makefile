@@ -925,6 +925,15 @@ e2e-multi-tenancy: ## E2E: namespace isolation across Bind9Cluster/Bind9Instance
 e2e-scout: ## E2E: Scout's zone-scoped stale-cluster ARecord cleanup (#474)
 	$(call run-e2e-suite,tests/e2e/scout_test.sh,$(E2E_SCOUT_CLUSTER))
 
+E2E_QUEEN_CLUSTER ?= bindy-e2e-queen
+E2E_EDGE_CLUSTER  ?= bindy-e2e-edge
+
+e2e-scout-multi: ## E2E: Scout one record per DNS name on two kind clusters (ADR-0026; needs E2E_IMAGE and BASE_IMAGE_REF)
+	@chmod +x tests/e2e/scout_multi_cluster_test.sh
+	@QUEEN_CLUSTER=$(E2E_QUEEN_CLUSTER) EDGE_CLUSTER=$(E2E_EDGE_CLUSTER) BASE_IMAGE_REF="$(BASE_IMAGE_REF)" \
+		tests/e2e/scout_multi_cluster_test.sh --image "$(E2E_IMAGE)"
+	@$(if $(KEEP_CLUSTER),echo "KEEP_CLUSTER set; leaving kind clusters up",kind delete cluster --name $(E2E_QUEEN_CLUSTER) >/dev/null 2>&1; kind delete cluster --name $(E2E_EDGE_CLUSTER) >/dev/null 2>&1 || true)
+
 e2e-rndc-secretref: ## E2E: an RNDC key from rndcKey.secretRef is mirrored, follows its source, and stays served (ADR-0023)
 	$(call run-e2e-suite,tests/e2e/rndc_secretref_test.sh,$(E2E_RNDC_SECRETREF_CLUSTER))
 
