@@ -1,3 +1,69 @@
+## [2026-10-20 07:40] - Scout publishes one record per DNS name (ADR-0026, issue #556, roadmap 32 phases 3 to 7)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/bindy-scout/src/contributors.rs` (+ `contributors_tests.rs`): the per-name record's contributor map. `bindy.firestoned.io/scout-contributors` (JSON, source `kind/namespace/name` to its addresses and TTL) and one `contributor.scout.bindy.firestoned.io/<hash>` label per source; `spec.ipv4Addresses` is the union (sorted numerically, each once) and `spec.ttl` the lowest. `plan_contribute` / `plan_withdraw` decide one write; `contribute` / `withdraw` read, rebuild and replace with the read `resourceVersion` as precondition, retried on 409 up to 5 times; the last contributor leaving deletes the record with a precondition; an unchanged record is not written; a malformed map is an error naming the record.
+- `crates/bindy-scout/src/scout.rs`: `dns_name_record_cr_name` (`scout-{cluster}-{dns-name}-{zone}-{hash}`, apex spelled `apex`, hash over cluster, zone and lowercased name), `name_identity_hash`, `nul_joined_sha256_hex`.
+- Reconcile tests for issue #556 in `pipeline_tests.rs`: three Services at `@` publish one record with three addresses; removing one keeps the others; the last removes the record; TTLs publish the lowest; nothing is written when unchanged; a lost race (create or replace) is retried and keeps the concurrent contributor; hosts sharing an override write once; handover from per-source records; withdrawal from a previous cluster name's record (refusals skipped, own refusals fail); malformed map fails. The fake API server now serves GET, POST, PUT with `resourceVersion` checks and DELETE preconditions, and rejects server-side apply.
+
+### Changed
+- `crates/bindy-scout/src/pipeline.rs`: `publish` contributes the source's entry to one record per DNS name, withdraws from names it no longer publishes (`withdraw_from_own_records`), then hands over per-source records from before ADR-0026, legacy records and previous-cluster records once the new records are served; `delete_source_records` and the stale-cluster cleanup withdraw from per-name records. `prune_unapplied_arecords` is removed (replaced by withdrawal).
+- `crates/bindy-scout/src/scout.rs`: removed `arecord_cr_name`, `source_identity_hash`, `build_arecord`, `ARecordParams` (and their tests); the per-source label selectors stay, to find records to hand over.
+- `tests/e2e/scout_test.sh`: expected record name and contributor-map assertion for per-name records; the overlong-zone check selects by contributor label.
+- New `tests/e2e/scout_multi_cluster_test.sh` and `make e2e-scout-multi` (needs `E2E_IMAGE` and `BASE_IMAGE_REF`): two kind clusters, the bindy cluster (operator, 3 primaries + 1 secondary, admission policies 21/22, a `bootstrap mc`-registered account) and an edge cluster running Scout from `bootstrap scout`. Seven phases, every DNS check against every primary and secondary: the base Scout reproduces #556; the upgrade hands over with a DNS prober showing no empty answer; churn (delete, readdress, opt-out, rename, multi-IP); kinds, namespaces and TTLs sharing a name; 10 Services racing on one name and a mass delete; Scout, operator and BIND9 kills during churn followed by convergence, an operator quiet window and a Scout that rewrites nothing; removal of every source. Passed on slate 2026-10-20, as did `e2e-scout` and `e2e-chaos` against the same image.
+- Docs: `docs/src/guide/scout.md` (labels and annotations, new "Several resources publishing one name" and "Finding a resource's records", record names, rename cleanup, Gateway naming; the HTTPRoute and TLSRoute examples used a zone their second host is not in, corrected to `example.com`), `docs/src/installation/scout.md`, `docs/src/operations/migration-guide.md` (new ADR-0026 section with a pre-check for shared names and rollback), `docs/src/operations/troubleshooting.md` (new section), examples `httproute-dns.yaml`, `tlsroute-dns.yaml`, `tcproute-dns.yaml`.
+- `docs/src/security/threat-model.md` v1.29: full pass for ADR-0026 (T6, M-73, accepted risk 24; R1 attribution).
+- `.github/community/32-scout-one-record-per-dns-name.md` phases 3 to 5 and 7 ticked, phase 6 except the kind proof; `ROADMAPS.md` row.
+
+### Why
+Several sources of one Scout that resolve to one name wrote one record each, and the records replaced each other's RRset, so BIND9 served whichever wrote last (issue #556).
+
+### Impact
+- [ ] Breaking change (behavior change on upgrade: per-source records are replaced by per-name records, sources sharing a name are merged; see the migration guide)
+- [x] Requires cluster rollout (Scout image)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-10-20 07:00] - ADR-0026 accepted: Scout publishes one record per DNS name (issue #556); CALM updated
+
+**Author:** Erick Bourgeois
+
+### Added
+- `docs/adr/0026-scout-one-record-per-dns-name.md`: ADR-0026 (Accepted). One `ARecord` per cluster, zone and DNS name; contributing sources' addresses and TTL kept in the `bindy.firestoned.io/scout-contributors` annotation; the address set is their union and the TTL the lowest; every write is a complete replace with a `resourceVersion` precondition; a source leaving a name removes only its own entry; handover from per-source records. Merging across namespaces needs no opt-in.
+- `.github/community/32-scout-one-record-per-dns-name.md` and its `ROADMAPS.md` row; roadmap 27 item 2 cross-linked.
+
+### Changed
+- `calm/bindy-multi-cluster.architecture.json`: `arecords` and `scout-a` describe one record per DNS name; `scout-a-applies` and `scout-b-applies` describe the conditional replace (ADR-0026). `docs/src/architecture/calm-multi-cluster.md` regenerated.
+
+### Why
+Several sources of one Scout resolving to one name wrote one record each, and the records replaced each other's RRset (issue #556). Implementation follows in roadmap 32 phases 3 to 7.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only
+
+## [2026-10-19 14:50] - Scout publishes every load balancer IPv4 address (issue #556, part 1)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/bindy-scout/src/scout.rs`: `resolve_ip_from_service_lb_status` and `resolve_ip_from_lb_status` are now `resolve_ips_from_service_lb_status` and `resolve_ips_from_lb_status`, returning every IPv4 address in `status.loadBalancer.ingress` in status order, each once (new private helper `unique_ipv4`). They returned only the first.
+- `crates/bindy-scout/src/pipeline.rs`: the Service and Ingress sources and the `--gateway-service` lookup (`resolve_ips_from_gateway_service`) publish the full list. A labelled gateway target still uses the first matching LoadBalancer Service that has an address, now with all of its addresses.
+- `crates/bindy-scout/src/scout_tests.rs`: tests for several addresses, duplicates and the empty cases.
+- `docs/src/guide/scout.md`: says every IPv4 load balancer address is published.
+
+### Why
+A LoadBalancer Service or Ingress with several ingress IPs published only the first, so the A record missed the others (issue #556). Grouping several sources that share one DNS name into one record is the follow-up ADR.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (Scout image)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-19 12:00] - Scout records bound to their cluster and zones (ADR-0025, roadmap 31)
 
 **Author:** Erick Bourgeois

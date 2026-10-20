@@ -9,23 +9,31 @@
 //! hostnames, whether it needs a `record-name` override, and where its IPs
 //! come from. Every step that used to be copied per kind (excluded namespace,
 //! deletion with a grace period, opt-out release, finalizer, zone resolution
-//! and authorization, TTL and record-name validation, IP resolution, per-host
-//! apply, pruning, legacy-record migration, stale-cluster cleanup) runs here,
-//! once.
+//! and authorization, TTL and record-name validation, IP resolution, per-name
+//! contribution, withdrawal, legacy-record migration, stale-cluster cleanup)
+//! runs here, once.
+//!
+//! Since ADR-0026 a source does not own records: it contributes its
+//! addresses to one record per DNS name (see [`crate::contributors`]), shared
+//! with every other source of this Scout that resolves to the same name.
 
+use crate::contributors::{
+    contribute, contributor_key, contributor_label, name_record_selector, new_name_record,
+    stale_name_record_selector, withdraw, Contribution, NameRecord, Withdrawal,
+};
 use crate::crd::ARecord;
 use crate::guardrails::{first_ip_outside, zone_is_allowed};
-use crate::scout::{arecord_cr_name, arecord_label_selector, stale_arecord_label_selector};
+use crate::scout::{arecord_label_selector, dns_name_record_cr_name, stale_arecord_label_selector};
 use crate::scout::{
-    build_arecord, check_zone_authorization_live, cleanup_grace_expired, gateway_addresses_as_ips,
+    check_zone_authorization_live, cleanup_grace_expired, gateway_addresses_as_ips,
     gateway_parent_refs, get_record_name_annotation, is_being_deleted, is_loadbalancer_service,
     is_scout_opted_in, legacy_arecord_label_selector, parse_ttl_annotation, requeue_after_error,
-    resolve_ip_from_lb_status, resolve_ip_from_service_lb_status, resolve_ips_from_annotation,
+    resolve_ips_from_annotation, resolve_ips_from_lb_status, resolve_ips_from_service_lb_status,
     resolve_record_name, resolve_usable_zone, resolve_zone, source_namespace_eligible,
-    stale_cleanup_zones, stale_selector_base, tcproute_record_name, ARecordParams, Gateway,
-    GatewayServiceTarget, HTTPRoute, ParentReference, ScoutContext, ScoutError, StaleKind,
-    TCPRoute, TLSRoute, ZoneAuthz, ZoneResolution, EMPTY_ANNOTATIONS, FINALIZER_SCOUT,
-    LABEL_SOURCE_CLUSTER, LABEL_ZONE, REMOTE_CLEANUP_GRACE_SECS, SCOUT_FIELD_MANAGER,
+    stale_cleanup_zones, stale_selector_base, tcproute_record_name, Gateway, GatewayServiceTarget,
+    HTTPRoute, ParentReference, ScoutContext, ScoutError, StaleKind, TCPRoute, TLSRoute, ZoneAuthz,
+    ZoneResolution, EMPTY_ANNOTATIONS, FINALIZER_SCOUT, LABEL_SOURCE_CLUSTER, LABEL_ZONE,
+    REMOTE_CLEANUP_GRACE_SECS,
 };
 use anyhow::{anyhow, Context as _, Result};
 use bindy_controller_sdk::finalizers;
@@ -38,7 +46,7 @@ use k8s_openapi::api::core::v1::Service;
 use k8s_openapi::api::networking::v1::Ingress;
 use k8s_openapi::jiff::Timestamp;
 use k8s_openapi::NamespaceResourceScope;
-use kube::api::{DeleteParams, ListParams, Patch, PatchParams};
+use kube::api::{DeleteParams, ListParams};
 use kube::runtime::controller::Action;
 use kube::runtime::Controller;
 use kube::{Api, Client, Resource, ResourceExt};
@@ -71,7 +79,8 @@ pub(crate) enum IpPrecedence {
 /// What one source kind contributes to the pipeline (ADR-0022, Decision 1).
 ///
 /// Everything else (opt-in, finalizer, zone, authorization, validation,
-/// apply, prune, migration, cleanup) is the same for every kind and lives in
+/// contribution, withdrawal, migration, cleanup) is the same for every kind
+/// and lives in
 /// [`reconcile_source`].
 pub(crate) trait ScoutSource:
     Resource<DynamicType = (), Scope = NamespaceResourceScope>
@@ -138,7 +147,7 @@ impl ScoutSource for Ingress {
     }
 
     async fn discover_ips(&self, _ctx: &ScoutContext) -> Result<Vec<String>> {
-        Ok(resolve_ip_from_lb_status(self).into_iter().collect())
+        Ok(resolve_ips_from_lb_status(self))
     }
 }
 
@@ -157,9 +166,7 @@ impl ScoutSource for Service {
     }
 
     async fn discover_ips(&self, _ctx: &ScoutContext) -> Result<Vec<String>> {
-        Ok(resolve_ip_from_service_lb_status(self)
-            .into_iter()
-            .collect())
+        Ok(resolve_ips_from_service_lb_status(self))
     }
 }
 
@@ -262,14 +269,17 @@ impl SourceRef {
 /// 4. the finalizer is added before anything is published;
 /// 5. the zone, the TTL and the `record-name` override are validated, then
 ///    the zone's authorization of the namespace is checked live;
-/// 6. the IPs are resolved, every host's record is applied, then records of
-///    hosts no longer present, legacy records, and records from a previous
-///    cluster name are deleted, in that order (apply before delete).
+/// 6. the IPs are resolved, the source's entry is written to the one record
+///    of each DNS name it publishes (ADR-0026), it withdraws from names it no
+///    longer publishes, and once its records are served the records they
+///    replace (per-source records from before ADR-0026, legacy records, and
+///    records from a previous cluster name) are deleted or withdrawn from, in
+///    that order (write before delete).
 ///
 /// # Errors
 /// Returns an error, retried by the controller's error policy, when an API
 /// call fails: a finalizer patch (including one rejected because the object
-/// changed concurrently), a record apply or delete, or a Gateway or Service
+/// changed concurrently), a record read, write or delete, or a Gateway or Service
 /// lookup that fails with anything but 404.
 pub(crate) async fn reconcile_source<K: ScoutSource>(
     obj: Arc<K>,
@@ -369,8 +379,9 @@ async fn release<K: ScoutSource>(
 ///
 /// The `record-name` override is validated once, up front, so an invalid one
 /// stops publication for the whole source rather than skipping every host
-/// (and then pruning every record). A host outside the zone is skipped with a
-/// warning; its record, if any, is pruned.
+/// (and then withdrawing from every name). A host outside the zone is
+/// skipped with a warning; the source withdraws from its name, if it
+/// published one.
 ///
 /// # Errors
 /// Returns an error when the override is present but invalid, or when the
@@ -405,8 +416,10 @@ pub(crate) fn planned_records(
         .collect())
 }
 
-/// Publishes an opted-in, finalized object's records, then prunes, migrates
-/// and cleans up (the last steps of [`reconcile_source`]).
+/// Publishes an opted-in, finalized object: writes its entry to the record of
+/// each DNS name it publishes, withdraws from names it no longer publishes,
+/// then hands over the records those replace (the last steps of
+/// [`reconcile_source`]; ADR-0026).
 async fn publish<K: ScoutSource>(
     obj: &K,
     source: &SourceRef,
@@ -492,44 +505,46 @@ async fn publish<K: ScoutSource>(
     }
 
     let api: Api<ARecord> = Api::namespaced(ctx.remote_client.clone(), &ctx.target_namespace);
-    let apply = PatchParams::apply(SCOUT_FIELD_MANAGER).force();
-    let mut applied = BTreeSet::new();
+    let key = contributor_key(kind, ns, name);
+    let contribution = Contribution { ips, ttl };
+    let mut written = BTreeSet::new();
     let mut all_served = true;
-    for (idx, record_name) in records {
-        let cr_name = arecord_cr_name(&ctx.cluster_name, kind, ns, name, idx);
-        let arecord = build_arecord(ARecordParams {
-            name: &cr_name,
+    for dns_name in unique_dns_names(records) {
+        let cr_name = dns_name_record_cr_name(&ctx.cluster_name, &zone, &dns_name);
+        let template = new_name_record(&NameRecord {
+            cr_name: &cr_name,
             target_namespace: &ctx.target_namespace,
-            record_name: &record_name,
-            ips: &ips,
-            ttl,
-            cluster_name: &ctx.cluster_name,
-            source_kind: kind,
-            source_namespace: ns,
-            source_name: name,
+            cluster: &ctx.cluster_name,
             zone: &zone,
+            dns_name: &dns_name,
         });
-        let live = api
-            .patch(&cr_name, &apply, &Patch::Apply(&arecord))
-            .await
-            .with_context(|| format!("Failed to apply ARecord {cr_name}"))?;
-        info!(arecord = %cr_name, kind, name = %name, record_name = %record_name, ips = ?ips, "ARecord created/updated");
+        let live = contribute(&api, &template, &key, &contribution).await?;
         all_served &= arecord_served(&live);
-        applied.insert(cr_name);
+        written.insert(cr_name);
     }
 
-    prune_unapplied_arecords(ctx, source, &applied).await?;
+    withdraw_from_own_records(ctx, source, &written).await?;
 
-    // Legacy and previous-cluster records publish the same names as the
-    // records just applied. Deleting one before its replacement is served
-    // would take the name off the air (ADR-0022, Decision 4).
+    // These records publish the same names as the ones just written.
+    // Deleting one before its replacement is served would take the name off
+    // the air (ADR-0022 Decision 4, ADR-0026 Decision 5).
+    let per_source = list_arecords(
+        &api,
+        &arecord_label_selector(&ctx.cluster_name, kind, ns, name),
+    )
+    .await?;
     let legacy = list_arecords(
         &api,
         &legacy_arecord_label_selector(&ctx.cluster_name, ns, name),
     )
     .await?;
     let stale = stale_cluster_arecords(&api, &ctx.cluster_name, source, &zone).await?;
-    let waiting = legacy.len() + stale.len();
+    let stale_named = list_arecords(
+        &api,
+        &stale_name_record_selector(&ctx.cluster_name, &zone, &contributor_label(kind, ns, name)),
+    )
+    .await?;
+    let waiting = per_source.len() + legacy.len() + stale.len() + stale_named.len();
     match handover_step(waiting, all_served) {
         Handover::Nothing => {}
         Handover::Wait => {
@@ -537,14 +552,36 @@ async fn publish<K: ScoutSource>(
             return Ok(Action::requeue(Duration::from_secs(HANDOVER_RECHECK_SECS)));
         }
         Handover::Delete => {
+            delete_arecords(
+                &api,
+                per_source,
+                "per-source record replaced by a per-name record (ADR-0026)",
+            )
+            .await?;
             delete_arecords(&api, legacy, "replaced by this source's served record").await?;
             for ar in stale {
                 delete_other_cluster_arecord(&api, &ar, &ctx.cluster_name, source).await?;
+            }
+            for ar in stale_named {
+                withdraw_from_other_cluster_record(&api, &ar, &ctx.cluster_name, source).await?;
             }
         }
     }
 
     Ok(Action::await_change())
+}
+
+/// The distinct DNS names in `records`, lowercased (DNS names are
+/// case-insensitive), in first-seen order. Several hosts of one source that
+/// resolve to one name (a `record-name` override on a multi-host Ingress)
+/// contribute to that name once.
+fn unique_dns_names(records: Vec<(usize, String)>) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    records
+        .into_iter()
+        .map(|(_, name)| name.to_lowercase())
+        .filter(|name| seen.insert(name.clone()))
+        .collect()
 }
 
 /// How often a source rechecks whether its new ARecords are served while a
@@ -637,11 +674,14 @@ async fn delete_arecords(
     Ok(zones)
 }
 
-/// Deletes every ARecord of one source: its own, its legacy records, and
-/// the stale-cluster records of every zone in play.
+/// Removes one source from DNS: withdraws it from every per-name record it
+/// contributes to (ADR-0026; a record is deleted with its last
+/// contributor), deletes its per-source and legacy records from before
+/// ADR-0026 and ADR-0022, and cleans up the stale-cluster records of every
+/// zone in play.
 ///
 /// `resolved_zone` (annotation or default) is unioned with the zones of the
-/// records just deleted (see `stale_cleanup_zones`), since an opt-out edit
+/// records just touched (see `stale_cleanup_zones`), since an opt-out edit
 /// often strips the zone annotation too. When no usable zone is known, the
 /// stale-cluster candidates are only logged, never deleted.
 ///
@@ -653,6 +693,7 @@ pub(crate) async fn delete_source_records(
     resolved_zone: Option<&str>,
 ) -> Result<()> {
     let api: Api<ARecord> = Api::namespaced(ctx.remote_client.clone(), &ctx.target_namespace);
+    let mut zones = withdraw_from_own_records(ctx, source, &BTreeSet::new()).await?;
     let own = list_arecords(
         &api,
         &arecord_label_selector(
@@ -663,7 +704,7 @@ pub(crate) async fn delete_source_records(
         ),
     )
     .await?;
-    let mut zones = delete_arecords(&api, own, "source cleanup").await?;
+    zones.extend(delete_arecords(&api, own, "source cleanup").await?);
     zones.extend(delete_legacy_arecords(ctx, source).await?);
 
     let cleanup_zones = stale_cleanup_zones(resolved_zone, &zones);
@@ -691,32 +732,70 @@ pub(crate) async fn delete_source_records(
     Ok(())
 }
 
-/// Deletes the source's own records that were not applied in this pass:
-/// hosts dropped from the source, or no longer in the zone.
+/// Withdraws the source from this cluster's per-name records it contributes
+/// to, except those in `keep` (the records it just wrote): names it no
+/// longer publishes, or, with an empty `keep`, every name (ADR-0026,
+/// Decision 4). A record is deleted with its last contributor.
 ///
-/// The selector carries the source kind, so a same-named object of another
-/// kind is never touched (ADR-0022, Decision 2).
+/// # Returns
+/// The `zone` labels of the records withdrawn from.
 ///
 /// # Errors
-/// Returns an error if listing or deleting ARecords on the remote cluster fails.
-pub(crate) async fn prune_unapplied_arecords(
+/// Returns an error if listing, reading or writing `ARecord`s on the remote
+/// cluster fails, including when the bindy cluster refuses the write: these
+/// are this Scout's own records, so a refusal is not skipped.
+pub(crate) async fn withdraw_from_own_records(
     ctx: &ScoutContext,
     source: &SourceRef,
-    applied: &BTreeSet<String>,
-) -> Result<()> {
+    keep: &BTreeSet<String>,
+) -> Result<BTreeSet<String>> {
     let api: Api<ARecord> = Api::namespaced(ctx.remote_client.clone(), &ctx.target_namespace);
-    let selector = arecord_label_selector(
-        &ctx.cluster_name,
-        source.kind,
-        &source.namespace,
-        &source.name,
-    );
-    let stale: Vec<ARecord> = list_arecords(&api, &selector)
-        .await?
-        .into_iter()
-        .filter(|ar| !applied.contains(&ar.name_any()))
-        .collect();
-    delete_arecords(&api, stale, "host no longer published").await?;
+    let key = contributor_key(source.kind, &source.namespace, &source.name);
+    let label = contributor_label(source.kind, &source.namespace, &source.name);
+    let mut zones = BTreeSet::new();
+    for ar in list_arecords(&api, &name_record_selector(&ctx.cluster_name, &label)).await? {
+        let ar_name = ar.name_any();
+        if keep.contains(&ar_name) {
+            continue;
+        }
+        if let Some(zone) = ar.labels().get(LABEL_ZONE) {
+            zones.insert(zone.clone());
+        }
+        if withdraw(&api, &ar_name, &key).await? == Withdrawal::Refused {
+            return Err(anyhow!(
+                "the bindy cluster refused withdrawing {key} from this Scout's own ARecord {ar_name}"
+            ));
+        }
+    }
+    Ok(zones)
+}
+
+/// Withdraws the source from a per-name record a previous cluster name left
+/// in its zone (ADR-0026, Decision 5).
+///
+/// Like [`delete_other_cluster_arecord`], a refusal (ADR-0025: the record
+/// belongs to a cluster name this Scout's account is not registered for) is
+/// logged and skipped, never retried.
+///
+/// # Errors
+/// Returns an error if the withdrawal fails for any reason other than a
+/// refusal.
+async fn withdraw_from_other_cluster_record(
+    api: &Api<ARecord>,
+    ar: &ARecord,
+    current_cluster: &str,
+    source: &SourceRef,
+) -> Result<()> {
+    let key = contributor_key(source.kind, &source.namespace, &source.name);
+    let ar_name = ar.name_any();
+    let old_cluster = ar
+        .labels()
+        .get(LABEL_SOURCE_CLUSTER)
+        .cloned()
+        .unwrap_or_default();
+    if withdraw(api, &ar_name, &key).await? == Withdrawal::Refused {
+        warn!(arecord = %ar_name, old_cluster = %old_cluster, new_cluster = %current_cluster, contributor = %key, "The bindy cluster refused withdrawing from another cluster's ARecord; leaving it (ADR-0025: this Scout's account is not registered for that cluster name)");
+    }
     Ok(())
 }
 
@@ -748,7 +827,9 @@ pub(crate) async fn delete_legacy_arecords(
 
 /// Deletes the source's records left by a **previous** cluster name in the
 /// same DNS zone: `source-cluster != current_cluster`, `zone = current_zone`,
-/// and either this source's kind or (a record from before ADR-0022) no kind.
+/// and either this source's kind or (a record from before ADR-0022) no kind;
+/// and withdraws the source from the per-name records such a cluster name
+/// left in that zone (ADR-0026).
 ///
 /// Used when the source goes away. On publish, [`publish`] hands these
 /// records over once the new ones are served, so a Scout restarted with a new
@@ -768,6 +849,15 @@ pub(crate) async fn delete_stale_cluster_arecords(
     let api: Api<ARecord> = Api::namespaced(remote_client.clone(), target_namespace);
     for ar in stale_cluster_arecords(&api, current_cluster, source, current_zone).await? {
         delete_other_cluster_arecord(&api, &ar, current_cluster, source).await?;
+    }
+    let label = contributor_label(source.kind, &source.namespace, &source.name);
+    for ar in list_arecords(
+        &api,
+        &stale_name_record_selector(current_cluster, current_zone, &label),
+    )
+    .await?
+    {
+        withdraw_from_other_cluster_record(&api, &ar, current_cluster, source).await?;
     }
     Ok(())
 }
@@ -866,28 +956,28 @@ pub(crate) async fn log_unscoped_stale_cluster_arecord_candidates(
 // Gateway API IP discovery (local client)
 // ============================================================================
 
-/// Resolves the external IP of the LoadBalancer Service a gateway class maps to.
+/// Resolves the external IPs of the LoadBalancer Service a gateway class maps to.
 ///
 /// For a [`GatewayServiceTarget::Name`] the Service is fetched directly; for a
 /// [`GatewayServiceTarget::Labeled`] target the namespace is listed by label
 /// selector and the first LoadBalancer Service with an external IPv4 is used.
-/// Returns `Ok(None)` when the Service does not exist (404) or has no external
-/// IP yet.
+/// Every IPv4 address of that Service is returned (issue #556). Returns an
+/// empty list when the Service does not exist (404) or has no external IP yet.
 ///
 /// # Errors
 /// Returns an error for any other lookup failure (ADR-0022, Decision 6).
-async fn resolve_ip_from_gateway_service(
+async fn resolve_ips_from_gateway_service(
     client: &Client,
     target: &GatewayServiceTarget,
-) -> Result<Option<String>> {
+) -> Result<Vec<String>> {
     match target {
         GatewayServiceTarget::Name(svc_ref) => {
             let api: Api<Service> = Api::namespaced(client.clone(), &svc_ref.namespace);
             match api.get(&svc_ref.name).await {
-                Ok(svc) => Ok(resolve_ip_from_service_lb_status(&svc)),
+                Ok(svc) => Ok(resolve_ips_from_service_lb_status(&svc)),
                 Err(e) if kube_errors::is_not_found(&e) => {
                     debug!(service = %svc_ref.name, ns = %svc_ref.namespace, "Gateway LoadBalancer Service not found");
-                    Ok(None)
+                    Ok(Vec::new())
                 }
                 Err(e) => Err(anyhow!(
                     "failed to fetch gateway LoadBalancer Service {}/{}: {e}",
@@ -909,7 +999,9 @@ async fn resolve_ip_from_gateway_service(
             Ok(services
                 .iter()
                 .filter(|svc| is_loadbalancer_service(svc))
-                .find_map(resolve_ip_from_service_lb_status))
+                .map(resolve_ips_from_service_lb_status)
+                .find(|ips| !ips.is_empty())
+                .unwrap_or_default())
         }
     }
 }
@@ -968,7 +1060,7 @@ pub(crate) async fn resolve_ips_from_gateways(
             debug!(gateway = %gw_ref.name, class = %class, "Gateway has no status.addresses and its class is not in --gateway-service, skipping");
             continue;
         };
-        ips.extend(resolve_ip_from_gateway_service(client, target).await?);
+        ips.extend(resolve_ips_from_gateway_service(client, target).await?);
     }
 
     let mut seen = BTreeSet::new();

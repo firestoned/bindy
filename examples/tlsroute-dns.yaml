@@ -18,7 +18,8 @@
 #   kubectl apply -f examples/tlsroute-dns.yaml
 #
 # Verify Scout created the ARecords:
-#   kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-name=secure-gateway
+#   (one ARecord per DNS name, shared with any other resource publishing it; ADR-0026)
+#   kubectl get arecords -n bindy-system -l "contributor.scout.bindy.firestoned.io/$(printf '%s\0%s\0%s' TLSRoute secure-apps secure-gateway | sha256sum | cut -c1-16)"
 #
 # Verify DNS resolution:
 #   kubectl run -it --rm drill --image=alpine/drill:latest -- drill @<dns-server> secure.example.com
@@ -131,9 +132,9 @@ metadata:
     bindy.firestoned.io/ttl: "300"
 spec:
   # hostnames[] is the list of hostnames this route accepts for TLS connections.
-  # Scout creates one ARecord per hostname with an index suffix.
-  # Example: scout-{cluster}-secure-apps-secure-gateway-0 for secure.example.com
-  #          scout-{cluster}-secure-apps-secure-gateway-1 for grpc.example.com
+  # Scout publishes one ARecord per DNS name (ADR-0026).
+  # Example: scout-{cluster}-secure-example-com-{hash} for secure.example.com
+  #          scout-{cluster}-grpc-example-com-{hash} for grpc.example.com
   hostnames:
     - secure.example.com
     - grpc.example.com

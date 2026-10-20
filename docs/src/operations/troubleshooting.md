@@ -281,7 +281,8 @@ kubectl logs -n bindy-system deploy/bindy | grep 'labelled for another zone'
 |---|---|---|---|
 | `Zone is not in this Scout's allowed zones (BINDY_SCOUT_ALLOWED_ZONES), publishing nothing for this source` | Scout | The source's zone (annotation or `--default-zone`) is outside `--allowed-zones`. Records published earlier are kept. | Correct the source's `bindy.firestoned.io/zone`, or add the zone to `--allowed-zones` if this cluster really owns it. Scout picks the source up again when it changes or Scout restarts. |
 | `Address is outside this Scout's allowed ranges (BINDY_SCOUT_ALLOWED_IP_RANGES), publishing nothing for this source` (with `ip=`) | Scout | An annotated, discovered or default address is outside `--allowed-ip-ranges`. | Correct the `bindy.firestoned.io/ip` annotation or the load balancer, or widen `--allowed-ip-ranges`. Retried every 30 seconds. |
-| `Failed to apply ARecord <name>` ... `ValidatingAdmissionPolicy 'bindy-scout-source-binding' ... denied request: ServiceAccount '<sa>' may only publish into zones [...]` (or `may only write ARecords for clusters [...]`) | Scout | The bindy cluster refused the write: the account is registered for other zones or cluster names. | Register the account for this zone or name (`bindy bootstrap mc --service-account <sa> --cluster-name ... --allowed-zones ...`), or set Scout's `--allowed-zones` to match its registration so the source is refused on the edge cluster with a clearer message. |
+| `failed to write ARecord <name>` ... `ValidatingAdmissionPolicy 'bindy-scout-source-binding' ... denied request: ServiceAccount '<sa>' may only publish into zones [...]` (or `may only write ARecords for clusters [...]`) | Scout | The bindy cluster refused the write: the account is registered for other zones or cluster names. | Register the account for this zone or name (`bindy bootstrap mc --service-account <sa> --cluster-name ... --allowed-zones ...`), or set Scout's `--allowed-zones` to match its registration so the source is refused on the edge cluster with a clearer message. |
+| `The bindy cluster refused withdrawing from another cluster's ARecord; leaving it` | Scout | As above, for a record shared by several resources (ADR-0026): Scout tried to remove this resource's addresses from a record left under another cluster name. Not retried. | As above. |
 | `The bindy cluster refused deleting another cluster's ARecord; leaving it` | Scout | Scout tried to clean up a record left under another cluster name, and its account is not registered for that name. Not retried. | If the record really is this cluster's leftover from a rename, add the old name to the registration (`--cluster-name new,old`) and touch the source, or delete the record by hand. Otherwise nothing to do: the record belongs to another cluster. |
 | `... matches the selector of DNSZone <ns>/<zone> but is a Scout record labelled for another zone (...); not selecting it (ADR-0025)` | Operator | A record labelled `bindy.firestoned.io/managed-by: scout` has a `bindy.firestoned.io/zone` label different from (or missing for) the zone selecting it. | Scout never writes such a record. For a hand-made record, fix its zone label, or remove `managed-by: scout`. |
 | `default zone ... is not in BINDY_SCOUT_ALLOWED_ZONES` / `default IP ... is outside BINDY_SCOUT_ALLOWED_IP_RANGES` / `... may not contain '*'` / `... is not a DNS name` | Scout, at startup (pod in `CrashLoopBackOff`) | The configuration contradicts itself or is malformed. | Fix the named setting; `*` is refused on purpose, leave `--allowed-zones` unset to allow every zone. |
@@ -292,6 +293,26 @@ To see what an account is registered for:
 ```bash
 kubectl get configmap bindy-scout-sources -n bindy-system -o jsonpath='{.data}'
 ```
+
+### A Scout Name Serves Too Many, Too Few, or Flapping Addresses
+
+Since [ADR-0026](https://github.com/firestoned/bindy/blob/main/docs/adr/0026-scout-one-record-per-dns-name.md)
+every resource of one cluster that publishes a DNS name adds its addresses to
+one `ARecord`. Read the record's contributor map to see who publishes what:
+
+```bash
+kubectl get arecords -n bindy-system -l bindy.firestoned.io/managed-by=scout \
+  -o custom-columns='NAME:.spec.name,ADDRESSES:.spec.ipv4Addresses,CONTRIBUTORS:.metadata.annotations.bindy\.firestoned\.io/scout-contributors'
+kubectl logs -n bindy-system deploy/bindy-scout | grep -E 'joins a DNS name|different TTLs|scout-contributors|kept changing'
+```
+
+| Message or symptom | Where | Cause | Fix |
+|---|---|---|---|
+| `Source joins a DNS name other sources already publish; the record now holds every source's addresses` | Scout (info) | A resource resolves to a name another resource already publishes, so their addresses are merged. Expected for intentionally shared names (one Service per availability zone). | If the name should not be shared, give one resource a different `bindy.firestoned.io/record-name` or host, or opt it out. |
+| `Sources publishing this DNS name set different TTLs; publishing the lowest` | Scout (warning) | The contributing resources set different `bindy.firestoned.io/ttl` values. | Set the same TTL on all of them, or accept the lowest. |
+| `ARecord <name> has a malformed bindy.firestoned.io/scout-contributors annotation; fix or remove it` | Scout (reconcile error, retried) | The annotation was edited by hand. Scout will not rebuild a record from a map it cannot read. | Remove the annotation (`kubectl annotate arecord <name> -n bindy-system bindy.firestoned.io/scout-contributors-`) and touch each contributing resource so it adds itself back, or delete the record and let Scout recreate it. |
+| `ARecord <name> kept changing while this source wrote it (5 attempts)` | Scout (reconcile error, retried) | Many resources sharing the name changed at once, or something else keeps rewriting the record. | Usually clears on the retry. If not, look for another writer of the record (`kubectl get arecord <name> -o yaml`, `managedFields`). |
+| Two records for one name, the address flipping between them | Bindy cluster | Two clusters publish the same name in one zone (each Scout writes its own record), or a per-resource record from before ADR-0026 is still waiting to be handed over. | For two clusters: give the name to one of them (see [Publishing limits](../guide/scout.md#publishing-limits-for-this-cluster-allowed-zones-allowed-ip-ranges)). For a handover: it completes once the new record is `Ready`; check its status. |
 
 ## Debugging Steps
 

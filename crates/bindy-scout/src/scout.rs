@@ -24,7 +24,7 @@
 //! remote client creates and deletes ARecords and validates DNSZones.
 
 use crate::constants::{ALLOW_ZONE_NAMESPACES_WILDCARD, ANNOTATION_ALLOW_ZONE_NAMESPACES};
-use crate::crd::{ARecord, ARecordSpec, DNSZone};
+use crate::crd::DNSZone;
 use crate::guardrails::{
     first_ip_outside, parse_allowed_ip_ranges, parse_allowed_zones, zone_is_allowed, Ipv4Range,
 };
@@ -46,7 +46,7 @@ use kube::{
 };
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
-use std::fmt::Debug;
+use std::fmt::{Debug, Write as _};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -378,20 +378,23 @@ pub(crate) const LABEL_MANAGED_BY_SCOUT: &str = bindy_api::labels::MANAGED_BY_SC
 /// Label identifying the source cluster on created ARecords
 pub(crate) const LABEL_SOURCE_CLUSTER: &str = bindy_api::labels::BINDY_SOURCE_CLUSTER_LABEL;
 
-/// Label identifying the source namespace on created ARecords
+/// Label identifying the source namespace on the per-source `ARecord`s
+/// written before ADR-0026 (read only, to hand them over)
 pub(crate) const LABEL_SOURCE_NAMESPACE: &str = "bindy.firestoned.io/source-namespace";
 
-/// Label identifying the source resource name on created ARecords.
-/// Used for all resource kinds.
+/// Label identifying the source resource name on the per-source `ARecord`s
+/// written before ADR-0026 (read only, to hand them over).
 pub(crate) const LABEL_SOURCE_NAME: &str = "bindy.firestoned.io/source-name";
 
 /// Label identifying the source resource kind (`Ingress`, `Service`,
 /// `HTTPRoute`, `TLSRoute`, `TCPRoute`) on created ARecords (ADR-0022).
 ///
-/// With the cluster, namespace and name labels it identifies exactly one
-/// source, so same-named objects of different kinds never overwrite or prune
-/// each other's records. Records without it predate ADR-0022 and are
-/// migrated by the pipeline.
+/// With the cluster, namespace and name labels it identified exactly one
+/// source on the per-source records Scout wrote before ADR-0026. Scout no
+/// longer sets these labels (a per-name record has a contributor label per
+/// source instead); it reads them only to find and hand over such records.
+/// Records without the kind label predate ADR-0022 and are migrated the same
+/// way.
 pub(crate) const LABEL_SOURCE_KIND: &str = "bindy.firestoned.io/source-kind";
 
 /// Label carrying the DNS zone name on created ARecords (for DNSZone selector matching)
@@ -1109,15 +1112,15 @@ pub(crate) fn authorizing_zone(
 /// Authorize `zone_name` for `source_namespace`, re-checking the grant live.
 ///
 /// [`check_zone_authorization`] reads a reflector cache, which lags the API server by
-/// the watch latency. Between that read and the server-side-apply that writes the
-/// ARecord there is a window in which a DNSZone's
+/// the watch latency. Between that read and the write of the `ARecord` there
+/// is a window in which a DNSZone's
 /// [`ANNOTATION_ALLOW_ZONE_NAMESPACES`] may have been tightened — the record would
 /// then be published under a grant that no longer exists (audit finding P3-4).
 ///
 /// This re-reads the *specific* zone that granted access, immediately before the
 /// caller writes, shrinking the window from "watch latency" to "one API round trip".
 /// It is a narrowing, not an elimination: a true elimination needs the write itself to
-/// be conditional on the zone's `resourceVersion`, which server-side apply on a
+/// be conditional on the zone's `resourceVersion`, which a write to a
 /// *different* object cannot express.
 ///
 /// A failed live read is treated as **still authorized**: the cached grant was
@@ -1192,19 +1195,33 @@ pub(crate) fn retain_ipv4(ips: impl IntoIterator<Item = String>, origin: &str) -
         .collect()
 }
 
-/// Resolves the IP to use for an ARecord from the Ingress load-balancer status.
+/// [`retain_ipv4`], then drops repeated addresses, keeping the first
+/// occurrence of each.
 ///
-/// Returns the first IPv4 `ip` found in `status.loadBalancer.ingress`.
-/// Hostname-only entries are ignored with a warning, and non-IPv4 entries are
-/// skipped by [`retain_ipv4`].
-pub(crate) fn resolve_ip_from_lb_status(ingress: &Ingress) -> Option<String> {
-    let lb_ingresses = ingress
+/// A load balancer can list one address more than once (one entry per port
+/// or per pool); the `ARecord` holds each address once.
+fn unique_ipv4(ips: impl IntoIterator<Item = String>, origin: &str) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    let mut ips = retain_ipv4(ips, origin);
+    ips.retain(|ip| seen.insert(ip.clone()));
+    ips
+}
+
+/// Resolves the IPs to use for an ARecord from the Ingress load-balancer status.
+///
+/// Returns every IPv4 `ip` in `status.loadBalancer.ingress`, in status order
+/// and without duplicates (issue #556). Hostname-only entries are ignored with
+/// a warning, and non-IPv4 entries are skipped by [`retain_ipv4`]. Empty when
+/// the load balancer has no IPv4 address yet.
+pub(crate) fn resolve_ips_from_lb_status(ingress: &Ingress) -> Vec<String> {
+    let Some(lb_ingresses) = ingress
         .status
-        .as_ref()?
-        .load_balancer
-        .as_ref()?
-        .ingress
-        .as_ref()?;
+        .as_ref()
+        .and_then(|s| s.load_balancer.as_ref())
+        .and_then(|lb| lb.ingress.as_ref())
+    else {
+        return Vec::new();
+    };
 
     let mut ips = Vec::new();
     for lb in lb_ingresses {
@@ -1217,9 +1234,7 @@ pub(crate) fn resolve_ip_from_lb_status(ingress: &Ingress) -> Option<String> {
             _ => {}
         }
     }
-    retain_ipv4(ips, "Ingress status.loadBalancer")
-        .into_iter()
-        .next()
+    unique_ipv4(ips, "Ingress status.loadBalancer")
 }
 
 /// Parses the `bindy.firestoned.io/ttl` annotation.
@@ -1244,67 +1259,75 @@ pub(crate) fn parse_ttl_annotation(annotations: &BTreeMap<String, String>) -> Re
     }
 }
 
-/// Number of hex characters of the source-identity hash in a record name.
-const SOURCE_HASH_HEX_LEN: usize = 8;
+/// Number of hex characters of the name-identity hash in a record name.
+const NAME_HASH_HEX_LEN: usize = 8;
 
 /// Hex characters needed to print one byte.
 const HEX_CHARS_PER_BYTE: usize = 2;
 
-/// Number of digest bytes that make up [`SOURCE_HASH_HEX_LEN`] hex characters.
-const SOURCE_HASH_BYTES: usize = SOURCE_HASH_HEX_LEN / HEX_CHARS_PER_BYTE;
+/// Number of digest bytes that make up [`NAME_HASH_HEX_LEN`] hex characters.
+const NAME_HASH_BYTES: usize = NAME_HASH_HEX_LEN / HEX_CHARS_PER_BYTE;
 
-/// The short hash that makes a record name unique to its source (ADR-0022,
-/// Decision 3): the first [`SOURCE_HASH_HEX_LEN`] hex characters of the
-/// SHA-256 of `cluster \0 kind \0 namespace \0 name`.
+/// The readable stand-in for the zone apex (`@`) in a record name.
+const APEX_READABLE: &str = "apex";
+
+/// The first `bytes` bytes, in lowercase hex, of the SHA-256 of `parts`
+/// joined by NUL.
 ///
-/// The NUL separators make the identity unambiguous: no Kubernetes name or
-/// kind contains NUL, so `team-a`/`web` and `team`/`a-web` hash differently
-/// even though their hyphen-joined forms are equal.
+/// The NUL separators make the identity unambiguous: no Kubernetes name,
+/// kind or DNS name contains NUL, so `team-a`/`web` and `team`/`a-web` hash
+/// differently even though their hyphen-joined forms are equal.
 #[must_use]
-pub(crate) fn source_identity_hash(
-    cluster: &str,
-    kind: &str,
-    namespace: &str,
-    name: &str,
-) -> String {
-    let digest = Sha256::digest(format!("{cluster}\0{kind}\0{namespace}\0{name}").as_bytes());
-    digest
+pub(crate) fn nul_joined_sha256_hex(parts: &[&str], bytes: usize) -> String {
+    Sha256::digest(parts.join("\0").as_bytes())
         .iter()
-        .take(SOURCE_HASH_BYTES)
-        .map(|b| format!("{b:02x}"))
-        .collect()
+        .take(bytes)
+        .fold(String::new(), |mut hex, b| {
+            // Writing to a String cannot fail.
+            let _ = write!(hex, "{b:02x}");
+            hex
+        })
 }
 
-/// Builds the Kubernetes name of the ARecord Scout writes for one host of
-/// one source object (ADR-0022, Decision 3):
-/// `scout-{cluster}-{namespace}-{name}-{hash}-{index}`.
+/// The short hash that makes a record name unique to its DNS name (ADR-0026,
+/// Decision 1): the first [`NAME_HASH_HEX_LEN`] hex characters of the
+/// SHA-256 of `cluster \0 zone \0 dns_name`, with the zone and DNS name
+/// lowercased (DNS names are case-insensitive).
+#[must_use]
+pub(crate) fn name_identity_hash(cluster: &str, zone: &str, dns_name: &str) -> String {
+    nul_joined_sha256_hex(
+        &[cluster, &zone.to_lowercase(), &dns_name.to_lowercase()],
+        NAME_HASH_BYTES,
+    )
+}
+
+/// Builds the Kubernetes name of the one `ARecord` Scout writes for a DNS name
+/// (ADR-0026, Decision 1): `scout-{cluster}-{dns-name}-{zone}-{hash}`, with
+/// the apex spelled `apex`.
 ///
-/// The readable part is lowercased and sanitized (see `sanitize_k8s_name`)
-/// and truncated so the whole name fits [`MAX_K8S_NAME_LEN`]; a hyphen left
-/// at the cut is removed, so the result is always a valid Kubernetes name.
-/// The hash (see [`source_identity_hash`]) keeps names unique across kinds,
-/// across namespaces whose joined form collides, and after truncation.
+/// Every source of this Scout that resolves to the same zone and DNS name
+/// writes this one record. The readable part is lowercased and sanitized
+/// (see `sanitize_k8s_name`) and truncated so the whole name fits
+/// [`MAX_K8S_NAME_LEN`]; a hyphen left at the cut is removed, so the result
+/// is always a valid Kubernetes name. The hash (see [`name_identity_hash`])
+/// keeps names unique across clusters, across names whose sanitized forms
+/// collide (`a.b` and `a-b`, or the apex and a name called `apex`), and after
+/// truncation.
 ///
 /// # Arguments
 /// * `cluster` - Scout's cluster name
-/// * `kind` - The source kind (`Ingress`, `Service`, ...)
-/// * `namespace` - The source namespace
-/// * `name` - The source name
-/// * `index` - The host's index within the source
+/// * `zone` - The DNS zone
+/// * `dns_name` - The record name within the zone (`@` for the apex)
 #[must_use]
-pub(crate) fn arecord_cr_name(
-    cluster: &str,
-    kind: &str,
-    namespace: &str,
-    name: &str,
-    index: usize,
-) -> String {
-    let suffix = format!(
-        "-{}-{index}",
-        source_identity_hash(cluster, kind, namespace, name)
-    );
+pub(crate) fn dns_name_record_cr_name(cluster: &str, zone: &str, dns_name: &str) -> String {
+    let suffix = format!("-{}", name_identity_hash(cluster, zone, dns_name));
+    let readable_name = if dns_name == "@" {
+        APEX_READABLE
+    } else {
+        dns_name
+    };
     let readable = sanitize_k8s_name(&format!(
-        "{ARECORD_NAME_PREFIX}-{cluster}-{namespace}-{name}"
+        "{ARECORD_NAME_PREFIX}-{cluster}-{readable_name}-{zone}"
     ));
     let budget = MAX_K8S_NAME_LEN.saturating_sub(suffix.len());
     // `sanitize_k8s_name` yields ASCII only, so a byte cut is a char cut.
@@ -1345,11 +1368,13 @@ pub(crate) fn is_being_deleted<K: Resource>(obj: &K) -> bool {
     obj.meta().deletion_timestamp.is_some()
 }
 
-/// The label selector matching the ARecords Scout wrote for one source
-/// object under the current cluster name: `managed-by=scout`,
-/// `source-cluster`, `source-kind`, `source-namespace` and `source-name`.
+/// The label selector matching the per-source `ARecord`s Scout wrote for one
+/// source object under the current cluster name before ADR-0026:
+/// `managed-by=scout`, `source-cluster`, `source-kind`, `source-namespace`
+/// and `source-name`. The pipeline hands such records over to per-name
+/// records, and deletes them when the source goes away.
 ///
-/// Every own-record lookup (pruning, opt-out, release and deletion cleanup)
+/// Every per-source lookup (handover, opt-out, release and deletion cleanup)
 /// uses this one selector, so a record is owned by exactly one
 /// (cluster, kind, namespace, name) source (ADR-0022, Decision 2).
 #[must_use]
@@ -1447,68 +1472,6 @@ pub fn stale_arecord_label_selector(
 }
 
 // ============================================================================
-// ARecord builder
-// ============================================================================
-
-/// Parameters for building an ARecord CR.
-pub(crate) struct ARecordParams<'a> {
-    /// Kubernetes resource name for the ARecord CR
-    pub name: &'a str,
-    /// Namespace where the ARecord CR will be created
-    pub target_namespace: &'a str,
-    /// DNS record name within the zone (e.g. `"app"` or `"@"`)
-    pub record_name: &'a str,
-    /// IPv4 addresses to use for the record (one or more)
-    pub ips: &'a [String],
-    /// Optional TTL override in seconds
-    pub ttl: Option<i32>,
-    /// Logical name of the source cluster (for labels)
-    pub cluster_name: &'a str,
-    /// Kind of the source object (for labels)
-    pub source_kind: &'a str,
-    /// Namespace of the source object (for labels)
-    pub source_namespace: &'a str,
-    /// Name of the source object (for labels)
-    pub source_name: &'a str,
-    /// DNS zone name (for labels)
-    pub zone: &'a str,
-}
-
-/// Builds the ARecord CR Scout writes for one host of one source object.
-///
-/// The record carries the labels Scout finds its own records by:
-/// `managed-by`, `source-cluster`, `source-kind`, `source-namespace`,
-/// `source-name`, and `zone`.
-pub(crate) fn build_arecord(params: ARecordParams<'_>) -> ARecord {
-    let labels: BTreeMap<String, String> = [
-        (LABEL_MANAGED_BY, LABEL_MANAGED_BY_SCOUT),
-        (LABEL_SOURCE_CLUSTER, params.cluster_name),
-        (LABEL_SOURCE_KIND, params.source_kind),
-        (LABEL_SOURCE_NAMESPACE, params.source_namespace),
-        (LABEL_SOURCE_NAME, params.source_name),
-        (LABEL_ZONE, params.zone),
-    ]
-    .into_iter()
-    .map(|(k, v)| (k.to_string(), v.to_string()))
-    .collect();
-
-    ARecord {
-        metadata: kube::api::ObjectMeta {
-            name: Some(params.name.to_string()),
-            namespace: Some(params.target_namespace.to_string()),
-            labels: Some(labels),
-            ..Default::default()
-        },
-        spec: ARecordSpec {
-            name: params.record_name.to_string(),
-            ipv4_addresses: params.ips.to_vec(),
-            ttl: params.ttl,
-        },
-        status: None,
-    }
-}
-
-// ============================================================================
 // Service helpers
 // ============================================================================
 
@@ -1524,25 +1487,26 @@ pub(crate) fn is_loadbalancer_service(svc: &Service) -> bool {
         .unwrap_or(false)
 }
 
-/// Extracts the first IPv4 address from the Service's LoadBalancer status.
+/// Extracts every IPv4 address from the Service's LoadBalancer status, in
+/// status order and without duplicates (issue #556).
 ///
-/// Returns `None` if the status has no entries or no entry carries an IPv4
-/// address (hostname-only entries are ignored, non-IPv4 ones are skipped by
+/// Returns an empty list if the status has no entries or no entry carries an
+/// IPv4 address (hostname-only entries are ignored, non-IPv4 ones are skipped by
 /// [`retain_ipv4`]). Scout re-queues and waits for the cloud provider to
 /// assign an external IP.
-pub(crate) fn resolve_ip_from_service_lb_status(svc: &Service) -> Option<String> {
-    let ips = svc
+pub(crate) fn resolve_ips_from_service_lb_status(svc: &Service) -> Vec<String> {
+    let Some(entries) = svc
         .status
-        .as_ref()?
-        .load_balancer
-        .as_ref()?
-        .ingress
-        .as_ref()?
+        .as_ref()
+        .and_then(|s| s.load_balancer.as_ref())
+        .and_then(|lb| lb.ingress.as_ref())
+    else {
+        return Vec::new();
+    };
+    let ips = entries
         .iter()
         .filter_map(|entry| entry.ip.clone().filter(|ip| !ip.is_empty()));
-    retain_ipv4(ips, "Service status.loadBalancer")
-        .into_iter()
-        .next()
+    unique_ipv4(ips, "Service status.loadBalancer")
 }
 
 /// Parses a `namespace/name` string into a [`NamespacedName`].

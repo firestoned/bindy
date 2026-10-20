@@ -18,7 +18,8 @@
 #   kubectl apply -f examples/tcproute-dns.yaml
 #
 # Verify Scout created the ARecord:
-#   kubectl get arecords -n bindy-system -l bindy.firestoned.io/source-name=db-gateway
+#   (one ARecord per DNS name, shared with any other resource publishing it; ADR-0026)
+#   kubectl get arecords -n bindy-system -l "contributor.scout.bindy.firestoned.io/$(printf '%s\0%s\0%s' TCPRoute tcp-apps db-gateway | sha256sum | cut -c1-16)"
 #
 # Clean up:
 #   kubectl delete -f examples/tcproute-dns.yaml

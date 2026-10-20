@@ -21,7 +21,10 @@
    `source-cluster` label). Since roadmap [31](31-scout-source-guardrails.md)
    (ADR-0025), with each cluster's account registered and the policy
    installed, two clusters can only collide in a zone an administrator
-   registered for both; this item covers that remaining case.
+   registered for both; this item covers that remaining case. Since
+   roadmap [32](32-scout-one-record-per-dns-name.md) (ADR-0026), sources of one
+   Scout that share a name write one record, so any second record for a name
+   is a conflict.
 3. **AAAARecord support** (roadmap 12 Q2). Same pattern as ARecord for IPv6.
    Touches the full record-CRD checklist in the `add-new-crd` skill only if
    a new source annotation is wanted; AAAARecord CRD itself already exists.
