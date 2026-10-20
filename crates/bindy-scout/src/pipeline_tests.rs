@@ -14,7 +14,9 @@ mod tests {
     use crate::constants::ANNOTATION_ALLOW_ZONE_NAMESPACES;
     use crate::crd::DNSZone;
     use crate::guardrails::{parse_allowed_ip_ranges, parse_allowed_zones, Ipv4Range};
-    use crate::scout::{GatewayServiceTarget, HTTPRoute, NamespacedName, TCPRoute, TLSRoute};
+    use crate::scout::{
+        GRPCRoute, GatewayServiceTarget, HTTPRoute, NamespacedName, TCPRoute, TLSRoute,
+    };
     use crate::scout::{
         ScoutContext, ScoutError, ANNOTATION_IP, ANNOTATION_RECORD_NAME, ANNOTATION_SCOUT_ENABLED,
         ANNOTATION_TTL, ANNOTATION_ZONE, FINALIZER_SCOUT, LABEL_MANAGED_BY, LABEL_MANAGED_BY_SCOUT,
@@ -627,6 +629,7 @@ mod tests {
         Ingress(Ingress),
         Service(Service),
         Http(HTTPRoute),
+        Grpc(GRPCRoute),
         Tls(TLSRoute),
         Tcp(TCPRoute),
     }
@@ -637,6 +640,7 @@ mod tests {
                 Src::Ingress(o) => serde_json::to_value(o),
                 Src::Service(o) => serde_json::to_value(o),
                 Src::Http(o) => serde_json::to_value(o),
+                Src::Grpc(o) => serde_json::to_value(o),
                 Src::Tls(o) => serde_json::to_value(o),
                 Src::Tcp(o) => serde_json::to_value(o),
             }
@@ -648,6 +652,7 @@ mod tests {
                 Src::Ingress(_) => "Ingress",
                 Src::Service(_) => "Service",
                 Src::Http(_) => "HTTPRoute",
+                Src::Grpc(_) => "GRPCRoute",
                 Src::Tls(_) => "TLSRoute",
                 Src::Tcp(_) => "TCPRoute",
             }
@@ -662,6 +667,7 @@ mod tests {
             Src::Ingress(o) => reconcile_source(Arc::new(o), ctx).await,
             Src::Service(o) => reconcile_source(Arc::new(o), ctx).await,
             Src::Http(o) => reconcile_source(Arc::new(o), ctx).await,
+            Src::Grpc(o) => reconcile_source(Arc::new(o), ctx).await,
             Src::Tls(o) => reconcile_source(Arc::new(o), ctx).await,
             Src::Tcp(o) => reconcile_source(Arc::new(o), ctx).await,
         }
@@ -780,6 +786,17 @@ mod tests {
         )
     }
 
+    fn grpcroute(meta: &Meta, hostnames: &[&str], gateway: Option<&str>) -> Src {
+        Src::Grpc(
+            serde_json::from_value(json!({
+                "apiVersion": "gateway.networking.k8s.io/v1", "kind": "GRPCRoute",
+                "metadata": meta.json(),
+                "spec": {"hostnames": hostnames, "parentRefs": parent_refs(gateway)},
+            }))
+            .expect("valid GRPCRoute"),
+        )
+    }
+
     fn tlsroute(meta: &Meta, hostnames: &[&str], gateway: Option<&str>) -> Src {
         Src::Tls(
             serde_json::from_value(json!({
@@ -810,6 +827,7 @@ mod tests {
             ingress(&m, &["api.example.com"], &[]),
             service(&m, "LoadBalancer", &[]),
             httproute(&m, &["api.example.com"], None),
+            grpcroute(&m, &["api.example.com"], None),
             tlsroute(&m, &["api.example.com"], None),
             tcproute(&with_record_name(&m), None),
         ]
@@ -1057,6 +1075,7 @@ mod tests {
         let m = meta("web").ann(ANNOTATION_IP, ANNOTATION_IP_VALUE);
         for src in [
             httproute(&m, &["a.example.com", "", "b.example.com"], None),
+            grpcroute(&m, &["a.example.com", "", "b.example.com"], None),
             tlsroute(&m, &["a.example.com", "", "b.example.com"], None),
         ] {
             let h = Harness::new().await;
@@ -1290,8 +1309,9 @@ mod tests {
 
     #[tokio::test]
     async fn route_ips_prefer_annotation_then_gateway_then_defaults() {
-        let builders: [fn(&Meta) -> Src; 3] = [
+        let builders: [fn(&Meta) -> Src; 4] = [
             |m| httproute(m, &["api.example.com"], Some("gw")),
+            |m| grpcroute(m, &["api.example.com"], Some("gw")),
             |m| tlsroute(m, &["api.example.com"], Some("gw")),
             |m| tcproute(&m.clone().ann(ANNOTATION_RECORD_NAME, "api"), Some("gw")),
         ];
@@ -1350,6 +1370,7 @@ mod tests {
             ingress(&meta("web"), &["api.example.com"], &[]),
             service(&meta("web"), "LoadBalancer", &[]),
             httproute(&meta("web"), &["api.example.com"], None),
+            grpcroute(&meta("web"), &["api.example.com"], None),
         ] {
             let h = Harness::new().await;
             let action = h.run(&src).await.expect("reconcile");
@@ -1631,7 +1652,7 @@ mod tests {
         keys.sort();
         assert_eq!(
             keys,
-            ["HTTPRoute", "Ingress", "TCPRoute", "TLSRoute"]
+            ["GRPCRoute", "HTTPRoute", "Ingress", "TCPRoute", "TLSRoute"]
                 .map(|k| contributor_key(k, SRC_NS, "web"))
         );
         // Reconciling every kind again changes nothing.

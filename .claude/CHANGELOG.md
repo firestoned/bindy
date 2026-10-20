@@ -1,3 +1,20 @@
+## [2026-10-20 16:45] - CI: RustSec bumps (rustls-webpki, webpki-root-certs); skip image push on fork PRs
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `Cargo.lock`: `rustls-webpki` 0.103.15 to 0.103.16 (RUSTSEC-2026-0382, certificate verification may accept distrusted intermediates) and `webpki-root-certs` 1.0.9 to 1.0.10 (RUSTSEC-2026-0383, bundled roots trusted distrusted emSign intermediates). Both reach us through `reqwest` and `kube-client` via `rustls-platform-verifier`.
+- `.github/workflows/build.yaml`: the `docker` job no longer runs on pull requests from forks. A fork PR's `GITHUB_TOKEN` is read-only, so the GHCR push was always denied (`installation not allowed to Write organization package`) and failed the PR gate. The Trivy job already skips when `docker` did not succeed, and the gate accepts skipped jobs. Same-repo PRs and pushes to main are unchanged.
+
+### Why
+Both advisories were published 2026-10-19/20 and fail `cargo audit` on every run, main included. The fork-PR docker failure surfaced on PR #560 (from `slauney/bindy`) once its build went green.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (rebuilt images carry the patched TLS crates)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-20 07:40] - Scout publishes one record per DNS name (ADR-0026, issue #556, roadmap 32 phases 3 to 7)
 
 **Author:** Erick Bourgeois
@@ -101,6 +118,19 @@ A tenant on one edge cluster, or that cluster's compromised Scout, could publish
 - `cargo fmt`, `cargo clippy --all-targets --all-features -- -D warnings`, `cargo test` (workspace) pass.
 - Policies 21/22 on kind (Kubernetes 1.36): type checking clean; all accept/reject fixtures as expected; a registered account's delete or relabel of another cluster's record refused (HTTP 422); server-side apply refused the same way; unregistered accounts and a namespace with no registry unaffected. `bindy bootstrap mc` registration and `--revoke` checked against the same cluster: each account's keys owned by its own field manager, revoke removes only those.
 - Not run: the two-cluster Scout e2e (needs a Scout image built from this branch), roadmap 31 phase 5.
+
+## [2026-10-19 10:30] - Document GRPCRoute support in Scout guide
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `docs/src/guide/scout.md`: Documented GRPCRoute support in the route overview, gateway IP configuration, hostname behavior, and record lifecycle.
+
+### Why
+Scout supports GRPCRoute, but the user guide omitted it from the route list and feature summary.
+
+### Impact
+- [x] Documentation only
 
 ## [2026-10-14 20:00] - Every Secret operation emits one structured audit event (ADR-0024, roadmap 16)
 

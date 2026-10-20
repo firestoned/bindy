@@ -167,7 +167,31 @@ pub(crate) struct TCPRoute {
     pub spec: Option<TCPRouteSpec>,
 }
 
-// Implement k8s_openapi::Metadata for HTTPRoute and TLSRoute
+/// Minimal GRPCRoute spec for Scout's use case.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct GRPCRouteSpec {
+    /// Hostnames matching this GRPCRoute
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostnames: Option<Vec<String>>,
+    /// Gateways this route attaches to. Scout follows these to discover the
+    /// serving Gateway's external IP when no explicit IP annotation is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_refs: Option<Vec<ParentReference>>,
+}
+
+/// Minimal GRPCRoute definition for Scout's use case.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct GRPCRoute {
+    #[serde(rename = "apiVersion")]
+    pub api_version: String,
+    pub kind: String,
+    pub metadata: kube::api::ObjectMeta,
+    #[serde(default)]
+    pub spec: Option<GRPCRouteSpec>,
+}
+
+// Implement k8s_openapi::Metadata for HTTPRoute.  and TLSRoute
 impl k8s_openapi::Metadata for HTTPRoute {
     type Ty = kube::api::ObjectMeta;
     fn metadata(&self) -> &kube::api::ObjectMeta {
@@ -188,13 +212,32 @@ impl k8s_openapi::Metadata for TLSRoute {
     }
 }
 
-// Implement k8s_openapi::Resource for HTTPRoute and TLSRoute
+impl k8s_openapi::Metadata for GRPCRoute {
+    type Ty = kube::api::ObjectMeta;
+    fn metadata(&self) -> &kube::api::ObjectMeta {
+        &self.metadata
+    }
+    fn metadata_mut(&mut self) -> &mut kube::api::ObjectMeta {
+        &mut self.metadata
+    }
+}
+
+// Implement k8s_openapi::Resource for HTTPRoute, GRPCRoute and TLSRoute
 impl k8s_openapi::Resource for HTTPRoute {
     const API_VERSION: &'static str = "gateway.networking.k8s.io/v1";
     const GROUP: &'static str = "gateway.networking.k8s.io";
     const KIND: &'static str = "HTTPRoute";
     const VERSION: &'static str = "v1";
     const URL_PATH_SEGMENT: &'static str = "httproutes";
+    type Scope = k8s_openapi::NamespaceResourceScope;
+}
+
+impl k8s_openapi::Resource for GRPCRoute {
+    const API_VERSION: &'static str = "gateway.networking.k8s.io/v1";
+    const GROUP: &'static str = "gateway.networking.k8s.io";
+    const KIND: &'static str = "GRPCRoute";
+    const VERSION: &'static str = "v1";
+    const URL_PATH_SEGMENT: &'static str = "grpcroutes";
     type Scope = k8s_openapi::NamespaceResourceScope;
 }
 
@@ -362,7 +405,7 @@ pub(crate) const ANNOTATION_TTL: &str = "bindy.firestoned.io/ttl";
 /// host/hostname. Use `"@"` to target the zone apex. When absent or empty, Scout falls
 /// back to deriving the name from the host stripped of the zone suffix.
 ///
-/// On multi-host resources (Ingress / HTTPRoute / TLSRoute) the override is applied to
+/// On multi-host resources (Ingress / HTTPRoute / GRPCRoute / TLSRoute) the override is applied to
 /// every ARecord produced from that resource, so it is intended for single-host use cases.
 pub(crate) const ANNOTATION_RECORD_NAME: &str = "bindy.firestoned.io/record-name";
 
@@ -2263,6 +2306,8 @@ pub async fn run_scout(cli: ScoutCli) -> Result<()> {
     // The route APIs below only probe whether each kind is served; the
     // source objects themselves are watched through the shared watch layer.
     let httproute_api: Api<HTTPRoute> = Api::all(local_client.clone());
+    // Watch GRPCRoutes across all namespaces using the LOCAL client
+    let grpcroute_api: Api<GRPCRoute> = Api::all(local_client.clone());
     // Watch TLSRoutes across all namespaces using the LOCAL client
     let tlsroute_api: Api<TLSRoute> = Api::all(local_client.clone());
     // Watch TCPRoutes across all namespaces using the LOCAL client
@@ -2270,14 +2315,16 @@ pub async fn run_scout(cli: ScoutCli) -> Result<()> {
 
     // Probe EACH route kind, not one as a proxy for the others. Gateway API
     // ships in two channels and the kinds graduated at different times —
-    // HTTPRoute Standard since v1.0, TLSRoute since v1.5, TCPRoute since v1.6 —
-    // so a standard-channel install older than those serves HTTPRoute and not
-    // the rest. Inferring from one kind would leave the other two controllers
-    // retrying a 404 forever, which is exactly what this check prevents.
+    // HTTPRoute Standard since v1.0, TLSRoute Standard since v1.5, TLSRoute
+    // since v1.5, TCPRoute since v1.6 — so a standard-channel install older
+    // than those serves HTTPRoute and not the rest. Inferring from one kind
+    // would leave the other two controllers retrying a 404 forever, which is
+    // exactly what this check prevents.
     //
     // Ingress and Service are core API and always served, so they are not
     // probed: a check that can never fail is noise.
     let httproute_enabled = kind_served(&httproute_api).await;
+    let grpcroute_enabled = kind_served(&grpcroute_api).await;
     let tlsroute_enabled = kind_served(&tlsroute_api).await;
     let tcproute_enabled = kind_served(&tcproute_api).await;
 
@@ -2287,6 +2334,9 @@ pub async fn run_scout(cli: ScoutCli) -> Result<()> {
     }
     if tlsroute_enabled {
         watching.push("TLSRoutes");
+    }
+    if grpcroute_enabled {
+        watching.push("GRPCRoutes");
     }
     if tcproute_enabled {
         watching.push("TCPRoutes");
@@ -2302,6 +2352,9 @@ pub async fn run_scout(cli: ScoutCli) -> Result<()> {
     }
     if !tlsroute_enabled {
         disabled.push("TLSRoute");
+    }
+    if !grpcroute_enabled {
+        disabled.push("GRPCRoutes");
     }
     if !tcproute_enabled {
         disabled.push("TCPRoute");
@@ -2323,6 +2376,9 @@ pub async fn run_scout(cli: ScoutCli) -> Result<()> {
     if httproute_enabled {
         let _ = local_watch.register::<HTTPRoute>("HTTPRoute");
     }
+    if grpcroute_enabled {
+        let _ = local_watch.register::<GRPCRoute>("GRPCRoute");
+    }
     if tlsroute_enabled {
         let _ = local_watch.register::<TLSRoute>("TLSRoute");
     }
@@ -2340,6 +2396,9 @@ pub async fn run_scout(cli: ScoutCli) -> Result<()> {
     if httproute_enabled {
         controllers.push(source_controller::<HTTPRoute>(&local_watch, ctx.clone()));
     }
+    if grpcroute_enabled {
+        controllers.push(source_controller::<GRPCRoute>(&local_watch, ctx.clone()));
+    }
     if tlsroute_enabled {
         controllers.push(source_controller::<TLSRoute>(&local_watch, ctx.clone()));
     }
@@ -2356,10 +2415,11 @@ pub async fn run_scout(cli: ScoutCli) -> Result<()> {
 ///
 /// Gateway API is not installed by default in Kubernetes, and — critically —
 /// its route kinds do NOT arrive together. Gateway API ships in two channels:
-/// `HTTPRoute` has been Standard since v1.0, `TLSRoute` only became Standard in
-/// v1.5 and `TCPRoute` in v1.6. A standard-channel install older than those has
-/// `HTTPRoute` and neither of the others, so probing one kind and inferring the
-/// rest re-creates the very error loop this check exists to prevent.
+/// `HTTPRoute` has been Standard since v1.0, `GRPCRoute` became Standard in
+/// v1.1, `TLSRoute` only became Standard in v1.5 and `TCPRoute` in v1.6. A
+/// standard-channel install older than those has `HTTPRoute` and neither of the
+/// others, so probing one kind and inferring the rest re-creates the very
+/// error loop this check exists to prevent.
 ///
 /// A [`Controller`] started against a kind whose CRD is absent does not fail
 /// loudly: it retries forever, logging an error per attempt for an API that

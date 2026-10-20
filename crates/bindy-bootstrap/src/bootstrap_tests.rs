@@ -917,6 +917,14 @@ mod tests {
         });
         assert!(has_tcproutes, "tcproutes rule must exist for Gateway API");
 
+        // Check that GRPCRoute rule exists (may be in same rule as other Route)
+        let has_grpcroutes = rules.iter().any(|r| {
+            r.resources
+                .as_ref()
+                .is_some_and(|res| res.iter().any(|s| s == "grpcroutes"))
+        });
+        assert!(has_grpcroutes, "grpcroutes rule must exist for Gateway API");
+
         // Verify correct API group
         assert_eq!(
             http_route_rule.api_groups.as_ref().unwrap()[0],
@@ -1003,6 +1011,7 @@ mod tests {
         // The /finalizers subresource rules must exist for each route type.
         for subresource in [
             "httproutes/finalizers",
+            "grpcroutes/finalizers",
             "tlsroutes/finalizers",
             "tcproutes/finalizers",
         ] {

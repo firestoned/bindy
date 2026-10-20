@@ -1083,14 +1083,14 @@ pub(crate) fn build_scout_cluster_role() -> ClusterRole {
             rule(&[CORE_API_GROUP], &["services"], WATCH_AND_FINALIZE_VERBS),
             // services/finalizers subresource for forward-compatibility.
             rule(&[CORE_API_GROUP], &["services/finalizers"], FINALIZER_VERBS),
-            // Watch HTTPRoutes, TLSRoutes, and TCPRoutes from the Gateway API
+            // Watch HTTPRoutes, GRPCRoutes, TLSRoutes, and TCPRoutes from the Gateway API
             // (gateway.networking.k8s.io) to automate A record creation for Gateway
             // routes with opt-in annotations. Gateways are read to follow a route's
             // parentRefs back to the serving gateway and discover its external IP.
             // patch+update required to add/remove the Scout finalizer on route metadata.
             rule(
                 &[GATEWAY],
-                &["httproutes", "tlsroutes", "tcproutes"],
+                &["httproutes", "grpcroutes", "tlsroutes", "tcproutes"],
                 WATCH_AND_FINALIZE_VERBS,
             ),
             // route/finalizers subresource for forward-compatibility.
@@ -1098,6 +1098,7 @@ pub(crate) fn build_scout_cluster_role() -> ClusterRole {
                 &[GATEWAY],
                 &[
                     "httproutes/finalizers",
+                    "grpcroutes/finalizers",
                     "tlsroutes/finalizers",
                     "tcproutes/finalizers",
                 ],

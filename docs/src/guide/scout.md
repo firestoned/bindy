@@ -290,7 +290,7 @@ The record name is derived by stripping the zone suffix from the host:
 
 Opt in with the `bindy.firestoned.io/scout-enabled: "true"` annotation. Each rule host publishes one DNS name, and each DNS name is one `ARecord`, named `scout-{cluster}-{name}-{zone}-{hash}` (see [Record names](#record-names)). The IP is resolved from the `bindy.firestoned.io/ip` annotation, then `--default-ips`, then the Ingress LoadBalancer status.
 
-When a host is removed from the Ingress, or stops matching the zone, Scout removes the Ingress's addresses from that name's `ARecord` on the next reconcile, and deletes the record if no other resource still publishes the name. The same applies to `HTTPRoute` and `TLSRoute` hostnames.
+When a host is removed from the Ingress, or stops matching the zone, Scout removes the Ingress's addresses from that name's `ARecord` on the next reconcile, and deletes the record if no other resource still publishes the name. The same applies to `HTTPRoute`, `GRPCRoute`, and `TLSRoute` hostnames.
 
 ---
 
@@ -347,14 +347,14 @@ Find the records a resource contributes to through its contributor key in the
 
 ---
 
-### 3. Gateway API (HTTPRoute, TLSRoute, and TCPRoute)
+### 3. Gateway API (HTTPRoute, GRPCRoute, TLSRoute, and TCPRoute)
 
-Scout watches `HTTPRoute`, `TLSRoute`, and `TCPRoute` resources from the Gateway API, **for each kind the cluster actually serves** — see [Gateway API detection](../installation/scout.md#gateway-api). The same opt-in annotation (`bindy.firestoned.io/scout-enabled: "true"`) and zone/IP/TTL annotations apply. For `HTTPRoute` and `TLSRoute`, Scout creates one `ARecord` per hostname in `spec.hostnames[]`. `TCPRoute` has no `spec.hostnames[]` field — Scout creates a single `ARecord` using the name supplied by the `bindy.firestoned.io/record-name` annotation.
+Scout watches `HTTPRoute`, `GRPCRoute`, `TLSRoute`, and `TCPRoute` resources from the Gateway API, **for each kind the cluster actually serves** — see [Gateway API detection](../installation/scout.md#gateway-api). The same opt-in annotation (`bindy.firestoned.io/scout-enabled: "true"`) and zone/IP/TTL annotations apply. For `HTTPRoute`, `GRPCRoute`, and `TLSRoute`, Scout creates one `ARecord` per hostname in `spec.hostnames[]`. `TCPRoute` has no `spec.hostnames[]` field — Scout creates a single `ARecord` using the name supplied by the `bindy.firestoned.io/record-name` annotation.
 
 !!! note "IP resolution follows the gateway chain"
     Gateway API routes have no `LoadBalancer` status of their own. When no `bindy.firestoned.io/ip` annotation is set, Scout follows the route's `parentRefs` to the serving `Gateway`, and — for a Gateway whose `gatewayClassName` is in the operator-configured `--gateway-service` map — reads the external IP from the Gateway's `status.addresses`, or, when those are empty, from the mapped LoadBalancer `Service`. This lets operators avoid making every route repeat an IP that is already discoverable from the gateway (e.g. Traefik's proxy Service). The full precedence is: `bindy.firestoned.io/ip` annotation → discovered gateway IP → `--default-ips` → requeue.
 
-See [Gateway API Routes](#gateway-api-routes-httproute-tlsroute-and-tcproute) for the full reference, examples, record naming, labels, and RBAC requirements.
+See [Gateway API Routes](#gateway-api-routes-httproute-grpcroute-tlsroute-and-tcproute) for the full reference, examples, record naming, labels, and RBAC requirements.
 
 ---
 
@@ -507,7 +507,7 @@ spec:
 | `--namespace <NS>` | Namespace where ARecords are created. Defaults to `bindy-system`. |
 | `--default-zone <ZONE>` | Default DNS zone applied to all Ingresses and Services when no `bindy.firestoned.io/zone` annotation is present (e.g. `example.com`). When combined with `--default-ips`, resources only need `bindy.firestoned.io/scout-enabled: "true"`. |
 | `--default-ips <IP[,IP]>` | Comma-separated default IP address(es) used when no per-resource `bindy.firestoned.io/ip` annotation or LoadBalancer status IP is available. Useful for shared-ingress topologies (e.g. Traefik). |
-| `--gateway-service <class=target>` | Repeatable. Maps a `gatewayClass` to the LoadBalancer Service whose external IP backs it, used to resolve an IP for HTTPRoute/TLSRoute/TCPRoute via their `parentRefs`. `target` is either `namespace/name` (e.g. `traefik=traefik/traefik`) or `namespace/<label-selector>` (e.g. `traefik=traefik/app.kubernetes.io/name=traefik`). Multi-label selectors (with commas) must use this flag rather than the env var. The configured classes double as the allow-list of gateways Scout will follow. |
+| `--gateway-service <class=target>` | Repeatable. Maps a `gatewayClass` to the LoadBalancer Service whose external IP backs it, used to resolve an IP for HTTPRoute/GRPCRoute/TLSRoute/TCPRoute via their `parentRefs`. `target` is either `namespace/name` (e.g. `traefik=traefik/traefik`) or `namespace/<label-selector>` (e.g. `traefik=traefik/app.kubernetes.io/name=traefik`). Multi-label selectors (with commas) must use this flag rather than the env var. The configured classes double as the allow-list of gateways Scout will follow. |
 | `--remote-endpoint <URL>` | **(Phase 3, [ADR-0008](https://github.com/firestoned/bindy/blob/main/docs/adr/0008-scout-remote-endpoint-override.md))** Bindy cluster API URL for the endpoint remote mode: a Linkerd-mirrored meshed proxy, a konnectivity endpoint, or the API server directly. Requires `--remote-token-file`. Mutually exclusive with `BINDY_SCOUT_REMOTE_SECRET` (startup error if both are set). |
 | `--remote-token-file <PATH>` | **(Phase 3)** Path to a bearer-token file **minted by the Bindy cluster** (mounted Secret, CSI or external-secrets delivery). Re-read by kube-rs on rotation — no restart needed. |
 | `--remote-ca-file <PATH>` | **(Phase 3)** Path to the remote endpoint's CA bundle (PEM). Optional: when unset, webpki public roots are used. |
@@ -536,7 +536,7 @@ CLI flags take precedence over the corresponding environment variables.
 | `BINDY_SCOUT_EXCLUDE_NAMESPACES` | — | Comma-separated list of additional namespaces to skip. Useful to exclude system namespaces (`kube-system`, `kube-public`, etc.) that will never have Scout-annotated Ingresses. |
 | `BINDY_SCOUT_DEFAULT_ZONE` | — | Default DNS zone for all Ingresses and Services when no `bindy.firestoned.io/zone` annotation is present. Overridden by `--default-zone`. When set alongside `BINDY_SCOUT_DEFAULT_IPS`, resources only need `bindy.firestoned.io/scout-enabled: "true"`. |
 | `BINDY_SCOUT_DEFAULT_IPS` | — | Comma-separated default IP address(es) used when no per-resource annotation override or LoadBalancer status IP is available. Useful for shared-ingress topologies (e.g. Traefik) where all resources resolve to the same VIP(s). Overridden by `--default-ips`. |
-| `BINDY_SCOUT_GATEWAY_SERVICES` | — | Comma-separated `gatewayClass=target` map for gateway-chain IP resolution on HTTPRoute/TLSRoute/TCPRoute, e.g. `traefik=traefik/traefik`. `target` is `namespace/name` or `namespace/<label-selector>`. Because commas separate entries here, multi-label selectors must use the repeatable `--gateway-service` flag. Overridden by `--gateway-service`. |
+| `BINDY_SCOUT_GATEWAY_SERVICES` | — | Comma-separated `gatewayClass=target` map for gateway-chain IP resolution on HTTPRoute/GRPCRoute/TLSRoute/TCPRoute, e.g. `traefik=traefik/traefik`. `target` is `namespace/name` or `namespace/<label-selector>`. Because commas separate entries here, multi-label selectors must use the repeatable `--gateway-service` flag. Overridden by `--gateway-service`. |
 | `BINDY_SCOUT_NAMESPACE_SELECTOR` | — (every namespace eligible) | Label selector restricting which namespaces Scout will act in. Overridden by `--namespace-selector`. **Unset means every namespace in the cluster is eligible — running without this set is not recommended for production.** See [Namespace Whitelisting](#namespace-whitelisting-namespace-selector). |
 | `BINDY_SCOUT_ALLOWED_ZONES` | unset (every zone) | Comma-separated zones Scout may publish into, each with its subzones. Overridden by `--allowed-zones`. |
 | `BINDY_SCOUT_ALLOWED_IP_RANGES` | unset (every address) | Comma-separated IPv4 CIDR ranges every published address must fall in. Overridden by `--allowed-ip-ranges`. |
@@ -681,14 +681,14 @@ rules:
   - apiGroups: [""]
     resources: ["services/finalizers"]
     verbs: ["update"]
-  # Watch HTTPRoutes/TLSRoutes/TCPRoutes from the Gateway API and manage finalizers.
+  # Watch HTTPRoutes/GRPCRoutes/TLSRoutes/TCPRoutes from the Gateway API and manage finalizers.
   # patch+update required to add/remove the Scout finalizer on route metadata.
   - apiGroups: ["gateway.networking.k8s.io"]
-    resources: ["httproutes", "tlsroutes", "tcproutes"]
+    resources: ["httproutes", "grpcroutes", "tlsroutes", "tcproutes"]
     verbs: ["get", "list", "watch", "patch", "update"]
   # route/finalizers subresource for forward-compatibility.
   - apiGroups: ["gateway.networking.k8s.io"]
-    resources: ["httproutes/finalizers", "tlsroutes/finalizers", "tcproutes/finalizers"]
+    resources: ["httproutes/finalizers", "grpcroutes/finalizers", "tlsroutes/finalizers", "tcproutes/finalizers"]
     verbs: ["update"]
   # Gateways are read-only — Scout reads status.addresses to discover external IPs.
   - apiGroups: ["gateway.networking.k8s.io"]
@@ -789,21 +789,22 @@ roleRef:
 
 ---
 
-## Gateway API Routes (HTTPRoute, TLSRoute, and TCPRoute)
+## Gateway API Routes (HTTPRoute, GRPCRoute, TLSRoute, and TCPRoute)
 
-In addition to watching `Ingress` resources, Scout also supports **Gateway API** routes: `HTTPRoute`, `TLSRoute`, and `TCPRoute` from the Gateway API. These resources provide a more modern, flexible alternative to Ingress with better separation of concerns.
+In addition to watching `Ingress` resources, Scout also supports **Gateway API** routes: `HTTPRoute`, `GRPCRoute`, `TLSRoute`, and `TCPRoute`. These resources provide a more modern, flexible alternative to Ingress with better separation of concerns.
 
-Scout treats HTTPRoute, TLSRoute, and TCPRoute similarly to Ingress:
+Scout treats HTTPRoute, GRPCRoute, TLSRoute, and TCPRoute similarly to Ingress:
 
-- Watches all HTTPRoute/TLSRoute/TCPRoute resources cluster-wide (excluding its own namespace), for each kind whose CRD is installed — kinds that are not served are detected at startup and skipped, see [Gateway API detection](../installation/scout.md#gateway-api)
+- Watches all HTTPRoute/GRPCRoute/TLSRoute/TCPRoute resources cluster-wide (excluding its own namespace), for each kind whose CRD is installed — kinds that are not served are detected at startup and skipped, see [Gateway API detection](../installation/scout.md#gateway-api)
 - Requires the same `bindy.firestoned.io/scout-enabled: "true"` opt-in annotation
 - Uses the same annotation scheme for zone, IP, and TTL configuration
-- `HTTPRoute` / `TLSRoute`: creates one `ARecord` per hostname in `spec.hostnames[]` with an index suffix
+- `HTTPRoute` / `GRPCRoute` / `TLSRoute`: creates one `ARecord` per hostname in `spec.hostnames[]` with an index suffix
 - `TCPRoute`: has no `spec.hostnames[]` field — creates one `ARecord` using the `bindy.firestoned.io/record-name` annotation (required)
 
 ### Why Use Gateway API Routes?
 
 - **HTTPRoute**: Provides advanced HTTP routing (path-based, method-based, header matching) without the Ingress resource limitations
+- **GRPCRoute**: Provides Gateway API routing for gRPC services. Scout creates DNS records for each declared hostname; it does not inspect gRPC service or method matches.
 - **TLSRoute**: For TLS-only traffic (non-HTTP protocols over TLS, gRPC, custom protocols), Scout ensures DNS records are created for all declared hostnames
 - **TCPRoute**: For TCP-based services such as databases, proxies, or other L4 traffic. TCPRoute has no `spec.hostnames[]` field, so the record name must be supplied via `bindy.firestoned.io/record-name`. Scout creates exactly one `ARecord`. The name is validated like every other record-name override: an invalid one (for example, one containing whitespace or a label starting with `-`) is logged as a warning and no record is created until it is fixed.
 
@@ -892,12 +893,13 @@ Scout will create one ARecord for `db.example.com`.
 
 ### Record Naming for Gateway Routes
 
-Gateway API routes use `spec.hostnames[]` instead of `spec.rules[].host`. Each hostname publishes one DNS name, and each DNS name is one `ARecord`, named as described in [Record names](#record-names). The record is named after the DNS name, not the route, so an `HTTPRoute` and a `TLSRoute` that publish the same hostname share one record (see [Several resources publishing one name](#several-resources-publishing-one-name)):
+Gateway API routes use `spec.hostnames[]` instead of `spec.rules[].host`. Each hostname publishes one DNS name, and each DNS name is one `ARecord`, named as described in [Record names](#record-names). The record is named after the DNS name, not the route, so an `HTTPRoute`, a `GRPCRoute` and a `TLSRoute` that publish the same hostname share one record (see [Several resources publishing one name](#several-resources-publishing-one-name)):
 
 | Hostname | Zone | Record CR name |
 |---|---|---|
 | `api.example.com` (HTTPRoute `api-gateway`) | `example.com` | `scout-prod-api-example-com-{hash}` |
 | `secure-api.example.com` (HTTPRoute `api-gateway`) | `example.com` | `scout-prod-secure-api-example-com-{hash}` |
+| `grpc-api.example.com` (GRPCRoute `grpc-api`) | `example.com` | `scout-prod-grpc-api-example-com-{hash}` |
 | `grpc.example.com` (TLSRoute `grpc-gateway`) | `example.com` | `scout-prod-grpc-example-com-{hash}` |
 
 The record name within the zone is derived identically to Ingress rules:
@@ -951,11 +953,11 @@ rules:
   # patch+update are required to add and remove the Scout finalizer on route
   # metadata — without them Scout cannot guarantee ARecord cleanup on deletion.
   - apiGroups: ["gateway.networking.k8s.io"]
-    resources: ["httproutes", "tlsroutes", "tcproutes"]
+    resources: ["httproutes", "grpcroutes", "tlsroutes", "tcproutes"]
     verbs: ["get", "list", "watch", "patch", "update"]
   # route/finalizers subresource for forward-compatibility.
   - apiGroups: ["gateway.networking.k8s.io"]
-    resources: ["httproutes/finalizers", "tlsroutes/finalizers", "tcproutes/finalizers"]
+    resources: ["httproutes/finalizers", "grpcroutes/finalizers", "tlsroutes/finalizers", "tcproutes/finalizers"]
     verbs: ["update"]
   # Gateways ARE read-only — Scout reads status.addresses to discover external IPs.
   - apiGroups: ["gateway.networking.k8s.io"]
