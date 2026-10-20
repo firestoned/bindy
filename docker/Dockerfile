@@ -36,7 +36,7 @@ RUN apt-get update && \
 
 # Runtime stage - Distroless with glibc
 # Pinned to the multi-arch manifest-list digest (Scorecard PinnedDependencies).
-FROM gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:b7e81cb1af38d9345680e68bcf564d388f96304e25222030fc8c051faf8565b3
 
 ARG TARGETARCH
 ARG VERSION=0.1.0
