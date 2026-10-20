@@ -1231,7 +1231,7 @@ Gateway API route object belonging to a different team/namespace.
 1. Attacker exploits a vulnerability in Scout (memory corruption, dependency CVE) or
    steals its ServiceAccount token from a compromised node
 2. Scout's `ClusterRole` grants `patch`/`update` on `ingresses`, `services`,
-   `httproutes`, `tlsroutes`, `tcproutes` **cluster-wide** (required so
+   `httproutes`, `grpcroutes`, `tlsroutes`, `tcproutes` **cluster-wide** (required so
    `kube-rs`'s `finalizer::finalizer()` helper can add/remove Scout's finalizer on
    the *main resource*, not just a subresource; see the comments in
    `deploy/scout/clusterrole.yaml`)

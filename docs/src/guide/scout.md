@@ -681,14 +681,14 @@ rules:
   - apiGroups: [""]
     resources: ["services/finalizers"]
     verbs: ["update"]
-  # Watch HTTPRoutes/TLSRoutes/TCPRoutes from the Gateway API and manage finalizers.
+  # Watch HTTPRoutes/GRPCRoutes/TLSRoutes/TCPRoutes from the Gateway API and manage finalizers.
   # patch+update required to add/remove the Scout finalizer on route metadata.
   - apiGroups: ["gateway.networking.k8s.io"]
-    resources: ["httproutes", "tlsroutes", "tcproutes"]
+    resources: ["httproutes", "grpcroutes", "tlsroutes", "tcproutes"]
     verbs: ["get", "list", "watch", "patch", "update"]
   # route/finalizers subresource for forward-compatibility.
   - apiGroups: ["gateway.networking.k8s.io"]
-    resources: ["httproutes/finalizers", "tlsroutes/finalizers", "tcproutes/finalizers"]
+    resources: ["httproutes/finalizers", "grpcroutes/finalizers", "tlsroutes/finalizers", "tcproutes/finalizers"]
     verbs: ["update"]
   # Gateways are read-only — Scout reads status.addresses to discover external IPs.
   - apiGroups: ["gateway.networking.k8s.io"]
@@ -953,11 +953,11 @@ rules:
   # patch+update are required to add and remove the Scout finalizer on route
   # metadata — without them Scout cannot guarantee ARecord cleanup on deletion.
   - apiGroups: ["gateway.networking.k8s.io"]
-    resources: ["httproutes", "tlsroutes", "tcproutes"]
+    resources: ["httproutes", "grpcroutes", "tlsroutes", "tcproutes"]
     verbs: ["get", "list", "watch", "patch", "update"]
   # route/finalizers subresource for forward-compatibility.
   - apiGroups: ["gateway.networking.k8s.io"]
-    resources: ["httproutes/finalizers", "tlsroutes/finalizers", "tcproutes/finalizers"]
+    resources: ["httproutes/finalizers", "grpcroutes/finalizers", "tlsroutes/finalizers", "tcproutes/finalizers"]
     verbs: ["update"]
   # Gateways ARE read-only — Scout reads status.addresses to discover external IPs.
   - apiGroups: ["gateway.networking.k8s.io"]
