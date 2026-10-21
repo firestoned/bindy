@@ -203,7 +203,7 @@ This prevents a tenant in one namespace from creating records in another
 tenant's zone (a cross-tenant DNS-hijack / confused-deputy risk, since Scout
 writes with a cluster-privileged client).
 
-A source object (`Ingress`/`Service`/`HTTPRoute`/`TLSRoute`/`TCPRoute`) may publish into a
+A source object (`Ingress`/`Service`/`HTTPRoute`/`GRPCRoute`/`TLSRoute`/`TCPRoute`) may publish into a
 zone when **either**:
 
 - the matching `DNSZone` lives in the **same namespace** as the source object, **or**
@@ -267,7 +267,7 @@ Scout supports three categories of Kubernetes resources as DNS record sources.
 ### 1. Ingresses (Legacy)
 
 !!! note "Kubernetes Ingress is deprecated"
-    The `networking.k8s.io/v1` Ingress API is considered legacy in modern Kubernetes clusters. New deployments should prefer [Gateway API](#3-gateway-api-httproute-tlsroute-and-tcproute) (HTTPRoute / TLSRoute / TCPRoute) where available. Scout continues to support Ingress for backward compatibility.
+    The `networking.k8s.io/v1` Ingress API is considered legacy in modern Kubernetes clusters. New deployments should prefer [Gateway API](#3-gateway-api-httproute-grpcroute-tlsroute-and-tcproute) (HTTPRoute / TLSRoute / TCPRoute) where available. Scout continues to support Ingress for backward compatibility.
 
 Scout processes **each rule in the Ingress spec independently**. For a multi-host Ingress:
 
@@ -798,8 +798,8 @@ Scout treats HTTPRoute, GRPCRoute, TLSRoute, and TCPRoute similarly to Ingress:
 - Watches all HTTPRoute/GRPCRoute/TLSRoute/TCPRoute resources cluster-wide (excluding its own namespace), for each kind whose CRD is installed — kinds that are not served are detected at startup and skipped, see [Gateway API detection](../installation/scout.md#gateway-api)
 - Requires the same `bindy.firestoned.io/scout-enabled: "true"` opt-in annotation
 - Uses the same annotation scheme for zone, IP, and TTL configuration
-- `HTTPRoute` / `GRPCRoute` / `TLSRoute`: creates one `ARecord` per hostname in `spec.hostnames[]` with an index suffix
-- `TCPRoute`: has no `spec.hostnames[]` field — creates one `ARecord` using the `bindy.firestoned.io/record-name` annotation (required)
+- `HTTPRoute` / `GRPCRoute` / `TLSRoute`: publishes each hostname in `spec.hostnames[]`, adding the route's addresses to that name's `ARecord` (one record per DNS name, shared with any other resource that publishes it; see [Several resources publishing one name](#several-resources-publishing-one-name))
+- `TCPRoute`: has no `spec.hostnames[]` field, so it publishes the one name given by the `bindy.firestoned.io/record-name` annotation (required)
 
 ### Why Use Gateway API Routes?
 
@@ -938,7 +938,7 @@ spec:
 
 ### RBAC for Gateway API Routes
 
-Scout requires read access (`get`, `list`, `watch`) to `HTTPRoute`, `TLSRoute`, `TCPRoute`, and `Gateway` resources. `Gateway` read access lets Scout follow a route's `parentRefs` to the serving gateway and discover its external IP. Add this rule to the Scout `ClusterRole`:
+Scout requires read access (`get`, `list`, `watch`) to `HTTPRoute`, `GRPCRoute`, `TLSRoute`, `TCPRoute`, and `Gateway` resources. `Gateway` read access lets Scout follow a route's `parentRefs` to the serving gateway and discover its external IP. Add this rule to the Scout `ClusterRole`:
 
 ```yaml
 ---
@@ -949,7 +949,7 @@ metadata:
 rules:
   # ... existing Ingress and Service rules ...
 
-  # Watch HTTPRoutes/TLSRoutes/TCPRoutes (Gateway API).
+  # Watch HTTPRoutes/GRPCRoutes/TLSRoutes/TCPRoutes (Gateway API).
   # patch+update are required to add and remove the Scout finalizer on route
   # metadata — without them Scout cannot guarantee ARecord cleanup on deletion.
   - apiGroups: ["gateway.networking.k8s.io"]
@@ -969,7 +969,7 @@ When gateway-chain IP resolution reads the LoadBalancer `Service` behind a Gatew
 
 **Note:** `Gateway` objects are read-only for Scout — it only reads their `status.addresses` to discover external IPs, and never mutates them.
 
-**Routes are not read-only.** Scout adds and removes its own finalizer on the `HTTPRoute` / `TLSRoute` / `TCPRoute` objects it manages (`add_finalizer_to_httproute` and friends in `crates/bindy-scout/src/scout.rs`), which is why the ClusterRole above grants `patch` and `update` on route kinds. The finalizer is what lets Scout delete the corresponding ARecords before the route disappears; on a Phase-2 remote that is unreachable, it is released anyway after a 300s grace period so route deletion is never blocked. Scout does not modify any other field of a route.
+**Routes are not read-only.** Scout adds and removes its own finalizer on the `HTTPRoute` / `GRPCRoute` / `TLSRoute` / `TCPRoute` objects it manages (`add_finalizer_to_httproute` and friends in `crates/bindy-scout/src/scout.rs`), which is why the ClusterRole above grants `patch` and `update` on route kinds. The finalizer is what lets Scout delete the corresponding ARecords before the route disappears; on a Phase-2 remote that is unreachable, it is released anyway after a 300s grace period so route deletion is never blocked. Scout does not modify any other field of a route.
 
 ---
 

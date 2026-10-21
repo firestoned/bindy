@@ -1,6 +1,6 @@
 # Threat Model - Bindy DNS Operator
 
-**Version:** 1.29
+**Version:** 1.30
 **Last Updated:** 2026-10-20
 **Owner:** Security Team
 **Compliance:** SOX 404, PCI-DSS 6.4.1, Basel III Cyber Risk
@@ -10,7 +10,29 @@
 > ADR-0014, ADR-0015, ADR-0016, ADR-0017 as amended and corrected 2026-10-07
 > and by ADR-0019, ADR-0018 as amended 2026-10-07, ADR-0019, ADR-0020,
 > ADR-0021, ADR-0022, ADR-0023, ADR-0024 as amended, ADR-0025 decisions 1
-> to 6 and ADR-0026 decisions 1 to 6 implemented).
+> to 6 and ADR-0026 decisions 1 to 6 implemented; GRPCRoute as a sixth Scout
+> source kind, #560).
+>
+> **Revision note (v1.30):** Pass for GRPCRoute support in Scout (#560, no
+> ADR: a new `ScoutSource` under ADR-0022 Decision 1). GRPCRoute goes through
+> the same pipeline as the other route kinds, so every control that applies
+> to them applies to it: opt-in annotation, namespace selector (M-30), zone
+> authorization (H1), `--allowed-zones` / `--allowed-ip-ranges` (M-69),
+> admission binding on the bindy cluster (M-70), one record per DNS name
+> (M-73), and gateway-chain IP discovery with the same `--gateway-service`
+> allow-list. The one posture change is RBAC: Scout's ClusterRole gains
+> `get`/`list`/`watch`/`patch`/`update` on `grpcroutes` and `update` on
+> `grpcroutes/finalizers` cluster-wide, so T4 (cross-tenant tampering through
+> Scout's route write access) now covers one more route kind with the same
+> verbs; no new verb or resource class. The drift test (M-42) covers the new
+> rule in `bootstrap.rs`, `deploy/scout/clusterrole.yaml` and the guide.
+> Sections changed: components (5), Boundary 6, attack surface 7 (kind
+> lists). Reviewed with no change: every other section; T4 and medium
+> residual risk 5 stand as written, since they are stated for route kinds in
+> general. Also recorded: M-70 and M-72 verified end to end with two edge
+> clusters (roadmap 31 phase 5), and Scout's reconcile-error log now carries
+> the cause of a failed write, so an admission denial is visible on the edge
+> cluster.
 >
 > **Revision note (v1.29):** Full pass for ADR-0026 (Scout publishes one
 > record per DNS name, issue #556). Scout no longer writes one `ARecord` per
@@ -721,7 +743,7 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
 
 5. **Bindy Scout** *(added 2026-03-20; see [Trust Boundary 6](#boundary-6-scout-controller))*
    - Separate Deployment/`ServiceAccount` from the main operator (same binary, `bindy scout`), its own `ClusterRole` (`bindy-scout`)
-   - Watches `Ingress`, `Service` (LoadBalancer), and Gateway API `HTTPRoute`/`TLSRoute`/`TCPRoute`
+   - Watches `Ingress`, `Service` (LoadBalancer), and Gateway API `HTTPRoute`/`GRPCRoute`/`TLSRoute`/`TCPRoute`
      resources **cluster-wide, across all namespaces**, for an opt-in annotation
    - On opt-in, writes one `ARecord` per DNS name, shared by every source of
      the cluster that publishes that name, each source adding and removing only
@@ -925,7 +947,7 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
 
 **Trust Level:** Medium (cluster-wide blast radius, narrower purpose than the main operator)
 **Description:** Separate binary/`ServiceAccount`/`ClusterRole` (`bindy-scout`) that
-watches source objects (`Ingress`, `Service`, `HTTPRoute`, `TLSRoute`, `TCPRoute`)
+watches source objects (`Ingress`, `Service`, `HTTPRoute`, `GRPCRoute`, `TLSRoute`, `TCPRoute`)
 **across every namespace** and writes `ARecord` CRs in response to an opt-in
 annotation, one per DNS name, shared by every source of the cluster that
 publishes it (ADR-0026). In Phase 2 (multi-cluster) mode it also reads a kubeconfig `Secret` to
@@ -2232,7 +2254,7 @@ and risk profile below are unchanged.
 namespace, not just `bindy-system`
 **Authentication:** ServiceAccount token (JWT), same mechanism as the main operator
 **Authorization:** `ClusterRole` `bindy-scout`: `get`/`list`/`watch`/`patch`/`update`
-on `Ingress`/`Service`/`HTTPRoute`/`TLSRoute`/`TCPRoute` cluster-wide. **No Secret
+on `Ingress`/`Service`/`HTTPRoute`/`GRPCRoute`/`TLSRoute`/`TCPRoute` cluster-wide. **No Secret
 access at all** on the ClusterRole; see below.
 
 **Attack Vectors:**
@@ -2530,7 +2552,7 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-67 | **Secret audit trail** (2026-10-14, ADR-0024 as amended): every Secret create, replace, patch, delete or read of key material bindy performs (instance controller, cluster controller, the `bindy-bind9` key loader and TLS client, Scout, bootstrap) emits one event on the tracing target `bindy::audit` with `kind=audit`, operation, outcome, namespace, name, purpose, reason, actor and owning object, from closed enums; never key material, a token, or an API error message (a failure is its status code and reason only). Every Secret access goes through `SecretApi`, whose data methods record and whose metadata method does not; a test fails the build when other non-test code names `Api<Secret>` (a text scan: an `Api` whose type is only inferred escapes it, so review still checks new calls). `bindy::audit=info` is added to any `RUST_LOG` that does not name it, and each event increments `bindy_firestoned_io_secret_operations_total{operation,purpose,outcome}` | R1, R2 (Secret access attributable with its reason, joined to the API server audit log), Scenario 4 | ✅ `crates/bindy-controller-sdk/src/audit.rs` (`SecretApi`, `SecretAudit`, `audited`, `kube_error_summary`, `audit_log_filter`), `crates/bindy-controller-sdk/src/metrics.rs` (`SECRET_OPERATIONS_TOTAL`), `crates/bindy/src/main.rs` (`initialize_logging`); tests `audit_tests.rs` (incl. `no_code_outside_the_audit_module_builds_a_secret_api`), `tests/e2e/rndc_secretref_test.sh` |
 | M-68 | **Least-data Secret access** (2026-10-14, ADR-0024 decision 3 as amended): the instance controller's Secret watch is a metadata watch (`Api<PartialObjectMeta<Secret>>`), so the operator no longer receives the data of every Secret in its namespaces; the drift check, rotation status and the cluster controller's existence check read metadata only; the ADR-0023 mirror records its source's `resourceVersion` (`bindy.firestoned.io/rndc-source-version`), so staleness is a metadata comparison and a source's key is read only when it changed | I1 (key material in operator memory, heap dumps and logs), R2 (every recorded `read` is a real key access) | ✅ `crates/bindy-controller-instance/src/watch.rs` (Secret metadata watch, `instances_for_secret`), `crates/bindy-controller-instance/src/bind9instance/resources.rs` (`secret_ref_mirror_stale`, `mirror_secret_ref_key`), `crates/bindy-controller-instance/src/bind9instance/mod.rs` (drift check), `crates/bindy-controller-cluster/src/bind9cluster/instances.rs`; tests `resources_tests.rs`, `watch_tests.rs::secret_wake_tests` |
 | M-69 | **Scout zone and address allowlists** (2026-10-19, ADR-0025 decisions 1 and 2): `--allowed-zones` / `BINDY_SCOUT_ALLOWED_ZONES` (a zone and its subzones; `*` and non-DNS entries fail startup; `--default-zone` must be allowed) refuses a source's zone before the DNSZone lookup and publishes nothing, keeping earlier records; `--allowed-ip-ranges` / `BINDY_SCOUT_ALLOWED_IP_RANGES` (IPv4 CIDRs; default IPs must be inside) refuses a source with any annotated, discovered or default address outside and retries; unset keeps the old behavior with a startup warning; `bindy bootstrap scout` templates both | T5 (tenant names another cluster's zone or an outside address) | ✅ `crates/bindy-scout/src/guardrails.rs` (`parse_allowed_zones`, `zone_is_allowed`, `parse_allowed_ip_ranges`, `first_ip_outside`), `crates/bindy-scout/src/pipeline.rs` (`publish`), `crates/bindy-scout/src/scout.rs` (`ScoutConfig::from_lookup`), `crates/bindy-bootstrap/src/bootstrap.rs` (`build_scout_deployment`); tests `guardrails_tests.rs` (19), `pipeline_tests.rs`, `scout_tests.rs`, `bootstrap_tests.rs` |
-| M-70 | **Registered Scout accounts bound to their clusters and zones at admission** (2026-10-19, ADR-0025 decisions 3 and 4): `bindy bootstrap mc --cluster-name --allowed-zones` writes `<sa>.clusters` and `<sa>.zones` into the `bindy-scout-sources` ConfigMap of the records namespace under a per-account field manager (`--revoke` removes them); the `bindy-scout-source-binding` ValidatingAdmissionPolicy (paramRef without namespace, `parameterNotFoundAction: Allow`) denies a registered ServiceAccount's ARecord CREATE, UPDATE or DELETE unless the new object carries `managed-by: scout`, a registered cluster and an allowed zone, and the old object a registered cluster and an allowed zone; unregistered principals are not matched. Verified on kind 1.36: type checking clean, refused writes answer 422 with the policy message, server-side apply denied the same way | S4, T5 (stolen or compromised Scout token) | ✅ `deploy/admission-policies/21-bindy-scout-source-binding-policy.yaml`, `22-bindy-scout-source-binding-binding.yaml`, fixtures `tests/accept-arecord-scout-registered.yaml`, `tests/reject-arecord-scout-{foreign-zone,foreign-cluster,suffix-zone,unmanaged}.yaml`, `tests/setup/scout-source-binding.yaml`; `crates/bindy-bootstrap/src/bootstrap.rs` (`build_scout_source_registry`, `scout_source_field_manager`, `unregister_scout_source`) |
+| M-70 | **Registered Scout accounts bound to their clusters and zones at admission** (2026-10-19, ADR-0025 decisions 3 and 4): `bindy bootstrap mc --cluster-name --allowed-zones` writes `<sa>.clusters` and `<sa>.zones` into the `bindy-scout-sources` ConfigMap of the records namespace under a per-account field manager (`--revoke` removes them); the `bindy-scout-source-binding` ValidatingAdmissionPolicy (paramRef without namespace, `parameterNotFoundAction: Allow`) denies a registered ServiceAccount's ARecord CREATE, UPDATE or DELETE unless the new object carries `managed-by: scout`, a registered cluster and an allowed zone, and the old object a registered cluster and an allowed zone; unregistered principals are not matched. Verified end to end on 2026-10-20 with two edge clusters and a stolen token against one bindy cluster (`tests/e2e/scout_guardrails_test.sh`: cross-zone create, cross-cluster stamp, unlabelled create, rewrite, relabel and delete of another cluster's record all refused; own-zone writes allowed). Verified on kind 1.36: type checking clean, refused writes answer 422 with the policy message, server-side apply denied the same way | S4, T5 (stolen or compromised Scout token) | ✅ `deploy/admission-policies/21-bindy-scout-source-binding-policy.yaml`, `22-bindy-scout-source-binding-binding.yaml`, fixtures `tests/accept-arecord-scout-registered.yaml`, `tests/reject-arecord-scout-{foreign-zone,foreign-cluster,suffix-zone,unmanaged}.yaml`, `tests/setup/scout-source-binding.yaml`; `crates/bindy-bootstrap/src/bootstrap.rs` (`build_scout_source_registry`, `scout_source_field_manager`, `unregister_scout_source`) |
 | M-71 | **A DNSZone takes a Scout record only for its own zone** (2026-10-19, ADR-0025 decision 5): a record labelled `bindy.firestoned.io/managed-by: scout` that a `recordsFrom` selector matches is selected only when its `bindy.firestoned.io/zone` label equals the zone's `spec.zoneName` (case and trailing dot ignored); otherwise skipped with a warning | T5 (a selector that omits the zone label takes other clusters' records) | ✅ `crates/bindy-controller-zone/src/dnszone/discovery.rs` (`scout_record_belongs_to_zone`, `discover_records_generic`); tests `discovery_tests.rs` (5) |
 | M-72 | **Scout treats a refused delete of another cluster's record as final** (2026-10-19, ADR-0025 decision 6): on handover and on source removal, a 403 or 422 for a record left under another cluster name is logged and skipped, so a source's finalizer is not held and nothing is retried; the source's own records still fail the reconcile on any error | Availability under M-70 (a refused cleanup holding a tenant's Ingress in `Terminating`) | ✅ `crates/bindy-scout/src/pipeline.rs` (`delete_other_cluster_arecord`), `crates/bindy-controller-sdk/src/kube_errors.rs` (`is_refused`); tests `pipeline_tests.rs` (refused-delete cases), `kube_errors_tests.rs` |
 | M-73 | **One Scout record per DNS name, written atomically** (2026-10-20, ADR-0026): every source of one cluster that resolves to the same zone and DNS name contributes to one `ARecord`, named `scout-{cluster}-{dns-name}-{zone}-{hash}` with the hash over the NUL-joined (cluster, zone, name); the record's `bindy.firestoned.io/scout-contributors` annotation maps each source (`kind/namespace/name`) to the addresses and TTL it resolved, and a `contributor.scout.bindy.firestoned.io/<hash>` label per source finds its records; `spec.ipv4Addresses` is always the union (sorted, each once) and `spec.ttl` the lowest; each write reads the record, changes only its own entry, rebuilds the spec from the whole map and replaces with the read `resourceVersion` as precondition (a lost race is rebuilt, at most 5 attempts, then the reconcile fails and retries); a source leaving a name removes only its entry and the record is deleted, with a `resourceVersion` precondition, with its last; an unchanged record is not written; a malformed map stops Scout writing that record rather than dropping the other sources; withdrawals from another cluster name's record that the API server refuses are skipped like M-72; per-source records from before ADR-0026 are deleted only once the per-name record is served (as M-63) | Issue #556 (sources sharing a name overwrote each other's addresses, and the name flapped); T6 (changes a takeover into an attributed addition); R1 (each address attributed to a source) | ✅ `crates/bindy-scout/src/contributors.rs` (`plan_contribute`, `plan_withdraw`, `contribute`, `withdraw`, `render`), `crates/bindy-scout/src/pipeline.rs` (`publish`, `withdraw_from_own_records`, `withdraw_from_other_cluster_record`), `crates/bindy-scout/src/scout.rs` (`dns_name_record_cr_name`); tests `contributors_tests.rs`, `pipeline_tests.rs`, `tests/e2e/scout_test.sh` |

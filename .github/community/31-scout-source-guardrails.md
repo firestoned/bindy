@@ -8,7 +8,7 @@
 > with a reason. Decided in
 > [ADR-0025](../../docs/adr/0025-scout-records-bound-to-cluster-and-zones.md).
 
-**Status:** 🔶 In progress (phases 1 to 4 implemented; phase 5 open).
+**Status:** ✅ Done (2026-10-20): every phase implemented and verified live with two edge clusters.
 **Created:** 2026-10-19
 **Owner:** Erick Bourgeois
 
@@ -31,7 +31,7 @@ last writer wins.
 | 2 | Registry ConfigMap `bindy-scout-sources` (`<sa>.clusters`, `<sa>.zones`), written by `bindy bootstrap mc --cluster-name --allowed-zones` under a per-account field manager, removed by `--revoke` | ✅ `bootstrap.rs` (`build_scout_source_registry`, `scout_source_field_manager`, `unregister_scout_source`) |
 | 3 | Admission policy `bindy-scout-source-binding` (`deploy/admission-policies/21-*`, `22-*`): registered accounts' ARecord create, update and delete bound to their clusters and zones, old and new object; fixtures in `tests/` with real objects in `tests/setup/` | ✅ Verified on kind (Kubernetes 1.36) 2026-10-19: type checking clean, every fixture as expected, a refused delete answers HTTP 422, server-side apply denied the same way, unregistered accounts and a missing registry unaffected |
 | 4 | DNSZone takes a Scout record only for the zone in its label; Scout skips a refused delete of another cluster's record (403 or 422) instead of retrying | ✅ `crates/bindy-controller-zone/src/dnszone/discovery.rs` (`scout_record_belongs_to_zone`), `crates/bindy-scout/src/pipeline.rs` (`delete_other_cluster_arecord`), `crates/bindy-controller-sdk/src/kube_errors.rs` (`is_refused`) |
-| 5 | Live verification: two scouts on separate edge clusters against one bindy cluster, one registered for `foo`, one for `bar`, through `tests/e2e/scout_test.sh` (needs a Scout image built from this branch) | ⛔ Not started |
+| 5 | Live verification: two scouts on separate edge clusters against one bindy cluster, one registered for `foo`, one for `bar` | ✅ `tests/e2e/scout_guardrails_test.sh` (`make e2e-scout-guardrails`; a dedicated three-cluster suite rather than `scout_test.sh`, which is single-cluster), passed on slate 2026-10-20: each cluster publishes only into its own zone (#474 holds across clusters); a tenant on `foo` with no Scout-side allowlist is refused at admission for `bar.test` and `bar.test` is untouched; `bar`'s allowlists refuse another zone and an outside address before any write; `foo`'s stolen token cannot create, rewrite, relabel or delete `bar`'s records or stamp `bar`'s cluster name (it can still write its own zone); a `managed-by: scout` selector does not take `foo`'s records into `bar.test`; a refused withdrawal from a record under an unregistered cluster name is skipped and does not hold the source's finalizer. The run also found Scout's reconcile-error log dropping the cause of a failed write (the admission denial), fixed in `ScoutError` |
 
 ## Follow-ups
 

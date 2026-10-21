@@ -56,8 +56,13 @@ use tracing::{info, warn};
 
 /// Reconcile error type: wraps `anyhow::Error` so that it satisfies the
 /// `std::error::Error` bound required by `kube::runtime::Controller::run`.
+///
+/// It displays the whole cause chain (`outer: inner: ...`, anyhow's alternate
+/// format), not only the outermost context: the reconcile-error log line is
+/// where an operator sees why a write failed, and the reason (an admission
+/// policy's denial, a conflict, a timeout) is the innermost cause.
 #[derive(Debug, thiserror::Error)]
-#[error(transparent)]
+#[error("{0:#}")]
 pub(crate) struct ScoutError(#[from] anyhow::Error);
 
 // ============================================================================
@@ -191,7 +196,7 @@ pub(crate) struct GRPCRoute {
     pub spec: Option<GRPCRouteSpec>,
 }
 
-// Implement k8s_openapi::Metadata for HTTPRoute.  and TLSRoute
+// Implement k8s_openapi::Metadata for HTTPRoute, GRPCRoute and TLSRoute
 impl k8s_openapi::Metadata for HTTPRoute {
     type Ty = kube::api::ObjectMeta;
     fn metadata(&self) -> &kube::api::ObjectMeta {
@@ -2314,12 +2319,12 @@ pub async fn run_scout(cli: ScoutCli) -> Result<()> {
     let tcproute_api: Api<TCPRoute> = Api::all(local_client.clone());
 
     // Probe EACH route kind, not one as a proxy for the others. Gateway API
-    // ships in two channels and the kinds graduated at different times —
-    // HTTPRoute Standard since v1.0, TLSRoute Standard since v1.5, TLSRoute
-    // since v1.5, TCPRoute since v1.6 — so a standard-channel install older
-    // than those serves HTTPRoute and not the rest. Inferring from one kind
-    // would leave the other two controllers retrying a 404 forever, which is
-    // exactly what this check prevents.
+    // ships in two channels and the kinds graduated at different times:
+    // HTTPRoute Standard since v1.0, GRPCRoute since v1.1, TLSRoute since
+    // v1.5, TCPRoute since v1.6. A standard-channel install older than those
+    // serves HTTPRoute and not the rest. Inferring from one kind would leave
+    // the other controllers retrying a 404 forever, which is exactly what
+    // this check prevents.
     //
     // Ingress and Service are core API and always served, so they are not
     // probed: a check that can never fail is noise.
@@ -2354,7 +2359,7 @@ pub async fn run_scout(cli: ScoutCli) -> Result<()> {
         disabled.push("TLSRoute");
     }
     if !grpcroute_enabled {
-        disabled.push("GRPCRoutes");
+        disabled.push("GRPCRoute");
     }
     if !tcproute_enabled {
         disabled.push("TCPRoute");

@@ -51,8 +51,8 @@ classDef highlight fill:#fdf7ec,stroke:#f0c060,stroke-width:1px,color:#000000;
         class queen-cluster boundary
 
 
-    scout-a -->|watches Ingress / Service / HTTPRoute / TLSRoute| ingress-a
-    scout-b -->|watches Ingress / Service / HTTPRoute / TLSRoute| ingress-b
+    scout-a -->|watches Ingress / Service / HTTPRoute / GRPCRoute / TLSRoute / TCPRoute| ingress-a
+    scout-b -->|watches Ingress / Service / HTTPRoute / GRPCRoute / TLSRoute / TCPRoute| ingress-b
     scout-a -->|writes one ARecord per DNS name as a complete, conditional replace #40;read, update its own contributor entry, write with the read resourceVersion as precondition, retry on 409; ADR-0026#41; via remote kubeconfig Secret or endpoint + token-file override, as its own ServiceAccount minted by the queen cluster #40;ADR-0008#41; and registered for its cluster names and zones #40;ADR-0025#41;| queen-api
     scout-b -->|writes one ARecord per DNS name as a complete, conditional replace #40;read, update its own contributor entry, write with the read resourceVersion as precondition, retry on 409; ADR-0026#41; via remote kubeconfig Secret or endpoint + token-file override, as its own ServiceAccount minted by the queen cluster #40;ADR-0008#41; and registered for its cluster names and zones #40;ADR-0025#41;| queen-api
     queen-api -->|persists fanned-in ARecords| arecords

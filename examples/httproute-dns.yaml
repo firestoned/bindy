@@ -8,7 +8,7 @@
 #
 # Prerequisites:
 #   1. Bindy operator running with a Bind9Cluster + Bind9Instance
-#   2. A DNSZone for "api.example.com" applied (see examples/dns-zone.yaml)
+#   2. A DNSZone for "example.com" applied (see examples/dns-zone.yaml)
 #   3. Bindy Scout deployed with Gateway API permissions (see deploy/scout/clusterrole.yaml)
 #   4. Gateway API CRDs installed on the cluster (if not available, install gateway-api chart)
 #
