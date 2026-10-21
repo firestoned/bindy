@@ -26,6 +26,8 @@
 #     tests/e2e/scout_multi_cluster_test.sh --image ghcr.io/firestoned/bindy:<build>
 # Both images must already be loadable (podman/docker) on this host.
 
+# Settings below are read by tests/lib/scout_clusters.sh.
+# shellcheck disable=SC2034
 set -uo pipefail
 
 QUEEN_CLUSTER="${QUEEN_CLUSTER:-bindy-e2e-queen}"
@@ -38,13 +40,13 @@ KEDGE="kubectl --context kind-${EDGE_CLUSTER}"
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/cluster.sh"
 source "${LIB_DIR}/chaos.sh"
+source "${LIB_DIR}/scout_clusters.sh"
 
 parse_common_args "$@"
 
 BASE_IMAGE_REF="${BASE_IMAGE_REF:?set BASE_IMAGE_REF to the image Scout is upgraded from}"
 [ -n "${IMAGE_REF}" ] || { echo "--image is required" >&2; exit 2; }
 BINDY_BIN="${BINDY_BIN:-${PROJECT_ROOT}/target/x86_64-unknown-linux-gnu/debug/bindy}"
-NODE_RUNTIME="${KIND_EXPERIMENTAL_PROVIDER:-docker}"
 
 ZONE="scout.test"
 ZONE_CR="scout-test"
@@ -54,7 +56,6 @@ TEAM_A="team-a"
 TEAM_B="team-b"
 SCOUT_CONVERGE_TIMEOUT="${SCOUT_CONVERGE_TIMEOUT:-240}"
 SCOUT_QUIET_WINDOW="${SCOUT_QUIET_WINDOW:-60}"
-PROBE_INTERVAL_SECS=1
 RACE_COUNT=10
 RACE_KEEP=5
 CHURN_FLIPS=10
@@ -73,318 +74,28 @@ STATE="${CHAOS_STATE_DIR}"
 QUEEN_KUBECONFIG="${STATE}/queen.kubeconfig"
 EDGE_KUBECONFIG="${STATE}/edge.kubeconfig"
 VIOLATIONS_FILE="${STATE}/violations"
+SUITE_TITLE="E2E: Scout one record per DNS name, two clusters (ADR-0026)"
 : > "${VIOLATIONS_FILE}"
 
 info "🧪 E2E: Scout one record per DNS name on two clusters (bindy '${QUEEN_CLUSTER}', edge '${EDGE_CLUSTER}')"
 info "   base Scout ${BASE_IMAGE_REF}, new ${IMAGE_REF}, state ${STATE}"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────────────────────────────────────
-
-tag_of() { echo "${1##*:}"; }
-
-# Setup steps must not fail quietly: a missing policy or account would turn
-# every later assertion into a test of something else.
-must() {
-    "$@" && return 0
-    fail "setup step failed: $*"
-    finish "E2E: Scout one record per DNS name, two clusters (ADR-0026)"
-    exit 1
-}
-
-# Every live primary and secondary pod IP of the zone's cluster.
-server_ips() { { live_ips_of_role primary; live_ips_of_role secondary; } | sort -u; }
-
-# "a;b;c;" for a list of addresses, sorted the way dig_all sorts answers.
-answer_set() {
-    [ $# -eq 0 ] && { echo ""; return; }
-    printf '%s\n' "$@" | sort | tr '\n' ';'
-}
-
-# Waits until every server answers exactly the addresses given for the A
-# query of $1 (a relative name, "@" for the apex). No addresses: an empty
-# answer is expected.
-#
-# $1 = name, rest = addresses
-expect_a() {
-    local name=$1; shift
-    local fqdn want deadline got ip bad
-    fqdn=$([ "${name}" = "@" ] && echo "${ZONE}" || echo "${name}.${ZONE}")
-    want=$(answer_set "$@")
-    deadline=$(( $(now) + SCOUT_CONVERGE_TIMEOUT ))
-    while [ "$(now)" -lt "${deadline}" ]; do
-        bad=""
-        got=$(for ip in $(server_ips); do echo "${ip} A ${fqdn}"; done | dig_all)
-        [ -n "${got}" ] || { sleep "${CHAOS_POLL}"; continue; }
-        while IFS='|' read -r ip _t _q ans; do
-            [ "${ans}" = "${want}" ] || bad="${bad} ${ip}=[${ans}]"
-        done <<< "${got}"
-        if [ -z "${bad}" ]; then
-            pass "${fqdn} A = [${want}] on $(server_ips | wc -l) servers"
-            return 0
-        fi
-        sleep "${CHAOS_POLL}"
-    done
-    fail "${fqdn} A: wanted [${want}] on every server, got:${bad}"
-    scout_records_table
-    return 1
-}
-
-# The Scout records on the bindy cluster: "spec.name addresses contributors".
-scout_records_table() {
-    ${KUBECTL} get arecords -n "${NAMESPACE}" -l bindy.firestoned.io/managed-by=scout -o json 2>/dev/null \
-        | jq -r '.items[] | "    \(.metadata.name) name=\(.spec.name) ips=\(.spec.ipv4Addresses|join(",")) ttl=\(.spec.ttl // "-") contributors=\(.metadata.annotations["bindy.firestoned.io/scout-contributors"] // "-") ready=\([.status.conditions[]?|select(.type=="Ready")|.status]|first // "-")"'
-}
-
-scout_records_json() {
-    ${KUBECTL} get arecords -n "${NAMESPACE}" -l bindy.firestoned.io/managed-by=scout -o json 2>/dev/null
-}
-
-# Number of Scout records publishing name $1.
-records_for_name() {
-    scout_records_json | jq --arg n "$1" '[.items[] | select(.spec.name == $n)] | length'
-}
-
-# Contributor keys of the record publishing name $1, sorted, space-separated.
-contributors_for_name() {
-    scout_records_json | jq -r --arg n "$1" \
-        '[.items[] | select(.spec.name == $n) | .metadata.annotations["bindy.firestoned.io/scout-contributors"] // "{}" | fromjson | keys[]] | sort | join(" ")'
-}
-
-per_source_record_count() {
-    ${KUBECTL} get arecords -n "${NAMESPACE}" \
-        -l bindy.firestoned.io/managed-by=scout,bindy.firestoned.io/source-kind -o name 2>/dev/null | wc -l
-}
-
-# Waits for a condition command to succeed.
-wait_for() {
-    local what=$1; shift
-    local deadline=$(( $(now) + SCOUT_CONVERGE_TIMEOUT ))
-    while [ "$(now)" -lt "${deadline}" ]; do
-        "$@" && { pass "${what}"; return 0; }
-        sleep "${CHAOS_POLL}"
-    done
-    fail "${what} (timed out after ${SCOUT_CONVERGE_TIMEOUT}s)"
-    return 1
-}
-
-no_per_source_records() { [ "$(per_source_record_count)" -eq 0 ]; }
-name_has_records() { [ "$(records_for_name "$1")" -eq "$2" ]; }
-name_has_contributors() { [ "$(contributors_for_name "$1")" = "$2" ]; }
-
-# A LoadBalancer Service on the edge cluster with its load-balancer status set
-# (kind has no LB controller, so nothing else writes it).
-#
-# $1 = namespace, $2 = name, $3 = record-name ("" for the Service name),
-# $4 = TTL ("" for none), rest = load-balancer IPs
-lb_service() {
-    local ns=$1 name=$2 record=$3 ttl=$4; shift 4
-    local ann ingress
-    ann="    bindy.firestoned.io/scout-enabled: \"true\"
-    bindy.firestoned.io/zone: \"${ZONE}\""
-    [ -n "${record}" ] && ann="${ann}
-    bindy.firestoned.io/record-name: \"${record}\""
-    [ -n "${ttl}" ] && ann="${ann}
-    bindy.firestoned.io/ttl: \"${ttl}\""
-    ${KEDGE} apply -f - >/dev/null <<YAML
-apiVersion: v1
-kind: Service
-metadata:
-  name: ${name}
-  namespace: ${ns}
-  annotations:
-${ann}
-spec:
-  type: LoadBalancer
-  selector: {app: ${name}}
-  ports: [{port: 443, targetPort: 8443, protocol: TCP}]
-YAML
-    ingress=$(printf '{"ip":"%s"},' "$@"); ingress="[${ingress%,}]"
-    ${KEDGE} patch service "${name}" -n "${ns}" --subresource=status --type=merge \
-        -p "{\"status\":{\"loadBalancer\":{\"ingress\":${ingress}}}}" >/dev/null
-}
-
-# Only rewrite a Service's load-balancer addresses.
-lb_status() {
-    local ns=$1 name=$2; shift 2
-    local ingress
-    ingress=$(printf '{"ip":"%s"},' "$@"); ingress="[${ingress%,}]"
-    ${KEDGE} patch service "${name}" -n "${ns}" --subresource=status --type=merge \
-        -p "{\"status\":{\"loadBalancer\":{\"ingress\":${ingress}}}}" >/dev/null
-}
-
-# An Ingress publishing host $3.<zone> at $4 (bindy.firestoned.io/ip), TTL $5.
-ingress_src() {
-    local ns=$1 name=$2 host=$3 ip=$4 ttl=${5:-}
-    local ttl_ann=""
-    [ -n "${ttl}" ] && ttl_ann="
-    bindy.firestoned.io/ttl: \"${ttl}\""
-    ${KEDGE} apply -f - >/dev/null <<YAML
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: ${name}
-  namespace: ${ns}
-  annotations:
-    bindy.firestoned.io/scout-enabled: "true"
-    bindy.firestoned.io/zone: "${ZONE}"
-    bindy.firestoned.io/ip: "${ip}"${ttl_ann}
-spec:
-  rules:
-    - host: ${host}.${ZONE}
-YAML
-}
-
-# TTL a primary serves for name $1.
-served_ttl() {
-    local ip
-    ip=$(live_ips_of_role primary | head -1)
-    kexec "${CHAOS_TOOLS_POD}" -- dig +noall +answer @"${ip}" -p "${CHAOS_DNS_PORT}" A "$1.${ZONE}" \
-        | awk '{print $2}' | sort -u | head -1
-}
-
-scout_logs() {
-    ${KEDGE} logs -n "${NAMESPACE}" deployment/bindy-scout --tail=-1 2>/dev/null || true
-}
-
-scout_restarts() {
-    ${KEDGE} get pods -n "${NAMESPACE}" -l app.kubernetes.io/component=scout -o json 2>/dev/null \
-        | jq '[.items[].status.containerStatuses[]?.restartCount] | add // 0'
-}
-
-# "name resourceVersion" of every Scout record, to prove Scout stopped writing.
-scout_record_versions() {
-    scout_records_json | jq -r '.items[] | "\(.metadata.name) \(.metadata.resourceVersion)"' | sort
-}
-
-# Background DNS prober: every PROBE_INTERVAL_SECS, the A answer of each name
-# on every server, one line "<epoch> <server> <name> <answer>".
-PROBE_LOG="${STATE}/probe.log"
-PROBE_PID=""
-start_prober() {
-    local names=("$@") servers
-    servers=$(server_ips | tr '\n' ' ')
-    : > "${PROBE_LOG}"
-    (
-        while :; do
-            t=$(now)
-            for n in "${names[@]}"; do
-                fqdn=$([ "${n}" = "@" ] && echo "${ZONE}" || echo "${n}.${ZONE}")
-                for s in ${servers}; do echo "${s} A ${fqdn}"; done
-            done | dig_all | sed "s/^/${t} /" >> "${PROBE_LOG}"
-            sleep "${PROBE_INTERVAL_SECS}"
-        done
-    ) &
-    PROBE_PID=$!
-}
-stop_prober() {
-    [ -n "${PROBE_PID}" ] && kill "${PROBE_PID}" 2>/dev/null
-    wait "${PROBE_PID}" 2>/dev/null || true
-    PROBE_PID=""
-}
-
-# Probe samples of name $1 with an empty answer.
-empty_samples() {
-    local fqdn
-    fqdn=$([ "$1" = "@" ] && echo "${ZONE}" || echo "$1.${ZONE}")
-    awk -F'|' -v q="${fqdn}" '$3 == q && $4 == "" {n++} END {print n+0}' "${PROBE_LOG}"
-}
-total_samples() {
-    local fqdn
-    fqdn=$([ "$1" = "@" ] && echo "${ZONE}" || echo "$1.${ZONE}")
-    awk -F'|' -v q="${fqdn}" '$3 == q {n++} END {print n+0}' "${PROBE_LOG}"
-}
-
-bootstrap_scout() {
-    must env KUBECONFIG="${EDGE_KUBECONFIG}" "${BINDY_BIN}" bootstrap scout \
-        --version "$(tag_of "$1")" \
-        --cluster-name "${EDGE_NAME}" \
-        --remote-secret "${SCOUT_ACCOUNT}-kubeconfig" \
-        --allowed-zones "${ZONE}" \
-        --allowed-ip-ranges 10.0.0.0/8
-    must ${KEDGE} rollout status deployment/bindy-scout -n "${NAMESPACE}" --timeout=180s
-}
-
-record_phase() {
-    summary_row "$1" "$([ "${ERRORS}" -eq "$2" ] && echo '✅ passed' || echo '❌ failed')"
-}
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Setup
 # ─────────────────────────────────────────────────────────────────────────────
 
-phase "Setup: bindy cluster '${QUEEN_CLUSTER}'"
-bindy_ensure_cluster deploy/kind-config-chaos.yaml
-for img in "${IMAGE_REF}" "${BASE_IMAGE_REF}"; do
-    kind load docker-image "${img}" --name "${QUEEN_CLUSTER}" >/dev/null
-done
-bindy_deploy_operator
-kind get kubeconfig --name "${QUEEN_CLUSTER}" > "${QUEEN_KUBECONFIG}"
+SCOUT_IMAGES=("${IMAGE_REF}" "${BASE_IMAGE_REF}")
+SCOUT_ALLOWED_ZONES="${ZONE}"
+SCOUT_ALLOWED_RANGES="10.0.0.0/8"
 
-step "Installing the Scout source-binding admission policy (21, 22)"
-must ${KUBECTL} apply -f "${PROJECT_ROOT}/deploy/admission-policies/21-bindy-scout-source-binding-policy.yaml"
-must ${KUBECTL} apply -f "${PROJECT_ROOT}/deploy/admission-policies/22-bindy-scout-source-binding-binding.yaml"
+scout_setup_queen "${SCOUT_IMAGES[@]}"
+step "Zone ${ZONE}"
+scout_apply_zone "${ZONE_CR}" "${ZONE}" "${TEAM_A},${TEAM_B}"
+scout_queen_ready
 
-step "Bind9Cluster (primaries + secondary) and zone ${ZONE}"
-must apply_chaos_cluster
-must ${KUBECTL} apply -f - <<YAML
-apiVersion: bindy.firestoned.io/v1beta1
-kind: DNSZone
-metadata:
-  name: ${ZONE_CR}
-  namespace: ${NAMESPACE}
-  annotations:
-    bindy.firestoned.io/allow-zone-namespaces: "${TEAM_A},${TEAM_B}"
-spec:
-  zoneName: ${ZONE}
-  clusterRef: ${CHAOS_CLUSTER_CR}
-  bind9InstancesFrom:
-    - selector:
-        matchLabels:
-          bindy.firestoned.io/cluster: ${CHAOS_CLUSTER_CR}
-  recordsFrom:
-    - selector:
-        matchLabels:
-          bindy.firestoned.io/zone: ${ZONE}
-  nameServerIps:
-    ns1.${ZONE}.: 192.0.2.53
-  soaRecord:
-    primaryNs: ns1.${ZONE}.
-    adminEmail: admin.${ZONE}.
-    serial: 2024010101
-    refresh: 3600
-    retry: 600
-    expire: 604800
-    negativeTtl: 300
-  ttl: 300
-YAML
-wait_bind_pods_ready || fail "BIND9 pods never became ready"
-apply_tools_pods
-pass "bindy cluster ready: primaries [$(live_ips_of_role primary | tr '\n' ' ')] secondaries [$(live_ips_of_role secondary | tr '\n' ' ')]"
-
-phase "Setup: edge cluster '${EDGE_CLUSTER}' and registered Scout account"
-if ! kind get clusters 2>/dev/null | grep -qx "${EDGE_CLUSTER}"; then
-    kind create cluster --name "${EDGE_CLUSTER}" --config "${PROJECT_ROOT}/deploy/kind-scout-config.yaml"
-fi
-for img in "${IMAGE_REF}" "${BASE_IMAGE_REF}"; do
-    kind load docker-image "${img}" --name "${EDGE_CLUSTER}" >/dev/null
-done
-kind get kubeconfig --name "${EDGE_CLUSTER}" > "${EDGE_KUBECONFIG}"
-for ns in "${NAMESPACE}" "${TEAM_A}" "${TEAM_B}"; do
-    ${KEDGE} create namespace "${ns}" --dry-run=client -o yaml | ${KEDGE} apply -f - >/dev/null
-done
-
-QUEEN_IP=$(${NODE_RUNTIME} inspect -f '{{(index .NetworkSettings.Networks "kind").IPAddress}}' \
-    "${QUEEN_CLUSTER}-control-plane")
-step "Registering ${SCOUT_ACCOUNT} for cluster ${EDGE_NAME}, zone ${ZONE} (API https://${QUEEN_IP}:6443)"
-must env KUBECONFIG="${QUEEN_KUBECONFIG}" "${BINDY_BIN}" bootstrap mc \
-    --service-account "${SCOUT_ACCOUNT}" \
-    --server "https://${QUEEN_IP}:6443" \
-    --cluster-name "${EDGE_NAME}" --allowed-zones "${ZONE}" \
-    -o "${STATE}/mc-secret.yaml"
-must ${KEDGE} apply -n "${NAMESPACE}" -f "${STATE}/mc-secret.yaml"
-rm -f "${STATE}/mc-secret.yaml"
+scout_setup_edge "${EDGE_CLUSTER}" "${EDGE_KUBECONFIG}" "${TEAM_A}" "${TEAM_B}"
+phase "Setup: registered Scout account"
+scout_register "${SCOUT_ACCOUNT}" "${EDGE_NAME}" "${ZONE}"
 pass "registered: $(${KUBECTL} get configmap bindy-scout-sources -n "${NAMESPACE}" -o jsonpath='{.data}')"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -596,4 +307,4 @@ wait_for "no Scout record left on the bindy cluster" bash -c \
 for n in www multi shared race race2 flap; do expect_a "${n}"; done
 record_phase "Removing every source removes every record and name" "${P}"
 
-finish "E2E: Scout one record per DNS name, two clusters (ADR-0026)"
+finish "${SUITE_TITLE}"

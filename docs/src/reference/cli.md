@@ -319,7 +319,7 @@ bindy run
 
 ## `bindy scout`
 
-Starts the Scout controller. Watches `Ingress`, `LoadBalancer` `Service`, and Gateway API `HTTPRoute` / `TLSRoute` / `TCPRoute` resources cluster-wide and creates `ARecord` CRs for opted-in resources. See [Bindy Scout](../guide/scout.md) for the full conceptual guide.
+Starts the Scout controller. Watches `Ingress`, `LoadBalancer` `Service`, and Gateway API `HTTPRoute` / `GRPCRoute` / `TLSRoute` / `TCPRoute` resources cluster-wide and publishes one `ARecord` per DNS name for opted-in resources. See [Bindy Scout](../guide/scout.md) for the full conceptual guide.
 
 ```bash
 bindy scout [OPTIONS]

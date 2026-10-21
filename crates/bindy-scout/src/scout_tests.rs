@@ -2874,4 +2874,26 @@ mod tests {
         route.metadata.deletion_timestamp = Some(Time(Timestamp::now()));
         assert!(is_being_deleted(&route));
     }
+
+    // =========================================================================
+    // ScoutError: a logged reconcile error carries its whole cause chain
+    // =========================================================================
+
+    #[test]
+    fn scout_error_display_includes_every_cause() {
+        // A refused write: the API server's denial is the innermost cause,
+        // and it is what an operator needs to see in the log.
+        let denial = anyhow::anyhow!(
+            "ValidatingAdmissionPolicy 'bindy-scout-source-binding' denied the request"
+        );
+        let err = crate::scout::ScoutError::from(
+            denial.context("failed to write ARecord scout-foo-web-bar-test-0a1b2c3d"),
+        );
+        let shown = err.to_string();
+        assert!(
+            shown.contains("failed to write ARecord scout-foo-web-bar-test-0a1b2c3d"),
+            "{shown}"
+        );
+        assert!(shown.contains("bindy-scout-source-binding"), "{shown}");
+    }
 }

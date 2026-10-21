@@ -114,11 +114,20 @@ metadata:
 
 See [Binding each cluster to its names and zones](../docs/src/guide/scout.md#binding-each-cluster-to-its-names-and-zones).
 
+### Scout Sources (Gateway API)
+
+Each publishes every hostname as one `ARecord` per DNS name (ADR-0026). See the
+[Scout guide](../docs/src/guide/scout.md#gateway-api-routes-httproute-grpcroute-tlsroute-and-tcproute).
+
+- **[httproute-dns.yaml](httproute-dns.yaml)** - An `HTTPRoute` with two hostnames
+- **[grpcroute-dns.yaml](grpcroute-dns.yaml)** - A `GRPCRoute` (Gateway API v1.1+)
+- **[tlsroute-dns.yaml](tlsroute-dns.yaml)** - A `TLSRoute` with two hostnames
+- **[tcproute-dns.yaml](tcproute-dns.yaml)** - A `TCPRoute`, named by the `bindy.firestoned.io/record-name` annotation
+
 ### Basic Setup
 
 1. **[bind9-cluster.yaml](bind9-cluster.yaml)** - Basic Bind9Cluster configuration
 
-1.1. **[tcproute-dns.yaml](tcproute-dns.yaml)** - Scout example for Gateway API TCPRoute sources
    - Defines shared settings for BIND9 instances
    - Configures DNSSEC, query permissions, and zone transfers
 

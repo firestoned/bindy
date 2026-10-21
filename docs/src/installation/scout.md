@@ -57,7 +57,7 @@ This creates:
 
 ## Gateway API
 
-Scout watches `HTTPRoute`, `TLSRoute` and `TCPRoute` in addition to `Ingress`
+Scout watches `HTTPRoute`, `GRPCRoute`, `TLSRoute` and `TCPRoute` in addition to `Ingress`
 and `LoadBalancer` Services. Gateway API is not installed by default in
 Kubernetes, so Scout probes for **each route kind separately** at startup and
 only starts the controllers for kinds the cluster actually serves.
@@ -68,18 +68,19 @@ API ships in two channels, and graduation dates differ:
 | Kind | Standard channel since |
 |---|---|
 | `HTTPRoute` | v1.0 |
+| `GRPCRoute` | v1.1 |
 | `TLSRoute` | v1.5 |
 | `TCPRoute` | v1.6 |
 
-A standard-channel install older than v1.5 therefore serves `HTTPRoute` and not
-`TLSRoute` or `TCPRoute` — common, since ingress implementations pin the CRD
+A standard-channel install older than v1.5 therefore serves `HTTPRoute` (and,
+from v1.1, `GRPCRoute`) but not `TLSRoute` or `TCPRoute`. That is common, since ingress implementations pin the CRD
 version they ship. Probing one kind and inferring the rest would leave the
 other controllers retrying a 404 indefinitely.
 
 Startup logs the result:
 
 - **All kinds present** —
-  `Scout controller running — watching Ingresses, Services, HTTPRoutes, TLSRoutes, TCPRoutes`
+  `Scout controller running — watching Ingresses, Services, HTTPRoutes, TLSRoutes, GRPCRoutes, TCPRoutes`
 - **Some absent** — the same line listing only what is watched, followed by
   `Gateway API CRDs not found for TLSRoute/TCPRoute; watching disabled for those kinds`
 
@@ -333,7 +334,7 @@ Within seconds, Scout creates an `ARecord` in `bindy-system` for each DNS name, 
 # All Scout-managed records
 kubectl get arecords -n bindy-system -l bindy.firestoned.io/managed-by=scout
 
-# Records one resource contributes to: kind is Ingress, Service, HTTPRoute, TLSRoute or TCPRoute
+# Records one resource contributes to: kind is Ingress, Service, HTTPRoute, GRPCRoute, TLSRoute or TCPRoute
 kubectl get arecords -n bindy-system -l \
   "contributor.scout.bindy.firestoned.io/$(printf '%s\0%s\0%s' <kind> <namespace> <name> | sha256sum | cut -c1-16)"
 ```

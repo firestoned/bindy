@@ -934,6 +934,14 @@ e2e-scout-multi: ## E2E: Scout one record per DNS name on two kind clusters (ADR
 		tests/e2e/scout_multi_cluster_test.sh --image "$(E2E_IMAGE)"
 	@$(if $(KEEP_CLUSTER),echo "KEEP_CLUSTER set; leaving kind clusters up",kind delete cluster --name $(E2E_QUEEN_CLUSTER) >/dev/null 2>&1; kind delete cluster --name $(E2E_EDGE_CLUSTER) >/dev/null 2>&1 || true)
 
+E2E_EDGE_B_CLUSTER ?= bindy-e2e-edge-b
+
+e2e-scout-guardrails: ## E2E: two edge clusters bound to their cluster names and zones at admission (ADR-0025; needs E2E_IMAGE)
+	@chmod +x tests/e2e/scout_guardrails_test.sh
+	@QUEEN_CLUSTER=$(E2E_QUEEN_CLUSTER) FOO_CLUSTER=$(E2E_EDGE_CLUSTER) BAR_CLUSTER=$(E2E_EDGE_B_CLUSTER) \
+		tests/e2e/scout_guardrails_test.sh --image "$(E2E_IMAGE)"
+	@$(if $(KEEP_CLUSTER),echo "KEEP_CLUSTER set; leaving kind clusters up",for c in $(E2E_QUEEN_CLUSTER) $(E2E_EDGE_CLUSTER) $(E2E_EDGE_B_CLUSTER); do kind delete cluster --name $$c >/dev/null 2>&1 || true; done)
+
 e2e-rndc-secretref: ## E2E: an RNDC key from rndcKey.secretRef is mirrored, follows its source, and stays served (ADR-0023)
 	$(call run-e2e-suite,tests/e2e/rndc_secretref_test.sh,$(E2E_RNDC_SECRETREF_CLUSTER))
 
@@ -969,7 +977,7 @@ e2e-all: ## Run every e2e suite sequentially (CI runs them in parallel instead)
 e2e-clean: ## Delete every kind cluster the e2e suites create
 	@for c in $(E2E_LIFECYCLE_CLUSTER) $(E2E_IDEMPOTENCY_CLUSTER) $(E2E_RESTART_CLUSTER) \
 	          $(E2E_RUST_CLUSTER) $(E2E_MULTITENANCY_CLUSTER) $(E2E_SCOUT_CLUSTER) $(E2E_CHAOS_CLUSTER) \
-	          $(E2E_RNDC_SECRETREF_CLUSTER) \
+	          $(E2E_RNDC_SECRETREF_CLUSTER) $(E2E_QUEEN_CLUSTER) $(E2E_EDGE_CLUSTER) $(E2E_EDGE_B_CLUSTER) \
 	          $(REGRESSION_CLUSTER) $(ZONESPREAD_CLUSTER) $(TLS_TRANSPORT_CLUSTER) \
 	          $(CI_E2E_INTEGRATION_CLUSTER); do \
 		kind delete cluster --name $$c >/dev/null 2>&1 || true; \

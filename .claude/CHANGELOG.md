@@ -1,3 +1,45 @@
+## [2026-10-20 20:40] - Scout guardrails proven on two edge clusters (roadmap 31 phase 5); Scout logs the cause of a failed write
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `crates/bindy-scout/src/scout.rs`: `ScoutError` displays the whole cause chain (`#[error("{0:#}")]`, was `transparent`). Scout's "Reconcile failed" and "Scout reconcile error" lines printed only the outermost context ("failed to write ARecord X"), so the reason for a refused write, the `bindy-scout-source-binding` denial, never reached the edge cluster's log. Test `scout_error_display_includes_every_cause`. Found by the new suite below.
+
+### Added
+- `tests/e2e/scout_guardrails_test.sh` and `make e2e-scout-guardrails` (needs `E2E_IMAGE`): three kind clusters, a bindy cluster with admission policies 21/22 and zones `foo.test`, `bar.test` (loose `managed-by: scout` selector) and `shared.test`, and two edge clusters with accounts registered for their own zones; `foo`'s Scout runs with no Scout-side allowlist. G1 to G7: own-zone publishing, admission refusing a cross-zone tenant, Scout-side allowlists, a stolen token's create/rewrite/relabel/delete refused with an own-zone positive control, the zone-label rule, a refused withdrawal that does not hold a finalizer, and the known open case of a zone registered for both clusters (reported, not failed). Passed on slate 2026-10-20.
+- `tests/lib/scout_clusters.sh`: helpers shared by the two multi-cluster Scout suites (moved out of `scout_multi_cluster_test.sh`; `bootstrap_scout` takes its allowlists from `SCOUT_ALLOWED_ZONES` / `SCOUT_ALLOWED_RANGES`). `scout_multi_cluster_test.sh` rerun on slate after the move: passed.
+- `Makefile`: `e2e-clean` also deletes the multi-cluster suites' kind clusters.
+
+### Changed
+- `.github/community/31-scout-source-guardrails.md` phase 5 and status ✅; `ROADMAPS.md` row. `docs/src/security/threat-model.md` v1.30: M-70 records the end-to-end verification.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout (only for the clearer Scout log line)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-10-20 20:15] - GRPCRoute follow-ups: docs, CALM, threat model, example (#560)
+
+**Author:** Erick Bourgeois
+
+### Changed
+- `crates/bindy-scout/src/scout.rs`: the startup "Gateway API CRDs not found" line names a missing GRPCRoute `GRPCRoute`, like every other kind (it said `GRPCRoutes`); the Gateway API channel comment gives GRPCRoute's Standard version (v1.1, it repeated TLSRoute) and a garbled `Metadata` comment is fixed.
+- `docs/src/guide/scout.md`: GRPCRoute in the zone-authorization, Gateway RBAC and finalizer text; the route overview no longer says "one `ARecord` per hostname with an index suffix" (pre-ADR-0026); the Ingress note's link to the renamed Gateway API section works again.
+- `docs/src/installation/scout.md`: GRPCRoute in the Gateway API detection table (Standard since v1.1), the startup log line and the contributor-label example. `docs/src/reference/cli.md`: `bindy scout` lists GRPCRoute.
+- `calm/bindy-multi-cluster.architecture.json`: the Scout node, the watched-objects node and both `scout-*-watches` edges list GRPCRoute (and TCPRoute, which the edges and the objects node had missed); `docs/src/architecture/calm-multi-cluster.md` regenerated.
+- `docs/src/security/threat-model.md` v1.30: pass for GRPCRoute (components, Boundary 6, attack surface 7; T4 covers the new `grpcroutes` patch/update grant with the same verbs).
+- New `examples/grpcroute-dns.yaml`; `examples/README.md` gains a Scout Sources section listing every route example (the TCPRoute entry was misplaced inside Basic Setup); the HTTPRoute and TLSRoute examples' prerequisites name the zone they actually use (`example.com`).
+
+### Why
+#560 added GRPCRoute as a sixth Scout source kind, written before ADR-0026 merged, and left kind lists, the CALM model and the threat model behind.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (one Scout log string)
+
 ## [2026-10-20 16:45] - CI: RustSec bumps (rustls-webpki, webpki-root-certs); skip image push on fork PRs
 
 **Author:** Erick Bourgeois

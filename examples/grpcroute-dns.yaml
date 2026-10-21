@@ -1,0 +1,84 @@
+# Copyright (c) 2025 Erick Bourgeois, firestoned
+# SPDX-License-Identifier: Apache-2.0
+#
+# GRPCRoute DNS Example: Scout watching a Gateway API GRPCRoute
+#
+# Scout publishes each hostname in spec.hostnames[] of an opted-in GRPCRoute,
+# exactly as it does for an HTTPRoute. It does not look at the gRPC service or
+# method matches; only the hostnames and the parentRefs (for the address)
+# matter.
+#
+# Prerequisites:
+#   1. Bindy operator running with a Bind9Cluster + Bind9Instance
+#   2. A DNSZone for "example.com" that authorizes namespace grpc-apps
+#      (bindy.firestoned.io/allow-zone-namespaces, or a DNSZone in grpc-apps)
+#   3. Bindy Scout deployed with Gateway API permissions (see deploy/scout/clusterrole.yaml)
+#   4. Gateway API v1.1 or later installed (GRPCRoute is Standard since v1.1)
+#
+# Apply:
+#   kubectl apply -f examples/grpcroute-dns.yaml
+#
+# Verify Scout created the ARecords:
+#   (one ARecord per DNS name, shared with any other resource publishing it; ADR-0026)
+#   kubectl get arecords -n bindy-system -l "contributor.scout.bindy.firestoned.io/$(printf '%s\0%s\0%s' GRPCRoute grpc-apps grpc-api | sha256sum | cut -c1-16)"
+#
+# Verify DNS resolution:
+#   kubectl run -it --rm drill --image=alpine/drill:latest -- drill @<dns-server> grpc-api.example.com
+#
+# Clean up:
+#   kubectl delete -f examples/grpcroute-dns.yaml
+#
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: grpc-apps
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grpc-backend
+  namespace: grpc-apps
+  labels:
+    app: grpc-backend
+spec:
+  type: ClusterIP
+  selector:
+    app: grpc-backend
+  ports:
+    - port: 50051
+      targetPort: 50051
+      appProtocol: kubernetes.io/h2c
+      name: grpc
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GRPCRoute
+metadata:
+  name: grpc-api
+  namespace: grpc-apps
+  annotations:
+    # Tell Scout to publish this GRPCRoute's hostnames
+    bindy.firestoned.io/scout-enabled: "true"
+    # DNS zone that owns these hostnames; a DNSZone CR for this zone must exist
+    bindy.firestoned.io/zone: "example.com"
+    # Optional: the address to publish. Without it Scout follows parentRefs
+    # to the Gateway's status.addresses (or the --gateway-service mapping),
+    # then falls back to --default-ips.
+    bindy.firestoned.io/ip: "192.168.1.110"
+    # Optional: override the TTL on created ARecords (default is zone TTL)
+    bindy.firestoned.io/ttl: "300"
+spec:
+  # Each hostname is one DNS name and one ARecord (ADR-0026):
+  # scout-{cluster}-grpc-api-example-com-{hash} for grpc-api.example.com
+  hostnames:
+    - grpc-api.example.com
+  parentRefs:
+    - name: external-gateway
+      namespace: grpc-apps
+  rules:
+    - matches:
+        - method:
+            service: example.v1.Greeter
+      backendRefs:
+        - name: grpc-backend
+          port: 50051
