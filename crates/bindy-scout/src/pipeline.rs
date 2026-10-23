@@ -30,9 +30,9 @@ use crate::scout::{
     is_scout_opted_in, legacy_arecord_label_selector, parse_ttl_annotation, requeue_after_error,
     resolve_ips_from_annotation, resolve_ips_from_lb_status, resolve_ips_from_service_lb_status,
     resolve_record_name, resolve_usable_zone, resolve_zone, source_namespace_eligible,
-    stale_cleanup_zones, stale_selector_base, tcproute_record_name, GRPCRoute, Gateway,
-    GatewayServiceTarget, HTTPRoute, ParentReference, ScoutContext, ScoutError, StaleKind,
-    TCPRoute, TLSRoute, ZoneAuthz, ZoneResolution, EMPTY_ANNOTATIONS, FINALIZER_SCOUT,
+    stale_cleanup_zones, stale_selector_base, tcproute_record_name, union_ips_from_lb_services,
+    GRPCRoute, Gateway, GatewayServiceTarget, HTTPRoute, ParentReference, ScoutContext, ScoutError,
+    StaleKind, TCPRoute, TLSRoute, ZoneAuthz, ZoneResolution, EMPTY_ANNOTATIONS, FINALIZER_SCOUT,
     LABEL_SOURCE_CLUSTER, LABEL_ZONE, REMOTE_CLEANUP_GRACE_SECS,
 };
 use anyhow::{anyhow, Context as _, Result};
@@ -970,13 +970,15 @@ pub(crate) async fn log_unscoped_stale_cluster_arecord_candidates(
 // Gateway API IP discovery (local client)
 // ============================================================================
 
-/// Resolves the external IPs of the LoadBalancer Service a gateway class maps to.
+/// Resolves the external IPs of the LoadBalancer Service(s) a gateway class maps to.
 ///
-/// For a [`GatewayServiceTarget::Name`] the Service is fetched directly; for a
+/// For a [`GatewayServiceTarget::Name`] the Service is fetched directly and
+/// every IPv4 address of it is returned (issue #556). For a
 /// [`GatewayServiceTarget::Labeled`] target the namespace is listed by label
-/// selector and the first LoadBalancer Service with an external IPv4 is used.
-/// Every IPv4 address of that Service is returned (issue #556). Returns an
-/// empty list when the Service does not exist (404) or has no external IP yet.
+/// selector and the de-duplicated union of every matching LoadBalancer
+/// Service's addresses is returned, Services in name order (issue #569; see
+/// [`union_ips_from_lb_services`]). Returns an empty list when the Service
+/// does not exist (404) or no matching Service has an external IP yet.
 ///
 /// # Errors
 /// Returns an error for any other lookup failure (ADR-0022, Decision 6).
@@ -1010,12 +1012,7 @@ async fn resolve_ips_from_gateway_service(
                 .with_context(|| {
                     format!("failed to list gateway LoadBalancer Services in {namespace} matching {selector:?}")
                 })?;
-            Ok(services
-                .iter()
-                .filter(|svc| is_loadbalancer_service(svc))
-                .map(resolve_ips_from_service_lb_status)
-                .find(|ips| !ips.is_empty())
-                .unwrap_or_default())
+            Ok(union_ips_from_lb_services(&services))
         }
     }
 }

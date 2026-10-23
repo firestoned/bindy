@@ -4,6 +4,7 @@
 - **Date:** 2026-10-20
 - **Proposed:** 2026-10-19
 - **Deciders:** Erick Bourgeois
+- **Amended:** 2026-10-23 (Decision 7: a label-selected `--gateway-service` target publishes the union of every matching LoadBalancer Service, issue #569)
 - **Related:** Amends [ADR-0022](0022-scout-sources-share-one-pipeline.md) Decision 3 (one record per source host); relies on [ADR-0021](0021-rrset-replaced-in-one-update.md) (an RRset replaced in one DNS UPDATE) and [ADR-0022](0022-scout-sources-share-one-pipeline.md) Decision 5 (a shared name survives a deletion); keeps [ADR-0025](0025-scout-records-bound-to-cluster-and-zones.md) (records bound to their cluster and zones); resolves issue #556; leaves roadmap 27 item 2 (two owners of one name) to its own ADR
 
 ## Context
@@ -152,11 +153,44 @@ Merging needs no opt-in annotation: zone authorization already decides who
 may publish a name, and an opt-in would keep the flip-flop for any
 contributor that missed it.
 
+### 7. A label-selected gateway Service target publishes every match
+
+*Added 2026-10-23 (issue #569).* A route whose Gateway has no
+`status.addresses` resolves through the `--gateway-service` target mapped to
+its class. A `namespace/name` target is one Service and already publishes
+all of its addresses (issue #556). A `namespace/<label-selector>` target
+previously stopped at the first matching `LoadBalancer` Service with an
+address, so with the common one-Service-per-VIP pattern each route published
+one VIP of several.
+
+A label-selected target now resolves to the de-duplicated union of the
+external IPv4 addresses of **every** matching `LoadBalancer` Service:
+non-`LoadBalancer` Services are ignored, a Service with no address yet
+contributes nothing, and Services are taken in name order (each one's
+addresses in status order), so the source's contributor entry does not
+change with the API server's list order and an unchanged record is still
+not rewritten. Name targets, Gateways with `status.addresses`, and the
+annotation → gateway → `--default-ips` precedence are unchanged.
+`--allowed-ip-ranges` (ADR-0025) still applies to the whole set.
+
+Not decided here: Scout still re-resolves a route only when the route
+itself is reconciled (its own change, a watch restart, or an error
+requeue). A matching Service being created or deleted, or its
+`status.loadBalancer` changing, does not by itself update the record. Mapping
+Service and Gateway changes to the routes that resolve through them is left
+to its own ADR.
+
 ## Consequences
 
 - Issue #556 is fixed: the three Services publish one record with three
   addresses, and deleting one Service updates the record instead of
   removing or flipping the name.
+- Issue #569 is fixed (Decision 7): a label-selected gateway Service target
+  publishes every matching VIP. A selector that matches several
+  `LoadBalancer` Services now publishes more addresses than before, so
+  selectors must be as narrow as the set of VIPs meant to serve the
+  gateway; a route still picks up a Service change only on its next
+  reconcile.
 - The records controller, the CRD and the admission policies do not change.
   `ARecord` keeps "one record owns one RRset", so ADR-0021 and ADR-0022
   Decision 5 keep their meaning.

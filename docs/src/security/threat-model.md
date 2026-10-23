@@ -1,17 +1,43 @@
 # Threat Model - Bindy DNS Operator
 
-**Version:** 1.30
-**Last Updated:** 2026-10-20
+**Version:** 1.31
+**Last Updated:** 2026-10-23
 **Owner:** Security Team
 **Compliance:** SOX 404, PCI-DSS 6.4.1, Basel III Cyber Risk
 
-> Last full pass 2026-10-20, against ADR-0001 ... ADR-0026 (ADR-0006 as amended;
+> Last full pass 2026-10-23, against ADR-0001 ... ADR-0026 (ADR-0006 as amended;
 > ADR-0009 as amended 2026-10-05, fully implemented; ADR-0013 stages 1 to 3,
 > ADR-0014, ADR-0015, ADR-0016, ADR-0017 as amended and corrected 2026-10-07
 > and by ADR-0019, ADR-0018 as amended 2026-10-07, ADR-0019, ADR-0020,
 > ADR-0021, ADR-0022, ADR-0023, ADR-0024 as amended, ADR-0025 decisions 1
-> to 6 and ADR-0026 decisions 1 to 6 implemented; GRPCRoute as a sixth Scout
-> source kind, #560).
+> to 6 and ADR-0026 as amended 2026-10-23, decisions 1 to 7, implemented;
+> GRPCRoute as a sixth Scout source kind, #560).
+>
+> **Revision note (v1.31):** Full pass for ADR-0026 Decision 7 (issue #569):
+> a label-selected `--gateway-service` target now publishes the union of the
+> external IPv4 addresses of every matching `LoadBalancer` Service, where it
+> used only the first one with an address. Gateway-chain IP discovery was not
+> modelled before; it is now **T7** (a Service in a gateway namespace that
+> matches a class's selector adds its addresses to every route of that class
+> whose Gateway has no `status.addresses`). Before Decision 7 the same
+> Service could replace a route's addresses when it sorted first by name, so,
+> as with T6, the exposure changes from takeover to addition. New control
+> **M-74** records what bounds it (the Service fallback only for classes
+> mapped in `--gateway-service`, a namespace-scoped selector, `LoadBalancer`-only, IPv4-only, name order,
+> `--allowed-ip-ranges`). New accepted risk **25**: (a) the selector is
+> trusted as written, and (b) a route re-resolves its gateway addresses only
+> when the route reconciles, so a removed or reassigned VIP stays published
+> until then (pre-existing for name targets and Gateway `status.addresses`;
+> a Service/Gateway-to-route watch mapping is a follow-up needing its own
+> ADR). No RBAC, CRD or admission-policy change: Scout already lists
+> Services cluster-wide. Sections changed: Boundary 6, T7 (new), attack
+> surface 7, M-74 (new), accepted risk 25 (new), controls summary. Reviewed
+> with no change: overview, components, assets, Boundaries 1 to 5, S1 to S4,
+> T1 to T6, R1 to R2, I1 to I5, D1 to D6 (D2: the selector list was already
+> one paginated call per reconcile; the union adds no API call), E1 to E4,
+> attack surfaces 1 to 6, Scenarios 1 to 6, M-1 to M-73, planned
+> mitigations, critical and high residual risks, accepted risks 1 to 24,
+> defence-in-depth layers.
 >
 > **Revision note (v1.30):** Pass for GRPCRoute support in Scout (#560, no
 > ADR: a new `ScoutSource` under ADR-0022 Decision 1). GRPCRoute goes through
@@ -962,6 +988,11 @@ act against a remote cluster.
 - Every namespace a zone authorizes may publish any name in it, so sources of
   different namespaces that pick the same name share its record and all of
   their addresses are served ([T6](#t6-a-tenant-adds-addresses-to-another-tenants-name))
+- A route whose Gateway has no `status.addresses` takes its addresses from the
+  `--gateway-service` target of its class; a label-selected target takes them
+  from every matching `LoadBalancer` Service in that namespace, so whoever can
+  create or label such a Service there contributes addresses
+  ([T7](#t7-a-service-in-a-gateway-namespace-adds-addresses-to-a-gateway-class))
 - **(Fixed 2026-07-19, M-25)** Scout's Secret access is namespaced and
   `resourceNames`-restricted to the single Phase 2 kubeconfig Secret, no longer
   cluster-wide. Same-cluster-only deployments (the default) get no Secret access at all.
@@ -1378,6 +1409,60 @@ reconcile: a takeover rather than an addition.
 
 **Residual Risk:** LOW where each zone is granted to one team; MEDIUM for a
 zone granted to several teams (accepted risk 24).
+
+---
+
+#### T7: A Service in a Gateway Namespace Adds Addresses to a Gateway Class
+
+**Threat:** Scout maps a `gatewayClass` to a `--gateway-service` target. For a
+`namespace/<label-selector>` target, every `LoadBalancer` Service in that
+namespace whose labels match contributes its external IPv4 addresses to every
+route of the class whose Gateway has no `status.addresses` (ADR-0026
+Decision 7, issue #569). A principal who can create a `LoadBalancer` Service
+in the gateway namespace, or label an existing one, adds its address to all
+of those routes' names: a share of their traffic goes to that endpoint. A
+stale address is the passive form: a VIP Service deleted, or its address
+released and handed to another Service, stays published until each route
+reconciles again (accepted risk 25 (b)).
+
+**Impact:** MEDIUM (part of the traffic of every name behind one gateway
+class)
+**Likelihood:** LOW (the gateway namespace, e.g. `traefik`, is normally
+platform-owned; tenants hold no Service write access there, and the cloud or
+LB controller must assign the Service an address)
+
+**Attack Scenario:**
+1. Scout runs with `--gateway-service traefik=traefik/app=traefik-vip`; the
+   class's Gateways have no `status.addresses`
+2. A principal with `create` on Services in `traefik` creates a
+   `LoadBalancer` Service labelled `app=traefik-vip`, pointing at their own
+   backend
+3. The next reconcile of each `traefik` route publishes that Service's
+   address next to the real VIPs
+
+Before Decision 7, step 3 published only the first matching Service with an
+address, by name: a Service sorting first replaced the route's addresses (a
+takeover), one sorting later was ignored.
+
+**Mitigations:**
+- ✅ **Operator-configured scope (M-74):** the Service fallback is used only
+  for a Gateway with no IPv4 `status.addresses` whose class is mapped in
+  `--gateway-service` (a Gateway's own `status.addresses` are read whatever
+  its class, so the map does not restrict them), and a selector is evaluated
+  in the one namespace its target names; a `namespace/name` target is not
+  affected by other Services at all.
+- ✅ **Only `LoadBalancer` IPv4 addresses (M-74):** `ClusterIP`/`NodePort`
+  Services and hostname-only or non-IPv4 status entries contribute nothing.
+- ✅ **Address allowlist (M-69):** `--allowed-ip-ranges` refuses the whole set
+  when any address is outside the cluster's ranges.
+- ✅ **Attribution (M-73):** the route's entry in
+  `bindy.firestoned.io/scout-contributors` lists every address it published.
+- ❌ No per-Service opt-in for a label-selected target, and no event mapping
+  from gateway Services to routes (accepted risk 25).
+
+**Residual Risk:** LOW with a `namespace/name` target or a tightly scoped
+selector in a platform-owned namespace; MEDIUM where tenants can create
+`LoadBalancer` Services in the gateway namespace (accepted risk 25).
 
 ---
 
@@ -2266,6 +2351,9 @@ access at all** on the ClusterRole; see below.
   (T5): refused by M-69 when the allowlists are set
 - A tenant source naming a name another tenant publishes in a shared zone
   (T6): its addresses are added to that name's record (M-73, accepted risk 24)
+- A `LoadBalancer` Service created or labelled in a gateway namespace so it
+  matches a class's label-selected `--gateway-service` target (T7): its
+  addresses are added to that class's routes (M-74, accepted risk 25)
 - Any tenant setting the `bindy.firestoned.io/scout-enabled` annotation on their own
   resource can cause Scout to write an `ARecord`; this is expected/intended
   behavior, not a vulnerability, but means Scout's write path is reachable by any
@@ -2556,6 +2644,7 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-71 | **A DNSZone takes a Scout record only for its own zone** (2026-10-19, ADR-0025 decision 5): a record labelled `bindy.firestoned.io/managed-by: scout` that a `recordsFrom` selector matches is selected only when its `bindy.firestoned.io/zone` label equals the zone's `spec.zoneName` (case and trailing dot ignored); otherwise skipped with a warning | T5 (a selector that omits the zone label takes other clusters' records) | ✅ `crates/bindy-controller-zone/src/dnszone/discovery.rs` (`scout_record_belongs_to_zone`, `discover_records_generic`); tests `discovery_tests.rs` (5) |
 | M-72 | **Scout treats a refused delete of another cluster's record as final** (2026-10-19, ADR-0025 decision 6): on handover and on source removal, a 403 or 422 for a record left under another cluster name is logged and skipped, so a source's finalizer is not held and nothing is retried; the source's own records still fail the reconcile on any error | Availability under M-70 (a refused cleanup holding a tenant's Ingress in `Terminating`) | ✅ `crates/bindy-scout/src/pipeline.rs` (`delete_other_cluster_arecord`), `crates/bindy-controller-sdk/src/kube_errors.rs` (`is_refused`); tests `pipeline_tests.rs` (refused-delete cases), `kube_errors_tests.rs` |
 | M-73 | **One Scout record per DNS name, written atomically** (2026-10-20, ADR-0026): every source of one cluster that resolves to the same zone and DNS name contributes to one `ARecord`, named `scout-{cluster}-{dns-name}-{zone}-{hash}` with the hash over the NUL-joined (cluster, zone, name); the record's `bindy.firestoned.io/scout-contributors` annotation maps each source (`kind/namespace/name`) to the addresses and TTL it resolved, and a `contributor.scout.bindy.firestoned.io/<hash>` label per source finds its records; `spec.ipv4Addresses` is always the union (sorted, each once) and `spec.ttl` the lowest; each write reads the record, changes only its own entry, rebuilds the spec from the whole map and replaces with the read `resourceVersion` as precondition (a lost race is rebuilt, at most 5 attempts, then the reconcile fails and retries); a source leaving a name removes only its entry and the record is deleted, with a `resourceVersion` precondition, with its last; an unchanged record is not written; a malformed map stops Scout writing that record rather than dropping the other sources; withdrawals from another cluster name's record that the API server refuses are skipped like M-72; per-source records from before ADR-0026 are deleted only once the per-name record is served (as M-63) | Issue #556 (sources sharing a name overwrote each other's addresses, and the name flapped); T6 (changes a takeover into an attributed addition); R1 (each address attributed to a source) | ✅ `crates/bindy-scout/src/contributors.rs` (`plan_contribute`, `plan_withdraw`, `contribute`, `withdraw`, `render`), `crates/bindy-scout/src/pipeline.rs` (`publish`, `withdraw_from_own_records`, `withdraw_from_other_cluster_record`), `crates/bindy-scout/src/scout.rs` (`dns_name_record_cr_name`); tests `contributors_tests.rs`, `pipeline_tests.rs`, `tests/e2e/scout_test.sh` |
+| M-74 | **A label-selected gateway Service target publishes every match, within an operator-set scope** (2026-10-23, ADR-0026 Decision 7, issue #569): a route whose Gateway has no IPv4 `status.addresses` resolves through the `--gateway-service` target of its `gatewayClassName` (with no target mapped for the class, the Service fallback is skipped; a Gateway's own `status.addresses` are used whatever its class and are not bounded by this control); a `namespace/<label-selector>` target is listed in that one namespace, non-`LoadBalancer` Services are dropped, each remaining Service contributes its IPv4 `status.loadBalancer` addresses (hostnames and non-IPv4 ignored), Services in name order and each address once, so the result is stable across list orders and an unchanged record is not rewritten; a list error fails the reconcile (ADR-0022 Decision 6); `--allowed-ip-ranges` (M-69) applies to the union; a `namespace/name` target reads one Service as before | T7; issue #569 (one VIP of several published) | ✅ `crates/bindy-scout/src/scout.rs` (`union_ips_from_lb_services`, `is_loadbalancer_service`, `resolve_ips_from_service_lb_status`), `crates/bindy-scout/src/pipeline.rs` (`resolve_ips_from_gateway_service`, `resolve_ips_from_gateways`); tests `scout_tests.rs` (`test_union_ips_from_lb_services_*`), `pipeline_tests.rs` (`a_labelled_gateway_target_*`) |
 | M-25 | **Scout Secret RBAC scoped** (fixed 2026-07-19, same day as this finding's discovery): removed the cluster-wide `secrets: get` `PolicyRule` from the `bindy-scout` `ClusterRole` entirely. Replaced with a namespaced, `resourceNames`-restricted Role (`bindy-scout-secrets-reader`) scoped to exactly the one Phase 2 kubeconfig Secret, applied only when `--remote-secret` is configured. Same-cluster-only deployments (the default) now get zero Secret access. See I4/E4/Scenario 6 for the full before/after. | I4, E4, T4 (Secret-read component), Scenario 6 | ✅ RBAC: **was the highest-priority open item in v1.1; closed same-day** |
 
 ---
@@ -2655,6 +2744,8 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 
 24. **Scout merges every source that publishes a name, and trusts the contributor annotation (ADR-0026)** - (a) Within one cluster, any source in a namespace the zone authorizes that resolves to a name another source already publishes adds its addresses to that name, without an opt-in from either side (ADR-0026 Decision 6, T6); a source cannot remove another's addresses. (b) The `bindy.firestoned.io/scout-contributors` annotation is the source of truth for the record's addresses: anyone who can update `ARecord`s in the records namespace (the operator's admins, the cluster's Scout account) can add an entry, and Scout will keep it until the entry's source withdraws, or can make the annotation unparseable, which stops Scout writing that record (it still serves what it last held). Accepted: (a) the zone grant is already the authorization for every name in the zone, the merge replaces a flapping takeover with a stable, attributed addition, and an opt-in would keep the issue #556 failure for anyone who missed it; (b) the same principals can already rewrite or delete the record directly, and admission policy 21 still binds a registered Scout account to its cluster names and zones. *Revisit when* tenants sharing a zone need per-name ownership (an ownership or opt-in annotation checked before the merge), or a ConfigMap- or record-integrity policy is introduced for Scout-managed objects.
 
+25. **A label-selected gateway Service target is trusted as written, and gateway addresses are re-read only when a route reconciles (ADR-0026 Decision 7)** - (a) Every `LoadBalancer` Service matching a class's `--gateway-service` selector in its namespace contributes addresses to every route of that class whose Gateway has no `status.addresses` (T7); there is no per-Service opt-in. Accepted: the class-to-target map, the namespace and the selector are all set by the Scout operator, the gateway namespace is normally platform-owned, `--allowed-ip-ranges` bounds the addresses, a `namespace/name` target is available where the namespace is shared, and the previous first-match behaviour let a Service sorting first replace the addresses instead. (b) Scout reconciles a route on the route's own events (plus watch restarts and error retries), not on changes to the Gateway or Service it resolves through, so a deleted or reassigned VIP stays published, and a new one unpublished, until each route reconciles; this predates Decision 7 and applies to name targets and Gateway `status.addresses` too. Accepted: VIP churn in a gateway namespace is rare and operator-driven, and touching the routes or restarting Scout converges them. *Revisit when* tenants can create `LoadBalancer` Services in a gateway namespace (add an opt-in label or annotation on the Service), or Scout maps Gateway and gateway-Service changes to the routes that resolve through them (needs its own ADR and `list`/`watch` on `gateways`), which closes (b).
+
 ---
 
 ## Security Architecture
@@ -2720,7 +2811,7 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 
 | Control Category | Implemented | Planned | Residual Risk |
 |------------------|-------------|---------|---------------|
-| **Access Control** | RBAC least privilege (main operator; `pods/status` `get`/`patch` only for the zones-loaded gate, test-pinned, ADR-0017), signed commits, B-5 Secret RBAC split, namespace-scoped operator mode (opt-in), 11 `ValidatingAdmissionPolicy` policies, Scout namespace whitelisting (opt-in, M-30), **Scout Secret RBAC scoped (M-25, fixed 2026-07-19)**, Scout records bound to their cluster and zones (M-69 to M-72, ADR-0025) | Field-level admission for Scout patches (M-28), Scout egress NetworkPolicy (M-27) | MEDIUM: driven by Scout's remaining cluster-wide `patch`/`update` on Ingress/Service/route (T4); the formerly-HIGH Secret-read risk (I4/E4) is resolved |
+| **Access Control** | RBAC least privilege (main operator; `pods/status` `get`/`patch` only for the zones-loaded gate, test-pinned, ADR-0017), signed commits, B-5 Secret RBAC split, namespace-scoped operator mode (opt-in), 11 `ValidatingAdmissionPolicy` policies, Scout namespace whitelisting (opt-in, M-30), **Scout Secret RBAC scoped (M-25, fixed 2026-07-19)**, Scout records bound to their cluster and zones (M-69 to M-72, ADR-0025), gateway Service targets scoped to operator-configured classes, namespaces and `LoadBalancer` Services (M-74) | Field-level admission for Scout patches (M-28), Scout egress NetworkPolicy (M-27) | MEDIUM: driven by Scout's remaining cluster-wide `patch`/`update` on Ingress/Service/route (T4); the formerly-HIGH Secret-read risk (I4/E4) is resolved |
 | **Data Protection** | Secrets encrypted, AXFR restricted, DNSSEC zone signing (opt-in, M-14/ADR-0006), RNDC key read from the mounted Secret only (M-58), which is always the operator-owned `{instance}-rndc-key`, a `secretRef` key mirrored into it from a `bindy-` Secret (M-65, M-66), bindcar TLS CA bundle read only from the instance's namespace (M-60) | TSIG for AXFR; DNSSEC-by-default | MEDIUM |
 | **Supply Chain** | Signed commits/images, SLSA Build L3 provenance for all release artifacts (M-33), NTIA-gated SBOM attestations (M-34), anchored signer identity (M-35), gated per-release crypto inventory (M-39), `--locked` release builds, vuln scanning | Required approving reviews (M-36); operand image digest pinning (M-15); reproducibility check (M-37); hybrid PQ key exchange (M-40); revisit Dependabot auto-merge human-review gap (M-29) | LOW-MEDIUM (no required review on `main`, see S3; automated auto-merge removed a manual checkpoint, see E3; classical key exchange is HNDL-exposed, see accepted risk 8) |
 | **Monitoring** | Kubernetes audit logs, vuln scanning, Secret audit trail with `secret_operations_total` (M-67), least-data Secret access (M-68) | Audit retention policy (M-11) | MEDIUM (event durability depends on the log pipeline, accepted risk 22) |

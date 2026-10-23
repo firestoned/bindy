@@ -1,3 +1,49 @@
+## [2026-10-23 15:30] - CI: RustSec bump (ctutils)
+
+**Author:** Daniel Guns
+
+### Changed
+- `Cargo.lock`: `ctutils` 0.4.3 to 0.4.5 (RUSTSEC-2026-0385, non-constant-time mask generation and `u128` comparisons; fixed in >=0.4.4). It reaches us through `digest` 0.11 via `sha2`, `sha1`, `md-5` and `hmac` (`rndc`, `bindcar`, `bindy-scout`, `bindy-bind9`). Lockfile only; no manifest change.
+
+### Why
+The advisory was published 2026-10-23 and fails `cargo audit` on every run, which failed the PR #570 security job. `cargo audit` and `make cargo-deny` pass after the bump.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (rebuilt images carry the patched crate)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-10-23 14:13] - Scout: a label-selected `--gateway-service` target publishes every matching Service (issue #569, ADR-0026 Decision 7)
+
+**Author:** Daniel Guns
+
+### Fixed
+- `crates/bindy-scout/src/pipeline.rs`: `resolve_ips_from_gateway_service` no longer stops at the first matching `LoadBalancer` Service with an address for a `namespace/<label-selector>` target. With one LoadBalancer Service per VIP sharing a label, each route behind a Gateway without `status.addresses` published one VIP of several.
+- `crates/bindy-scout/src/scout.rs`: new `union_ips_from_lb_services`: the de-duplicated union of the external IPv4 addresses of every `LoadBalancer` Service in the list; non-`LoadBalancer` Services are ignored, Services without an address contribute nothing, Services are taken in name order (each one's addresses in status order) so the contributor entry, and so the record, does not change with the API server's list order.
+
+### Added
+- `crates/bindy-scout/src/scout_tests.rs`: `test_union_ips_from_lb_services_*` (union, no-address skip, `ClusterIP`/`NodePort` ignored, shared addresses once, list-order independence, empty).
+- `crates/bindy-scout/src/pipeline_tests.rs`: the fake API server serves a namespaced Service list filtered by `labelSelector`; `a_labelled_gateway_target_publishes_every_matching_service` (three VIPs from two labelled Services; a pending and a matching `ClusterIP` Service ignored; an unmatched `LoadBalancer` Service's address never published, so dropping the selector fails the test) and `a_labelled_gateway_target_list_error_fails_the_reconcile`.
+
+### Changed
+- `docs/adr/0026-scout-one-record-per-dns-name.md`: amended with Decision 7 and a consequence; records that a route still re-resolves only when it reconciles (Service/Gateway-to-route mapping left to its own ADR).
+- `docs/src/guide/scout.md`: gateway-chain note on label-selected targets, the behaviour change and how to make a route re-resolve; `--gateway-service` and `BINDY_SCOUT_GATEWAY_SERVICES` rows.
+- `.github/community/32-scout-one-record-per-dns-name.md` phase 8 and a follow-up for the re-resolve gap; `ROADMAPS.md` row 32.
+- `docs/src/security/threat-model.md` v1.31: full pass; new T7 (a Service in a gateway namespace adds addresses to a gateway class), M-74, accepted risk 25; Boundary 6, attack surface 7, controls summary. CALM unchanged (no new node, relationship or interface; `make calm-validate` and `make calm-docs-check` clean).
+
+### Why
+Issue #569: a common ingress pattern is one LoadBalancer Service per VIP, all sharing a label. Issue #556 made one Service publish all of its addresses; this aggregates across every Service a label selector matches.
+
+### Behaviour change
+Only clusters whose `--gateway-service` label selector matches more than one `LoadBalancer` Service with an address are affected: their routes now publish every matching Service's addresses instead of the first one's. Narrow the selector, or use a `namespace/name` target, if it matches Services that should not serve the gateway. Name targets, single-match selectors, Gateways with `status.addresses` and the annotation → gateway → `--default-ips` precedence are unchanged. No CRD, RBAC, flag or admission-policy change.
+
+### Impact
+- [ ] Breaking change
+- [x] Requires cluster rollout (new Scout image)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-20 20:40] - Scout guardrails proven on two edge clusters (roadmap 31 phase 5); Scout logs the cause of a failed write
 
 **Author:** Erick Bourgeois
