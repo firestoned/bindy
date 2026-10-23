@@ -18,6 +18,7 @@ use crate::record_wrappers::{
     REASON_ZONE_NOT_FOUND,
 };
 use bindy_api::constants::CONDITION_STATUS_TRUE;
+use bindy_api::status_reasons::{CONDITION_TYPE_READY, REASON_RRSET_CONFLICT};
 use status_helpers::{update_record_status, RecordStatusUpdate};
 
 // The BIND9 write path moved to `bindy-bind9` (ADR-0009 §2, amended
@@ -388,6 +389,21 @@ where
     // the add): each primary's RNDC key and endpoints are read once (ADR-0015).
     let resolver = bindy_bind9::instances::InstanceResolver::for_kube(&client, &ctx.stores);
 
+    // ADR-0027: a Scout record whose name another cluster's record has
+    // published writes nothing (no rename delete, no add) until it leaves.
+    if let Some(outcome) = hold_back_on_conflict(
+        &client,
+        &ctx.stores,
+        &resolver,
+        &record,
+        &rec_ctx,
+        current_generation,
+    )
+    .await?
+    {
+        return Ok(outcome);
+    }
+
     // Handle renames: if the record was previously published under a different
     // DNS name (status.publishedName), delete the old FQDN from the zone first.
     // Otherwise the old name would remain orphaned in BIND9 forever.
@@ -549,6 +565,84 @@ where
             Ok(RecordOutcome::WriteRejected)
         }
     }
+}
+
+/// Holds `record` back when another cluster's Scout record has published its
+/// name (ADR-0027 Decision 3).
+///
+/// The first time the conflict is found (the record is not already
+/// `RRsetConflict`), the holder is re-pushed, so a name this record
+/// overwrote before goes back to the holder's values (the write compares by
+/// value first), and one warning is logged. Then the record is marked
+/// `Ready=False` with reason `RRsetConflict` naming the holder.
+///
+/// # Returns
+/// `Some(Waiting)` when the record is held back (it is woken when a rival
+/// changes, Decision 5); `None` when it may write.
+///
+/// # Errors
+/// Returns an error if the registry cannot be read, the holder cannot be
+/// re-pushed (so the next reconcile tries again), or the status write fails.
+async fn hold_back_on_conflict<T: ReconcilableRecord>(
+    client: &Client,
+    stores: &crate::context::Stores,
+    resolver: &bindy_bind9::instances::InstanceResolver,
+    record: &T,
+    rec_ctx: &RecordReconciliationContext,
+    current_generation: Option<i64>,
+) -> Result<Option<RecordOutcome>> {
+    let live = stores.records.get::<T>().state();
+    let Some(holder) =
+        bindy_controller_sdk::rrset_conflict::held_back_by(client, record, &live).await?
+    else {
+        return Ok(None);
+    };
+    let message = bindy_controller_sdk::rrset_conflict::conflict_message(
+        holder.as_ref(),
+        &rec_ctx.zone_ref.zone_name,
+    );
+    let already_held_back = record
+        .record_status()
+        .and_then(|s| {
+            s.conditions
+                .iter()
+                .find(|c| c.r#type == CONDITION_TYPE_READY)
+        })
+        .is_some_and(|c| c.reason.as_deref() == Some(REASON_RRSET_CONFLICT));
+    if !already_held_back {
+        warn!(
+            "{} {}/{} is held back: {message}",
+            T::KIND,
+            record.namespace().unwrap_or_default(),
+            record.name_any()
+        );
+        add_record_to_instances_generic(
+            client,
+            stores,
+            resolver,
+            &rec_ctx.primary_refs,
+            &rec_ctx.zone_ref.zone_name,
+            holder.as_ref(),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to re-push {} {}/{}, which holds the name",
+                T::KIND,
+                holder.namespace().unwrap_or_default(),
+                holder.name_any()
+            )
+        })?;
+    }
+    update_record_status(
+        client,
+        record,
+        &RecordStatusUpdate::not_ready(REASON_RRSET_CONFLICT, &message, current_generation),
+    )
+    .await?;
+    Ok(Some(RecordOutcome::Waiting {
+        reason: REASON_RRSET_CONFLICT,
+    }))
 }
 
 /// The rejection-cooldown key of `record`: `<Kind>/<namespace>/<name>`.

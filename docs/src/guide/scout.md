@@ -153,6 +153,8 @@ metadata:
   namespace: bindy-system
 spec:
   replicas: 1
+  strategy:
+    type: Recreate   # never two Scouts at once, see "Upgrading Scout" below
   selector:
     matchLabels:
       app: bindy-scout
@@ -440,10 +442,40 @@ all three addresses for `cluster.example.com`.
   replaces the DNS answer in one update. No reconcile ever publishes a partial
   set.
 - **One cluster only.** Each Scout writes its own records (the record name
-  includes the cluster name). Two clusters publishing the same name in one
-  zone still produce two records, and the last one written wins; only
-  register a zone for clusters that should not share names
-  ([ADR-0025](https://github.com/firestoned/bindy/blob/main/docs/adr/0025-scout-records-bound-to-cluster-and-zones.md)).
+  includes the cluster name), so two clusters never merge into one record.
+  See [Two clusters publishing one name](#two-clusters-publishing-one-name).
+
+### Two clusters publishing one name
+
+When two edge clusters are registered for the same zone
+([ADR-0025](https://github.com/firestoned/bindy/blob/main/docs/adr/0025-scout-records-bound-to-cluster-and-zones.md))
+and both publish the same name, the cluster that published it first keeps it
+([ADR-0027](https://github.com/firestoned/bindy/blob/main/docs/adr/0027-scout-name-conflicts-detected-not-overwritten.md)).
+The other cluster's record writes nothing to BIND9 and shows the conflict:
+
+```text
+$ kubectl get arecord scout-bar-api-shared-test-<hash> -n bindy-system \
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")]}'
+{"type":"Ready","status":"False","reason":"RRsetConflict",
+ "message":"ARecord bindy-system/scout-foo-api-shared-test-<hash> of cluster 'foo' has published 'api' in shared.test; ..."}
+```
+
+- **Who keeps the name** is the record that has published it (its
+  `status.publishedName` matches and it has written to BIND9). A record that
+  fails a reconcile keeps the name; a record that never published cannot take
+  it. If both published before this rule existed, the older record keeps it.
+- **When the holder goes away** (its source is deleted or opted out, or it
+  stops publishing the name), the held-back record takes over on its own,
+  with no timer.
+- **Rebuilds follow the rule.** When a BIND9 primary is wiped and its zones
+  are replayed, held-back records are skipped, so the holder stays served.
+- **Renames are not conflicts** when both cluster names are registered to the
+  same account (`bindy bootstrap mc --cluster-name new,old`, as in
+  [Renaming a registered cluster](#changing-the-cluster-name)). A rename
+  without that step shows `RRsetConflict` on the new records, with the old
+  records still serving, until both names are registered.
+- **Only Scout records.** Two hand-written records that share a name, or a
+  hand-written record next to a Scout one, behave as before.
 
 ### Finding a resource's records
 
@@ -496,6 +528,35 @@ spec:
 ```
 
 ---
+
+## Upgrading Scout
+
+Run exactly one Scout per cluster, with the Deployment's `strategy` set to
+`Recreate` (as `bindy bootstrap scout` and `deploy/scout/deployment.yaml` do).
+Scout has no leader election: under the default `RollingUpdate` an upgrade
+runs the old and the new pod side by side, both publish, and a source that
+changes in that window can be published by the old version in a way the new
+one never revisits (for example a per-resource record next to the per-name
+record ADR-0026 introduced). `Recreate` stops the old pod first.
+
+Scout drains on SIGTERM (no new reconcile starts, running ones finish, then
+it exits), so the gap with no Scout running is about a second. The first
+upgrade *to* a Scout that drains this way still waits out the old pod's
+30-second grace period once. DNS keeps serving everything already published
+during the gap, and changes made to sources in it are published when the new
+pod starts, because it reconciles every source at startup. More than one
+replica is not supported for the same reason.
+
+`bindy bootstrap scout` switches an existing Deployment to `Recreate` for you.
+If you manage the Scout Deployment yourself (Helm, Kustomize, GitOps), set
+`strategy.type: Recreate` there too. A client-side `kubectl apply` makes the
+switch on its own; a server-side apply is refused while the Deployment still
+has the `rollingUpdate` block the API server defaulted, so remove it first:
+
+```bash
+kubectl patch deployment bindy-scout -n bindy-system --type=merge \
+  -p '{"spec":{"strategy":{"type":"Recreate","rollingUpdate":null}}}'
+```
 
 ## Configuration Reference
 
@@ -600,6 +661,8 @@ metadata:
   namespace: bindy-system
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: bindy
@@ -1397,7 +1460,7 @@ The zone match matters: two entirely unrelated clusters can happen to run an Ing
 
 **This does not protect clusters that share a zone.** If several clusters publish into the *same* DNS zone (a normal multi-cluster-DNS topology) and happen to run resources of the same kind with the same namespace + name, they still match each other's selector and will mutually delete each other's live `ARecord`s in a flapping loop. Give such resources distinct namespaces, names, or zones to avoid this; fully identifying "this same physical Scout instance under a prior cluster name" would need an instance-level marker that this mechanism does not provide. When each cluster's account is [registered](#binding-each-cluster-to-its-names-and-zones), the bindy cluster refuses those deletes instead: Scout logs the refusal and leaves the other cluster's record alone.
 
-**Renaming a registered cluster.** The registry lists the names an account may stamp, so add the new name first (`bindy bootstrap mc --cluster-name new,old ...`), restart Scout with `--cluster-name new` and let it clean up, then re-run with `--cluster-name new` alone. If the old name is dropped first, the bindy cluster refuses the cleanup of the old records; Scout logs it and does not retry, and the old records must be deleted by hand.
+**Renaming a registered cluster.** The registry lists the names an account may stamp, so add the new name first (`bindy bootstrap mc --cluster-name new,old ...`), restart Scout with `--cluster-name new` and let it clean up, then re-run with `--cluster-name new` alone. If the old name is dropped first, the bindy cluster refuses the cleanup of the old records; Scout logs it and does not retry, and the old records must be deleted by hand. Registering both names is also what tells the operator the old and new records are one cluster, not two clusters claiming the same names ([ADR-0027](https://github.com/firestoned/bindy/blob/main/docs/adr/0027-scout-name-conflicts-detected-not-overwritten.md)); without it, the new records are held back with `RRsetConflict` while the old ones keep serving.
 
 This happens on every reconcile, so all stale records for the reconcile path are cleaned up on the next controller loop after the restart — no manual intervention required there.
 

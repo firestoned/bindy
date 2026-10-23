@@ -33,6 +33,7 @@ use anyhow::{anyhow, Context, Result};
 use bindy_controller_sdk::kube_errors;
 use bindy_controller_sdk::namespace_scope::NamespaceScope;
 use bindy_controller_sdk::pagination::list_all_paginated;
+use bindy_controller_sdk::shutdown::ShutdownSignal;
 use bindy_controller_sdk::watch::WatchSet;
 use k8s_openapi::api::core::v1::{Namespace, Service};
 use k8s_openapi::api::networking::v1::Ingress;
@@ -2191,7 +2192,9 @@ impl ScoutConfig {
 ///
 /// Validates the configuration, initialises the Kubernetes clients, builds the
 /// `DNSZone` store (for zone validation), then runs one controller per served
-/// source kind, each driving the shared pipeline (ADR-0022).
+/// source kind, each driving the shared pipeline (ADR-0022). Returns once
+/// every controller has drained after `shutdown` fires (SIGTERM or SIGINT,
+/// wired by the `bindy scout` command).
 ///
 /// # Errors
 ///
@@ -2200,7 +2203,7 @@ impl ScoutConfig {
 /// malformed `--gateway-service` entry, a non-IPv4 default IP, a malformed
 /// allowlist or a default zone or IP outside it, an ambiguous remote
 /// transport) or if a Kubernetes client cannot be initialised.
-pub async fn run_scout(cli: ScoutCli) -> Result<()> {
+pub async fn run_scout(cli: ScoutCli, shutdown: ShutdownSignal) -> Result<()> {
     let config = ScoutConfig::from_env(cli)?;
 
     let local_client = Client::try_default().await?;
@@ -2395,20 +2398,36 @@ pub async fn run_scout(cli: ScoutCli) -> Result<()> {
     // A Gateway API controller is built only when its kind is served (and so
     // registered above): subscribing to an unregistered kind would panic.
     let mut controllers = vec![
-        source_controller::<Ingress>(&local_watch, ctx.clone()),
-        source_controller::<Service>(&local_watch, ctx.clone()),
+        source_controller::<Ingress>(&local_watch, ctx.clone(), shutdown.clone()),
+        source_controller::<Service>(&local_watch, ctx.clone(), shutdown.clone()),
     ];
     if httproute_enabled {
-        controllers.push(source_controller::<HTTPRoute>(&local_watch, ctx.clone()));
+        controllers.push(source_controller::<HTTPRoute>(
+            &local_watch,
+            ctx.clone(),
+            shutdown.clone(),
+        ));
     }
     if grpcroute_enabled {
-        controllers.push(source_controller::<GRPCRoute>(&local_watch, ctx.clone()));
+        controllers.push(source_controller::<GRPCRoute>(
+            &local_watch,
+            ctx.clone(),
+            shutdown.clone(),
+        ));
     }
     if tlsroute_enabled {
-        controllers.push(source_controller::<TLSRoute>(&local_watch, ctx.clone()));
+        controllers.push(source_controller::<TLSRoute>(
+            &local_watch,
+            ctx.clone(),
+            shutdown.clone(),
+        ));
     }
     if tcproute_enabled {
-        controllers.push(source_controller::<TCPRoute>(&local_watch, ctx.clone()));
+        controllers.push(source_controller::<TCPRoute>(
+            &local_watch,
+            ctx.clone(),
+            shutdown.clone(),
+        ));
     }
 
     futures::future::join_all(controllers).await;

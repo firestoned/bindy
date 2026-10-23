@@ -2,6 +2,67 @@
 
 This document collects the breaking-change migrations for Bindy, newest first.
 
+## Scout records of two clusters no longer overwrite each other (ADR-0027)
+
+When two edge clusters registered for one zone publish the same name, the
+cluster that published it first now keeps it, and the other cluster's record
+is held back (`Ready=False`, reason `RRsetConflict`) instead of the two
+replacing each other's addresses. No CRD, RBAC or admission change.
+
+- **Check for names two clusters publish today** before upgrading the
+  operator. After the upgrade, the older of two published records keeps the
+  name, so the other cluster's address stops being served:
+
+  ```bash
+  kubectl get arecords -n bindy-system -l bindy.firestoned.io/managed-by=scout \
+    -o jsonpath='{range .items[*]}{.metadata.labels.bindy\.firestoned\.io/zone}{" "}{.spec.name}{" "}{.metadata.labels.bindy\.firestoned\.io/source-cluster}{"\n"}{end}' \
+    | sort -u | awk '{k=$1" "$2; c[k]++; v[k]=v[k]" "$3} END {for (k in c) if (c[k] > 1) print k ":" v[k]}'
+  ```
+
+  Each line is a zone and name with the clusters publishing it. Move each one
+  to a single cluster (change the `record-name` or host on the others).
+- **Register both names before renaming a cluster.** The operator tells a
+  rename from two clusters by the registry: register the old and new names on
+  the account (`bindy bootstrap mc --cluster-name new,old ...`) first, as the
+  rename steps already say. A rename without that step leaves the new records
+  held back while the old ones keep serving.
+- **Find held-back records:**
+
+  ```bash
+  kubectl get arecords -n bindy-system -o json \
+    | jq -r '.items[] | select(any(.status.conditions[]?; .type == "Ready" and .reason == "RRsetConflict")) | .metadata.name'
+  ```
+
+## Scout runs one pod at a time (ADR-0002 addendum)
+
+The Scout Deployment now uses the `Recreate` strategy and Scout drains on
+SIGTERM, so an upgrade never runs two Scout versions side by side (they would
+both publish, and a source changed in that window could keep a record the new
+version never revisits).
+
+- **`bindy bootstrap scout`:** re-running it switches an existing Scout
+  Deployment to `Recreate` automatically (a merge patch before the apply). No
+  action needed.
+- **`deploy/scout/deployment.yaml` with `kubectl apply`:** the new manifest
+  carries `strategy.type: Recreate`; a client-side apply switches the
+  Deployment on its own.
+- **Helm, Kustomize or GitOps with server-side apply:** set
+  `spec.strategy.type: Recreate` in your manifest. The API server refuses that
+  apply while the Deployment still has its defaulted `rollingUpdate` block;
+  remove it once first:
+
+  ```bash
+  kubectl patch deployment bindy-scout -n bindy-system --type=merge \
+    -p '{"spec":{"strategy":{"type":"Recreate","rollingUpdate":null}}}'
+  ```
+
+- **Expect one longer pause, once.** The Scout being replaced by this upgrade
+  does not yet drain on SIGTERM, so publishing pauses for its 30-second grace
+  period. Later upgrades pause for about a second. DNS keeps serving
+  everything already published throughout.
+- **Run exactly one replica.** More than one Scout replica per cluster is not
+  supported.
+
 ## Scout publishes one record per DNS name (ADR-0026)
 
 Scout used to write one `ARecord` per resource host. Several resources that

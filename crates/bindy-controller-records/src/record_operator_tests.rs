@@ -261,3 +261,79 @@ mod zone_wake_tests {
         assert!(records_to_wake_for_zone::<ARecord>(&zone, |_| false).is_empty());
     }
 }
+
+/// ADR-0027 Decision 5: a change to a Scout record wakes the other Scout
+/// records of its kind that declare the same name, so a held-back record
+/// notices when the holder leaves, with no timer.
+#[cfg(test)]
+mod conflict_wake_tests {
+    use crate::crd::ARecord;
+    use crate::record_operator::scout_rivals_to_wake;
+    use serde_json::json;
+    use std::sync::Arc;
+
+    fn rec(name: &str, dns_name: &str, zone: Option<&str>, scout: bool) -> ARecord {
+        let labels = if scout {
+            json!({"bindy.firestoned.io/managed-by": "scout", "bindy.firestoned.io/source-cluster": name})
+        } else {
+            json!({})
+        };
+        let mut value = json!({
+            "apiVersion": "bindy.firestoned.io/v1beta1", "kind": "ARecord",
+            "metadata": {"name": name, "namespace": "bindy-system", "labels": labels},
+            "spec": {"name": dns_name, "ipv4Addresses": ["192.0.2.1"]},
+        });
+        if let Some(zone) = zone {
+            value["status"] = json!({"zoneRef": {
+                "apiVersion": "bindy.firestoned.io/v1beta1", "kind": "DNSZone",
+                "name": zone, "namespace": "bindy-system", "zoneName": format!("{zone}.test")}});
+        }
+        serde_json::from_value(value).expect("valid ARecord")
+    }
+
+    fn woken(changed: &ARecord, live: &[ARecord]) -> Vec<String> {
+        let live: Vec<Arc<ARecord>> = live.iter().cloned().map(Arc::new).collect();
+        let mut names: Vec<String> = scout_rivals_to_wake(changed, &live)
+            .into_iter()
+            .map(|r| r.name)
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn scout_records_with_the_same_name_in_the_zone_are_woken() {
+        let changed = rec("foo", "api", Some("shared"), true);
+        let live = [
+            changed.clone(),
+            rec("bar", "API", Some("shared"), true),
+            rec("baz", "www", Some("shared"), true),
+            rec("qux", "api", Some("other"), true),
+            rec("hand", "api", Some("shared"), false),
+        ];
+        assert_eq!(woken(&changed, &live), vec!["bar".to_string()]);
+    }
+
+    #[test]
+    fn an_unbound_record_wakes_its_name_in_every_zone() {
+        // The holder was unbound (status.zoneRef cleared): its zone is gone
+        // from the change, so every Scout record of the name is woken.
+        let changed = rec("foo", "api", None, true);
+        let live = [
+            rec("bar", "api", Some("shared"), true),
+            rec("qux", "api", Some("other"), true),
+            rec("baz", "www", Some("shared"), true),
+        ];
+        assert_eq!(
+            woken(&changed, &live),
+            vec!["bar".to_string(), "qux".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_hand_written_record_wakes_nothing() {
+        let changed = rec("hand", "api", Some("shared"), false);
+        let live = [rec("bar", "api", Some("shared"), true)];
+        assert!(woken(&changed, &live).is_empty());
+    }
+}

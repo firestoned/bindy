@@ -11,6 +11,11 @@ metadata:
     app.kubernetes.io/component: scout
 spec:
   replicas: 1
+  # One Scout at a time: Recreate stops the old pod before the new one
+  # starts, so two Scout versions never reconcile side by side during an
+  # upgrade (ADR-0002 addendum). More than one replica is not supported.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: bindy

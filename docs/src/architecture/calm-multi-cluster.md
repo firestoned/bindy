@@ -58,8 +58,9 @@ classDef highlight fill:#fdf7ec,stroke:#f0c060,stroke-width:1px,color:#000000;
     queen-api -->|persists fanned-in ARecords| arecords
     queen-api -->|evaluates the Scout source-binding policy on every ARecord write by a ServiceAccount of the record's namespace| scout-source-policy
     scout-source-policy -->|reads the record namespace's bindy-scout-sources ConfigMap as its parameter| scout-source-registry
-    queen-operator -->|reconciles ARecords; a DNSZone selects a Scout-managed record only when its zone label equals the zone's name #40;ADR-0025#41;| arecords
+    queen-operator -->|reconciles ARecords; a DNSZone selects a Scout-managed record only when its zone label equals the zone's name #40;ADR-0025#41;; Scout records of two clusters that claim one name in one zone are a conflict: the record that published the name first keeps it, the others are held back Ready=False RRsetConflict, and zone replay and finalizer re-push apply the same rule #40;ADR-0027#41;| arecords
     queen-operator -->|programs zones and records| queen-bind9
+    queen-operator -->|reads the records namespace's bindy-scout-sources ConfigMap to tell a cluster rename #40;two names on one account#41; from two clusters claiming one name #40;ADR-0027#41;| scout-source-registry
 
 
 

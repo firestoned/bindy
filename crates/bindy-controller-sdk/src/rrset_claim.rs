@@ -100,10 +100,14 @@ pub fn claim_of<'a, K: RecordKind>(
     }
 }
 
-/// The first record in `live` that still claims the RRset `gone` published.
+/// The record in `live` to re-push after `gone` stops declaring its RRset.
 ///
 /// Each candidate's claim is its `spec.name` in the zone its
-/// `status.zoneRef` names; a record no zone has tagged claims nothing.
+/// `status.zoneRef` names; a record no zone has tagged claims nothing. Among
+/// the claimants, the one the conflict rule makes the holder is picked: the
+/// oldest that has published the name (ADR-0027 Decision 4), so the re-push
+/// never serves a record another cluster's holder would hold back. When none
+/// has published, the first claimant is picked.
 ///
 /// # Arguments
 ///
@@ -118,17 +122,36 @@ pub fn live_claimant<'a, K: RecordKind>(
     gone: &RrsetClaim<'_>,
     live: &'a [Arc<K>],
 ) -> Option<&'a Arc<K>> {
-    live.iter().find(|record| {
-        record
-            .record_status()
-            .and_then(|status| status.zone_ref.as_ref())
-            .is_some_and(|zone_ref| {
-                claims_rrset(
-                    &claim_of(record.as_ref(), zone_ref, record.spec_name()),
-                    gone,
-                )
-            })
-    })
+    let claimants: Vec<&'a Arc<K>> = live
+        .iter()
+        .filter(|record| {
+            record
+                .record_status()
+                .and_then(|status| status.zone_ref.as_ref())
+                .is_some_and(|zone_ref| {
+                    claims_rrset(
+                        &claim_of(record.as_ref(), zone_ref, record.spec_name()),
+                        gone,
+                    )
+                })
+        })
+        .collect();
+    let facts: Vec<(&'a Arc<K>, crate::rrset_conflict::ClaimFacts<'a>)> = claimants
+        .iter()
+        .copied()
+        .filter_map(|record: &'a Arc<K>| {
+            crate::rrset_conflict::claim_facts(record.as_ref()).map(|facts| (record, facts))
+        })
+        .collect();
+    let holder = crate::rrset_conflict::rrset_holder(facts.iter().map(|(_, f)| f));
+    holder
+        .and_then(|h| {
+            facts
+                .iter()
+                .find(|(_, f)| std::ptr::eq(f, h))
+                .map(|(record, _)| *record)
+        })
+        .or_else(|| claimants.first().copied())
 }
 
 #[cfg(test)]

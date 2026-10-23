@@ -30,7 +30,7 @@
       "unique-id": "arecords",
       "node-type": "data-asset",
       "name": "ARecord CRs (bindy-system)",
-      "description": "Canonical ARecord resources in the Queen Bee bindy-system namespace, fanned in from every child cluster and stamped with source-cluster and zone labels. A record written by a registered Scout ServiceAccount carries one of that account's cluster names and an allowed zone; a DNSZone takes a Scout record only when its zone label equals the zone's name (ADR-0025). A Scout writes one ARecord per cluster, zone and DNS name, not one per source: the bindy.firestoned.io/scout-contributors annotation holds every contributing source's addresses and TTL, spec.ipv4Addresses is their union and spec.ttl the lowest, and the record is deleted with its last contributor (ADR-0026)."
+      "description": "Canonical ARecord resources in the Queen Bee bindy-system namespace, fanned in from every child cluster and stamped with source-cluster and zone labels. A record written by a registered Scout ServiceAccount carries one of that account's cluster names and an allowed zone; a DNSZone takes a Scout record only when its zone label equals the zone's name (ADR-0025). A Scout writes one ARecord per cluster, zone and DNS name, not one per source: the bindy.firestoned.io/scout-contributors annotation holds every contributing source's addresses and TTL, spec.ipv4Addresses is their union and spec.ttl the lowest, and the record is deleted with its last contributor (ADR-0026). Two clusters never share a name in a zone: the one that published first keeps it (ADR-0027)."
     },
     {
       "unique-id": "scout-source-registry",
@@ -54,7 +54,7 @@
       "unique-id": "scout-a",
       "node-type": "service",
       "name": "Bindy Scout A",
-      "description": "Scout Deployment (image bindy, args=[scout]) on Child Cluster A. Watches local Ingress / LoadBalancer Service / HTTPRoute / GRPCRoute / TLSRoute / TCPRoute through the shared watch layer (one watch and cache per kind, ADR-0009) and derives DNS names. Publishes only zones in --allowed-zones and addresses in --allowed-ip-ranges when those are set (ADR-0025). Sources (of any kind or namespace) that resolve to the same zone and DNS name are merged into one record with the complete address set (ADR-0026).",
+      "description": "Scout Deployment (image bindy, args=[scout]) on Child Cluster A: one replica, Recreate strategy, so an old and a new Scout never run side by side (ADR-0002 addendum). Watches local Ingress / LoadBalancer Service / HTTPRoute / GRPCRoute / TLSRoute / TCPRoute through the shared watch layer (one watch and cache per kind, ADR-0009) and derives DNS names. Publishes only zones in --allowed-zones and addresses in --allowed-ip-ranges when those are set (ADR-0025). Sources (of any kind or namespace) that resolve to the same zone and DNS name are merged into one record with the complete address set (ADR-0026).",
       "development-language": "Rust"
     },
     {
@@ -73,7 +73,7 @@
       "unique-id": "scout-b",
       "node-type": "service",
       "name": "Bindy Scout B",
-      "description": "Scout Deployment on Child Cluster B with its own ServiceAccount, --cluster-name, --allowed-zones, --allowed-ip-ranges and remote kubeconfig.",
+      "description": "Scout Deployment on Child Cluster B (one replica, Recreate strategy) with its own ServiceAccount, --cluster-name, --allowed-zones, --allowed-ip-ranges and remote kubeconfig.",
       "development-language": "Rust"
     },
     {
@@ -190,7 +190,7 @@
     },
     {
       "unique-id": "operator-reconciles-arecords",
-      "description": "reconciles ARecords; a DNSZone selects a Scout-managed record only when its zone label equals the zone's name (ADR-0025)",
+      "description": "reconciles ARecords; a DNSZone selects a Scout-managed record only when its zone label equals the zone's name (ADR-0025); Scout records of two clusters that claim one name in one zone are a conflict: the record that published the name first keeps it, the others are held back Ready=False RRsetConflict, and zone replay and finalizer re-push apply the same rule (ADR-0027)",
       "protocol": "HTTPS",
       "relationship-type": {
         "connects": {
@@ -206,6 +206,21 @@
         "connects": {
           "source": { "node": "queen-operator" },
           "destination": { "node": "queen-bind9" }
+        }
+      }
+    },
+    {
+      "unique-id": "operator-reads-scout-source-registry",
+      "description": "reads the records namespace's bindy-scout-sources ConfigMap to tell a cluster rename (two names on one account) from two clusters claiming one name (ADR-0027)",
+      "protocol": "HTTPS",
+      "relationship-type": {
+        "connects": {
+          "source": {
+            "node": "queen-operator"
+          },
+          "destination": {
+            "node": "scout-source-registry"
+          }
         }
       }
     }

@@ -1,6 +1,7 @@
 # Scout follow-ups: metrics, conflict detection, AAAA, bootstrap parity
 
-> **Status:** ⛔ Not started. Collects the items that survived roadmap
+> **Status:** 🔶 In progress: item 2 done 2026-10-23 (ADR-0027); items 1,
+> 3, 4 and 5 open. Collects the items that survived roadmap
 > [12](12-scout-ingress-controller.md)'s closure (its open-questions list)
 > plus small parity gaps, so nothing dangles inside a ✅ doc.
 
@@ -15,7 +16,14 @@
    today. Wanted: `scout_sources_watched`, `scout_arecords_{created,deleted}_total`,
    `scout_errors_total`, remote-client health — reusing the operator's
    registry conventions (`bindy_firestoned_io_` namespace).
-2. **Cross-cluster conflict detection** (roadmap 12 Q1). Two clusters
+2. ✅ **Done 2026-10-23 ([ADR-0027](../../docs/adr/0027-scout-name-conflicts-detected-not-overwritten.md)).**
+   Two clusters' Scout records for one name are a conflict: the record that
+   published first keeps the name, the other is `Ready=False`,
+   `RRsetConflict`; zone replay and the finalizer re-push follow the same
+   rule, the held-back record takes over when the holder leaves, and a rename
+   with both names registered is not a conflict. Proven on kind
+   (`make e2e-scout-guardrails`, G7 and G8). Original item:
+   **Cross-cluster conflict detection** (roadmap 12 Q1). Two clusters
    creating an ARecord for the same host is last-write-wins today. Wanted:
    conflict surfaced as a status condition (likely bindy-side, keyed on the
    `source-cluster` label). Since roadmap [31](31-scout-source-guardrails.md)

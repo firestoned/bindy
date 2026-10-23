@@ -1,3 +1,50 @@
+## [2026-10-23 20:20] - Scout records of two clusters that claim one name are a conflict, not a race (ADR-0027, roadmap 27 item 2)
+
+**Author:** Erick Bourgeois
+
+### Added
+- `crates/bindy-controller-sdk/src/rrset_conflict.rs` (+ tests): the conflict rule shared by every writer. `claim_facts` (kind, zone, name, cluster, published, created), `rrset_holder` (published first, then oldest, then namespace/name; none published means no holder), `ScoutRegistry` (`bindy-scout-sources`: two cluster names on one account are a rename), `scout_conflict`, `held_back_by` (reads the registry only when another cluster claims the name), `conflict_message`.
+- `bindy_api::status_reasons::REASON_RRSET_CONFLICT` (`RRsetConflict`); `bindy_api::labels::{SCOUT_SOURCES_CONFIGMAP_NAME, SCOUT_SOURCES_CLUSTERS_SUFFIX, SCOUT_SOURCES_ZONES_SUFFIX}` (bootstrap's constants now alias them).
+- `crates/bindy-controller-records`: `hold_back_on_conflict` in the record reconcile (no BIND9 write, `Ready=False/RRsetConflict` naming the holder, holder re-pushed once, one warning per conflict); `scout_rivals_to_wake` and a second, unfiltered trigger on the record's own kind so a held-back record takes over when the holder changes, is unbound or deleted.
+- `tests/e2e/scout_guardrails_test.sh`: G7 is now a hard assertion (first publisher served on every primary and secondary, the other `RRsetConflict` naming the holder, a primary wipe's replay keeps the holder, the name passes to the other cluster when the holder leaves); new G8 (a rename with both names registered is not a conflict). Passed on slate 2026-10-23.
+
+### Changed
+- `crates/bindy-controller-sdk/src/rrset_claim.rs`: `live_claimant` re-pushes the holder among the remaining claimants, not the first in store order (ADR-0027 Decision 4).
+- `crates/bindy-bind9/src/record_push.rs`: zone replay skips a record held back by another cluster's holder.
+- `docs/adr/0027-scout-name-conflicts-detected-not-overwritten.md` Accepted; CALM (records node, operator reads the registry, conflict on the reconcile edge); `docs/src/guide/scout.md` ("Two clusters publishing one name", rename note); `docs/src/operations/troubleshooting.md` (`RRsetConflict` row); `docs/src/operations/migration-guide.md` (pre-check for names two clusters publish, register both names before a rename); `docs/src/security/threat-model.md` v1.32 (T5, M-74, accepted risk 23 (a) narrowed); roadmap 27 item 2 and `ROADMAPS.md`.
+
+### Why
+Two edge clusters registered for one zone replaced each other's addresses for a shared name on every write, and either could take over a name the other already served (accepted risk 23 (a)).
+
+### Impact
+- [ ] Breaking change (behavior change: the second cluster's record for an already-published name is no longer served; see the migration guide)
+- [x] Requires cluster rollout (operator image)
+- [ ] Config change only
+- [ ] Documentation only
+
+## [2026-10-23 19:50] - Scout runs one pod at a time: Recreate strategy, bootstrap migration, SIGTERM drain (ADR-0002 addendum)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- Scout upgrades ran the old and the new pod side by side (default `RollingUpdate`, no leader election), and both published: on kind, a Service created during an upgrade across ADR-0026 got a per-source record from the old Scout next to the new per-name record, which the new Scout never revisits. Found while reproducing #556 (a test that looked like the old Scout "merging" was the outgoing new pod writing).
+- Scout ignored SIGTERM, so every pod stop waited out the 30-second termination grace period.
+
+### Changed
+- `crates/bindy-bootstrap/src/bootstrap.rs`: the Scout Deployment uses `strategy: {type: Recreate}`; `apply_steps` calls the new `prepare_deployment_strategy`, which merge-patches an existing Deployment to `Recreate` (`rollingUpdate: null`) when the desired one wants it (`needs_recreate_migration`, `recreate_strategy_patch`). Needed because a server-side apply of `Recreate` is refused while the API server's defaulted `rollingUpdate` remains (verified on kind, also with an explicit `null`).
+- `deploy/scout/deployment.yaml`: `strategy.type: Recreate` (a client-side `kubectl apply` makes the switch on its own).
+- `crates/bindy-scout/src/pipeline.rs` / `scout.rs`, `crates/bindy/src/cli.rs`: `source_controller` drains on the SDK shutdown signal (`graceful_shutdown_on`); `run_scout` takes a `ShutdownSignal`; `bindy scout` fires it on SIGTERM/SIGINT with the operator's listener.
+- Tests: `test_build_scout_deployment_never_runs_two_scouts_at_once`, drift test `static_scout_deployment_never_runs_two_scouts_at_once`, `recreate_migration_tests` (pure + wiremock), `a_source_controller_stops_when_the_shutdown_fires` (fails without the drain); the fake API serves an empty cluster-wide Service list.
+- Proven on kind: an existing `RollingUpdate` Scout upgraded by the new bootstrap ends on `Recreate` with at most one Scout pod at any time, re-running is idempotent; no-Scout gap 0.8 s between two draining versions, 42.7 s from a version that ignores SIGTERM.
+- Docs: `docs/adr/0002-scout-deployment-topology.md` amended (and migrated to metadata bullets); CALM Scout nodes; `docs/src/guide/scout.md` ("Upgrading Scout", Deployment examples); `docs/src/operations/migration-guide.md`; `docs/src/security/threat-model.md` v1.31.
+- Reverted the e2e-only `scout_settled_on` wait in `tests/lib/scout_clusters.sh`: with `Recreate`, `rollout status` already returns after the old pod is gone.
+
+### Impact
+- [ ] Breaking change (a Scout Deployment managed by server-side apply outside bootstrap needs a one-off merge patch; see the migration guide)
+- [x] Requires cluster rollout (Scout image and Deployment)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-20 20:40] - Scout guardrails proven on two edge clusters (roadmap 31 phase 5); Scout logs the cause of a failed write
 
 **Author:** Erick Bourgeois
