@@ -22,11 +22,11 @@ mod tests {
         resolve_ips_from_lb_status, resolve_ips_from_service_lb_status, resolve_record_name,
         resolve_usable_zone, resolve_zone, retain_ipv4, service_ref_from_str,
         stale_arecord_label_selector, stale_cleanup_zones, stale_selector_base,
-        zone_allows_source_namespace, zone_namespace_grant, Gateway, GatewayServiceTarget,
-        NamespaceGrant, NamespacedName, ParentReference, ScoutCli, ScoutConfig, StaleKind,
-        ZoneAuthz, ZoneResolution, ANNOTATION_TTL, FINALIZER_SCOUT, LABEL_MANAGED_BY,
-        LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER, LABEL_SOURCE_KIND, LABEL_SOURCE_NAME,
-        LABEL_SOURCE_NAMESPACE, LABEL_ZONE, REMOTE_CLEANUP_GRACE_SECS,
+        union_ips_from_lb_services, zone_allows_source_namespace, zone_namespace_grant, Gateway,
+        GatewayServiceTarget, NamespaceGrant, NamespacedName, ParentReference, ScoutCli,
+        ScoutConfig, StaleKind, ZoneAuthz, ZoneResolution, ANNOTATION_TTL, FINALIZER_SCOUT,
+        LABEL_MANAGED_BY, LABEL_MANAGED_BY_SCOUT, LABEL_SOURCE_CLUSTER, LABEL_SOURCE_KIND,
+        LABEL_SOURCE_NAME, LABEL_SOURCE_NAMESPACE, LABEL_ZONE, REMOTE_CLEANUP_GRACE_SECS,
     };
     use crate::scout::{kind_served, HTTPRoute, TLSRoute};
     use k8s_openapi::jiff::{SignedDuration, Timestamp};
@@ -1192,6 +1192,93 @@ mod tests {
             ..Default::default()
         };
         assert!(resolve_ips_from_service_lb_status(&svc).is_empty());
+    }
+
+    // =========================================================================
+    // union_ips_from_lb_services (issue #569)
+    // =========================================================================
+
+    fn named_service(name: &str, svc_type: &str, ips: &[&str]) -> Service {
+        let lb: Vec<serde_json::Value> =
+            ips.iter().map(|ip| serde_json::json!({"ip": ip})).collect();
+        serde_json::from_value(serde_json::json!({
+            "metadata": {"name": name, "namespace": "traefik"},
+            "spec": {"type": svc_type},
+            "status": {"loadBalancer": {"ingress": lb}}
+        }))
+        .expect("valid Service")
+    }
+
+    #[test]
+    fn test_union_ips_from_lb_services_publishes_every_matching_service() {
+        // Issue #569: one LoadBalancer Service per VIP, all sharing a label —
+        // every VIP is published, not only the first Service's
+        let services = vec![
+            named_service("vip-a", "LoadBalancer", &["10.0.0.1"]),
+            named_service("vip-b", "LoadBalancer", &["10.0.0.2", "10.0.0.3"]),
+            named_service("vip-c", "LoadBalancer", &["10.0.0.4"]),
+        ];
+        assert_eq!(
+            union_ips_from_lb_services(&services),
+            vec!["10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.4"]
+        );
+    }
+
+    #[test]
+    fn test_union_ips_from_lb_services_skips_services_without_an_address() {
+        let services = vec![
+            named_service("vip-a", "LoadBalancer", &[]),
+            named_service("vip-b", "LoadBalancer", &["10.0.0.2"]),
+        ];
+        assert_eq!(union_ips_from_lb_services(&services), vec!["10.0.0.2"]);
+    }
+
+    #[test]
+    fn test_union_ips_from_lb_services_ignores_non_loadbalancer_services() {
+        let services = vec![
+            named_service("internal", "ClusterIP", &["10.9.9.9"]),
+            named_service("nodeport", "NodePort", &["10.9.9.8"]),
+            named_service("vip-a", "LoadBalancer", &["10.0.0.1"]),
+        ];
+        assert_eq!(union_ips_from_lb_services(&services), vec!["10.0.0.1"]);
+    }
+
+    #[test]
+    fn test_union_ips_from_lb_services_removes_addresses_shared_by_services() {
+        let services = vec![
+            named_service("vip-a", "LoadBalancer", &["10.0.0.1", "10.0.0.2"]),
+            named_service("vip-b", "LoadBalancer", &["10.0.0.2", "10.0.0.3"]),
+        ];
+        assert_eq!(
+            union_ips_from_lb_services(&services),
+            vec!["10.0.0.1", "10.0.0.2", "10.0.0.3"]
+        );
+    }
+
+    #[test]
+    fn test_union_ips_from_lb_services_order_does_not_depend_on_list_order() {
+        // Services are taken in name order, so the contributor entry does not
+        // change (and the record is not rewritten) when the list order does
+        let forward = vec![
+            named_service("vip-a", "LoadBalancer", &["10.0.0.9"]),
+            named_service("vip-b", "LoadBalancer", &["10.0.0.1"]),
+        ];
+        let reversed: Vec<Service> = forward.iter().rev().cloned().collect();
+        assert_eq!(
+            union_ips_from_lb_services(&forward),
+            vec!["10.0.0.9", "10.0.0.1"]
+        );
+        assert_eq!(
+            union_ips_from_lb_services(&reversed),
+            union_ips_from_lb_services(&forward)
+        );
+    }
+
+    #[test]
+    fn test_union_ips_from_lb_services_empty() {
+        assert!(union_ips_from_lb_services(&[]).is_empty());
+        let only_clusterip = vec![named_service("internal", "ClusterIP", &[])];
+        assert!(union_ips_from_lb_services(&only_clusterip).is_empty());
     }
 
     // =========================================================================

@@ -354,6 +354,25 @@ mod tests {
                         |g| ResponseTemplate::new(200).set_body_json(g.clone()),
                     )
                 }
+                ("GET", ["api", "v1", "namespaces", ns, "services"]) => {
+                    // Applies the label selector as the API server would; a
+                    // matching non-LoadBalancer Service is still returned, so
+                    // the code under test must drop it itself.
+                    self.log.push(format!("LIST services {ns} {selector}"));
+                    if let Some(code) = self.service_status {
+                        return error(code);
+                    }
+                    let prefix = format!("{ns}/");
+                    let items = self
+                        .services
+                        .iter()
+                        .filter(|(k, v)| {
+                            k.starts_with(&prefix) && selector_matches(&selector, &labels_of(v))
+                        })
+                        .map(|(_, v)| v.clone())
+                        .collect();
+                    ResponseTemplate::new(200).set_body_json(list_body("v1", "Service", items))
+                }
                 ("GET", ["api", "v1", "namespaces", ns, "services", name]) => {
                     self.log.push(format!("GET service {ns}/{name}"));
                     if let Some(code) = self.service_status {
@@ -1362,6 +1381,97 @@ mod tests {
             .await
             .expect("reconcile");
         assert_eq!(ips_of(&only_record(&h)), vec![GATEWAY_SERVICE_IP]);
+    }
+
+    /// The label selector of [`labelled_gateway_target`].
+    const GATEWAY_SELECTOR_KEY: &str = "app";
+    const GATEWAY_SELECTOR_VALUE: &str = "traefik";
+
+    /// Maps the gateway class to every Service in `SRC_NS` labelled
+    /// `app=traefik` (issue #569).
+    fn labelled_gateway_target() -> GatewayServiceTarget {
+        GatewayServiceTarget::Labeled {
+            namespace: SRC_NS.to_string(),
+            selector: format!("{GATEWAY_SELECTOR_KEY}={GATEWAY_SELECTOR_VALUE}"),
+        }
+    }
+
+    /// A Service fixture carrying `app=<app>`.
+    fn labelled_service_json(name: &str, app: &str, svc_type: &str, lb_ips: &[&str]) -> Value {
+        let mut svc = service_json(&meta(name), svc_type, lb_ips);
+        svc["metadata"]["labels"] = json!({ GATEWAY_SELECTOR_KEY: app });
+        svc
+    }
+
+    #[tokio::test]
+    async fn a_labelled_gateway_target_publishes_every_matching_service() {
+        const VIP_A: &str = "10.4.4.1";
+        const VIP_B: &str = "10.4.4.2";
+        const VIP_C: &str = "10.4.4.3";
+        const INTERNAL_IP: &str = "10.4.4.9";
+        const UNMATCHED_IP: &str = "10.4.4.8";
+        let mut h = Harness::new().await;
+        h.gateway_services
+            .insert(GATEWAY_CLASS.to_string(), labelled_gateway_target());
+        {
+            let mut s = h.state.lock().expect("lock");
+            s.gateways
+                .insert(format!("{SRC_NS}/gw"), gateway_json("gw", &[]));
+            for (name, app, svc_type, ips) in [
+                ("vip-a", GATEWAY_SELECTOR_VALUE, "LoadBalancer", vec![VIP_A]),
+                (
+                    "vip-b",
+                    GATEWAY_SELECTOR_VALUE,
+                    "LoadBalancer",
+                    vec![VIP_B, VIP_C],
+                ),
+                (
+                    "vip-pending",
+                    GATEWAY_SELECTOR_VALUE,
+                    "LoadBalancer",
+                    vec![],
+                ),
+                (
+                    "internal",
+                    GATEWAY_SELECTOR_VALUE,
+                    "ClusterIP",
+                    vec![INTERNAL_IP],
+                ),
+                // A LoadBalancer with an address that the selector does not
+                // match: its address must never be published.
+                ("other-lb", "other", "LoadBalancer", vec![UNMATCHED_IP]),
+            ] {
+                s.services.insert(
+                    format!("{SRC_NS}/{name}"),
+                    labelled_service_json(name, app, svc_type, &ips),
+                );
+            }
+        }
+        h.run(&httproute(&meta("web"), &["api.example.com"], Some("gw")))
+            .await
+            .expect("reconcile");
+        assert_eq!(ips_of(&only_record(&h)), vec![VIP_A, VIP_B, VIP_C]);
+        assert!(h.log().contains(&format!(
+            "LIST services {SRC_NS} {GATEWAY_SELECTOR_KEY}={GATEWAY_SELECTOR_VALUE}"
+        )));
+    }
+
+    #[tokio::test]
+    async fn a_labelled_gateway_target_list_error_fails_the_reconcile() {
+        let mut h = Harness::new().await;
+        h.gateway_services
+            .insert(GATEWAY_CLASS.to_string(), labelled_gateway_target());
+        {
+            let mut s = h.state.lock().expect("lock");
+            s.gateways
+                .insert(format!("{SRC_NS}/gw"), gateway_json("gw", &[]));
+            s.service_status = Some(500);
+        }
+        let result = h
+            .run(&httproute(&meta("web"), &["api.example.com"], Some("gw")))
+            .await;
+        assert!(result.is_err(), "got {result:?}");
+        assert!(h.applied().is_empty());
     }
 
     #[tokio::test]

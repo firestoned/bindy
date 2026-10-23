@@ -32,6 +32,7 @@ replace each other's RRset, so BIND9 serves whichever reconciled last.
 | 5 | Handover from per-source records to per-name records, deleting the old record once the new one is served (Decision 5) | ✅ `pipeline.rs` (`publish`: per-source, legacy and previous-cluster records wait on `handover_step`; previous-cluster per-name records lose only this source's entry, `withdraw_from_other_cluster_record`, refusals skipped) |
 | 6 | Docs (`docs/src/guide/scout.md` record names, labels, troubleshooting; migration guide incl. rollback), CHANGELOG, kind proof with three Services at `@` and source churn | ✅ Docs, examples, CHANGELOG, `tests/e2e/scout_test.sh` updated; new two-cluster suite `tests/e2e/scout_multi_cluster_test.sh` (`make e2e-scout-multi`) passed on slate 2026-10-20: #556 reproduced on the old Scout, upgrade with 0 empty answers in 160 probe samples per name, churn, mixed kinds/namespaces/TTLs, a 10-way race, Scout/operator/BIND9 kills, quiet operator and Scout. `e2e-scout` and `e2e-chaos` also pass |
 | 7 | Full threat-model pass; header stamp bumped | ✅ `docs/src/security/threat-model.md` v1.29: T6, M-73, accepted risk 24 |
+| 8 | A label-selected `--gateway-service` target publishes the union of every matching `LoadBalancer` Service, not only the first with an address (issue #569, ADR-0026 Decision 7) | ✅ `crates/bindy-scout/src/scout.rs` (`union_ips_from_lb_services`), `pipeline.rs` (`resolve_ips_from_gateway_service`); tests in `scout_tests.rs`, `pipeline_tests.rs`; `docs/src/guide/scout.md`; threat model v1.31 (T7, M-74, accepted risk 25) |
 
 ## Follow-ups
 
@@ -40,3 +41,9 @@ replace each other's RRset, so BIND9 serves whichever reconciled last.
   this roadmap, any second record for a name is a conflict; detecting it is
   roadmap 27 item 2 and needs its own ADR, which must not flag the overlap
   during a phase 5 handover.
+- A route re-resolves its gateway addresses only when the route itself is
+  reconciled. A gateway Service (name or label target) or a Gateway's
+  `status.addresses` changing does not update the route's record until then
+  (issue #569, "possibly related"). Mapping those changes to the routes that
+  resolve through them needs its own ADR (likely a Gateway watch, so
+  `list`/`watch` on `gateways` in the Scout RBAC).

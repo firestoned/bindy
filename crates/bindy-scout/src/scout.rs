@@ -1557,6 +1557,30 @@ pub(crate) fn resolve_ips_from_service_lb_status(svc: &Service) -> Vec<String> {
     unique_ipv4(ips, "Service status.loadBalancer")
 }
 
+/// Unions the external IPv4 addresses of every `LoadBalancer` Service in
+/// `services` (issue #569).
+///
+/// Used for a label-selected `--gateway-service` target, where one Service per
+/// VIP commonly shares a label. Non-`LoadBalancer` Services are ignored and a
+/// Service with no external address yet contributes nothing. Services are
+/// taken in name order and each one's addresses in status order, so the result
+/// does not depend on the order the API server listed them in; an address
+/// shared by several Services appears once.
+pub(crate) fn union_ips_from_lb_services(services: &[Service]) -> Vec<String> {
+    let mut lb_services: Vec<&Service> = services
+        .iter()
+        .filter(|svc| is_loadbalancer_service(svc))
+        .collect();
+    lb_services.sort_by(|a, b| a.metadata.name.cmp(&b.metadata.name));
+    let mut seen = BTreeSet::new();
+    let mut ips: Vec<String> = lb_services
+        .into_iter()
+        .flat_map(resolve_ips_from_service_lb_status)
+        .collect();
+    ips.retain(|ip| seen.insert(ip.clone()));
+    ips
+}
+
 /// Parses a `namespace/name` string into a [`NamespacedName`].
 ///
 /// Whitespace around each segment is trimmed. Returns `None` unless the input

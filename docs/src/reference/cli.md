@@ -333,7 +333,7 @@ bindy scout [OPTIONS]
 | `--namespace <NS>` | `BINDY_SCOUT_NAMESPACE` | `bindy-system` | Namespace where `ARecord` CRs are created. |
 | `--default-zone <ZONE>` | `BINDY_SCOUT_DEFAULT_ZONE` | unset | Zone used when a source has no `bindy.firestoned.io/zone` annotation. Must be inside `--allowed-zones` when that is set. |
 | `--default-ips <IP[,IP]>` | `BINDY_SCOUT_DEFAULT_IPS` | unset | Addresses used when a source has no IP annotation and none is discovered. Must be inside `--allowed-ip-ranges` when that is set. |
-| `--gateway-service <class=target>` | `BINDY_SCOUT_GATEWAY_SERVICES` | unset | Repeatable gatewayClass to LoadBalancer Service map for route IP resolution. |
+| `--gateway-service <class=target>` | `BINDY_SCOUT_GATEWAY_SERVICES` | unset | Repeatable gatewayClass to LoadBalancer Service map for route IP resolution; `class=namespace/name` or `class=namespace/<label-selector>` (a selector publishes every matching LoadBalancer Service). |
 | `--namespace-selector <SELECTOR>` | `BINDY_SCOUT_NAMESPACE_SELECTOR` | unset (every namespace) | Label selector a source's namespace must match. Recommended. |
 | `--allowed-zones <ZONE[,ZONE]>` | `BINDY_SCOUT_ALLOWED_ZONES` | unset (every zone) | Zones Scout may publish into, each with its subzones. A source naming another zone publishes nothing. `*` is refused. Recommended ([ADR-0025](https://github.com/firestoned/bindy/blob/main/docs/adr/0025-scout-records-bound-to-cluster-and-zones.md)). |
 | `--allowed-ip-ranges <CIDR[,CIDR]>` | `BINDY_SCOUT_ALLOWED_IP_RANGES` | unset (every address) | IPv4 ranges (a bare address means `/32`) every published address must fall in. A source with any address outside publishes nothing. Recommended. |
