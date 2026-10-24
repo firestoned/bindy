@@ -208,4 +208,50 @@ mod tests {
 
         assert!(!claims_rrset(&claim_of(&txt, &zone, "www"), &gone));
     }
+
+    /// A claimant that has published `dns_name`, created at `created`.
+    fn published(name: &str, dns_name: &str, created: &str) -> Arc<ARecord> {
+        let mut record = (*a_record(name, dns_name, Some(ZONE), false)).clone();
+        record.metadata.creation_timestamp =
+            Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::Time(
+                created.parse().expect("timestamp"),
+            ));
+        let status = record.status.as_mut().expect("status");
+        status.published_name = Some(dns_name.to_string());
+        status.last_updated = Some("2026-10-23T10:00:00Z".to_string());
+        Arc::new(record)
+    }
+
+    #[test]
+    fn the_claimant_re_pushed_is_the_holder_not_the_first_in_the_store() {
+        // ADR-0027 Decision 4: with three claimants left, the finalizer
+        // re-pushes the one the holder rule picks (published, oldest).
+        let gone_record = a_record("old", "api", Some(ZONE), true);
+        let zone = zone_ref(ZONE);
+        let gone = claim_of(gone_record.as_ref(), &zone, "api");
+        let live = vec![
+            a_record("never-published", "api", Some(ZONE), false),
+            published("newer", "api", "2026-10-09T00:00:00Z"),
+            published("older", "api", "2026-10-03T00:00:00Z"),
+        ];
+
+        let claimant = live_claimant(&gone, &live).expect("api is still declared");
+
+        assert_eq!(claimant.metadata.name.as_deref(), Some("older"));
+    }
+
+    #[test]
+    fn without_a_published_claimant_the_first_one_is_re_pushed() {
+        let gone_record = a_record("old", "api", Some(ZONE), true);
+        let zone = zone_ref(ZONE);
+        let gone = claim_of(gone_record.as_ref(), &zone, "api");
+        let live = vec![
+            a_record("first", "api", Some(ZONE), false),
+            a_record("second", "api", Some(ZONE), false),
+        ];
+
+        let claimant = live_claimant(&gone, &live).expect("api is still declared");
+
+        assert_eq!(claimant.metadata.name.as_deref(), Some("first"));
+    }
 }

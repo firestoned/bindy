@@ -634,6 +634,22 @@ where
         return Ok(ReplayAction::Skipped);
     }
 
+    // ADR-0027 Decision 4: a record held back by another cluster's holder is
+    // not replayed, or the last record in the zone's list would be the one
+    // served.
+    let live = stores.records.get::<T>().state();
+    if let Some(holder) =
+        bindy_controller_sdk::rrset_conflict::held_back_by(client, &record, &live).await?
+    {
+        debug!(
+            "Not replaying {} {namespace}/{name}: held back by {}/{} (ADR-0027)",
+            record_type::<T>(),
+            holder.meta().namespace.as_deref().unwrap_or_default(),
+            holder.meta().name.as_deref().unwrap_or_default()
+        );
+        return Ok(ReplayAction::Skipped);
+    }
+
     add_record_to_instances_generic(client, stores, resolver, primary_refs, zone_name, &record)
         .await?;
     Ok(ReplayAction::Pushed)

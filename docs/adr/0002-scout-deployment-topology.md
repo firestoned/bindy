@@ -1,8 +1,10 @@
-# ADR-0002: Scout Deployment Topology in CAPI/k0rdent Fleets
+# 0002: Scout Deployment Topology in CAPI/k0rdent Fleets
 
-## Status
-
-Accepted
+- **Status:** Accepted
+- **Date:** 2026-07-19
+- **Amended:** 2026-10-23 (addendum "One Scout pod at a time": the Scout
+  Deployment uses the `Recreate` strategy, `bindy bootstrap scout` migrates an
+  existing Deployment to it, and Scout drains on SIGTERM)
 
 ## Context
 
@@ -72,6 +74,45 @@ Required hardening that makes Option A sound:
    ServiceTemplate/MultiClusterService add-on, so every new drone receives it
    automatically with the scoped credentials above.
 
+### Addendum (2026-10-23): one Scout pod at a time
+
+Scout runs one replica and has no leader election: it is stateless, every
+source reconciles when it starts, and its writes are idempotent. Under the
+Deployment's default `RollingUpdate` strategy, though, an upgrade runs the old
+and the new pod side by side until the old one has terminated, and both
+reconcile. Seen on kind (2026-10-20): during an upgrade across ADR-0026, a
+Service created in that window was published by both versions, one per-source
+record and one per-name record, and the newer Scout never revisits a source
+that does not change again.
+
+The Scout Deployment, built by `bindy bootstrap scout` and shipped as
+`deploy/scout/deployment.yaml`, uses `strategy: {type: Recreate}`: the old pod
+is gone before the new one starts. Leader election would also prevent the
+overlap but needs a Lease and RBAC on every edge cluster and code in Scout,
+for a component that only ever needs one replica. `replicas` stays 1; more
+than one replica would bring the overlap back and is not supported.
+
+Two things make `Recreate` work in practice:
+
+- **Scout drains on SIGTERM.** Scout used to ignore SIGTERM, so the old pod
+  sat out the whole termination grace period (30 seconds) before the new one
+  could start. Its source controllers now drain on SIGTERM or SIGINT like the
+  operator's (the SDK shutdown signal and kube's `graceful_shutdown_on`):
+  no new reconcile starts, running ones finish, the process exits. Measured
+  on kind: under a second with no Scout running between two such versions,
+  against about 30 seconds without it. DNS keeps serving everything already
+  published during the gap, and changes made to sources in it are picked up
+  when the new pod reconciles every source at startup.
+- **`bindy bootstrap scout` migrates an existing Deployment.** The API server
+  refuses a server-side apply that sets `type: Recreate` on a Deployment
+  whose `spec.strategy.rollingUpdate` it defaulted ("may not be specified
+  when strategy type is 'Recreate'"; verified on kind, with or without an
+  explicit `rollingUpdate: null`). Bootstrap therefore merge-patches an
+  existing Deployment that wants `Recreate` and does not have it
+  (`type: Recreate`, `rollingUpdate: null`) before the apply. A client-side
+  `kubectl apply` of `deploy/scout/deployment.yaml` handles the switch on its
+  own.
+
 ## Consequences
 
 - A compromised Scout yields at most one tenant's DNS-record surface — never
@@ -86,3 +127,9 @@ Required hardening that makes Option A sound:
 - Documented for users in `docs/src/guide/scout-topology.md`; threat model I4
   remains the tracking item for the RBAC scoping that this decision depends
   on.
+- (Addendum) A Scout upgrade or restart pauses publishing for about a second;
+  nothing already published is affected. The first upgrade to a Scout that
+  drains on SIGTERM still waits out the old pod's grace period once. Running
+  more than one Scout replica per cluster is unsupported, and a Scout
+  Deployment managed outside bootstrap (Helm, Kustomize, GitOps) must set
+  `strategy.type: Recreate` itself.

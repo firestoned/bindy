@@ -1,17 +1,53 @@
 # Threat Model - Bindy DNS Operator
 
-**Version:** 1.30
-**Last Updated:** 2026-10-20
+**Version:** 1.32
+**Last Updated:** 2026-10-23
 **Owner:** Security Team
 **Compliance:** SOX 404, PCI-DSS 6.4.1, Basel III Cyber Risk
 
-> Last full pass 2026-10-20, against ADR-0001 ... ADR-0026 (ADR-0006 as amended;
+> Last full pass 2026-10-23, against ADR-0001 ... ADR-0027 (ADR-0002 as amended
+> 2026-10-23; ADR-0006 as amended;
 > ADR-0009 as amended 2026-10-05, fully implemented; ADR-0013 stages 1 to 3,
 > ADR-0014, ADR-0015, ADR-0016, ADR-0017 as amended and corrected 2026-10-07
 > and by ADR-0019, ADR-0018 as amended 2026-10-07, ADR-0019, ADR-0020,
 > ADR-0021, ADR-0022, ADR-0023, ADR-0024 as amended, ADR-0025 decisions 1
-> to 6 and ADR-0026 decisions 1 to 6 implemented; GRPCRoute as a sixth Scout
-> source kind, #560).
+> to 6, ADR-0026 decisions 1 to 6 and ADR-0027 decisions 1 to 6 implemented;
+> GRPCRoute as a sixth Scout source kind, #560).
+>
+> **Revision note (v1.32):** Full pass for ADR-0027 (Scout records of two
+> clusters that claim one name are a conflict, not a race). Before, two edge
+> clusters registered for one zone could take over each other's names: the
+> records controller replaced the RRset with whichever record wrote last
+> (accepted risk 23 (a)). Now the record that has published the name keeps it
+> and the other is held back (`Ready=False`, `RRsetConflict`, no BIND9 write);
+> zone replay and the finalizer re-push apply the same rule; a held-back
+> record takes over when the holder leaves (new control **M-74**). T5 and
+> accepted risk 23 (a) narrow accordingly: a cluster can no longer take over a
+> name another cluster has published, only claim names nobody has published.
+> Trust points reviewed: the holder is decided from `status.publishedName`
+> and `status.lastUpdated`, written only through the record status
+> subresource, which Scout's accounts cannot write (CRUD on `arecords`, no
+> `arecords/status`); the registry now also tells a rename from two clusters,
+> so whoever can edit `bindy-scout-sources` can put two clusters on one
+> account and make their records exempt from each other (already accepted
+> risk 23 (c)); the operator gains one ConfigMap GET, only when two clusters
+> claim one name. Verified on kind with three clusters (guardrails suite G7,
+> G8). Sections changed: T5, M-74 (new), accepted risk 23. Reviewed with no
+> change: every other section.
+>
+> **Revision note (v1.31):** Pass for the ADR-0002 addendum (one Scout pod
+> at a time). The Scout Deployment uses the `Recreate` strategy and Scout
+> drains on SIGTERM, so an upgrade never runs two Scout versions that both
+> publish; `bindy bootstrap scout` merge-patches an existing Deployment to
+> `Recreate` before its server-side apply. Availability: publishing pauses
+> for about a second per Scout upgrade (measured on kind; once, about 30
+> seconds, on the upgrade that introduces the drain); DNS keeps serving what
+> is published. Integrity: removes a window in which an old and a new Scout
+> wrote the same names with different record layouts (seen on kind across
+> ADR-0026). The merge patch is made by the bootstrap user, who already
+> server-side applies the whole Deployment, so no new privilege. Sections
+> changed: components (5), Boundary 6 assumptions. Reviewed with no change:
+> every other section.
 >
 > **Revision note (v1.30):** Pass for GRPCRoute support in Scout (#560, no
 > ADR: a new `ScoutSource` under ADR-0022 Decision 1). GRPCRoute goes through
@@ -742,7 +778,7 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
    - ServiceAccounts: RBAC for operator access
 
 5. **Bindy Scout** *(added 2026-03-20; see [Trust Boundary 6](#boundary-6-scout-controller))*
-   - Separate Deployment/`ServiceAccount` from the main operator (same binary, `bindy scout`), its own `ClusterRole` (`bindy-scout`)
+   - Separate Deployment/`ServiceAccount` from the main operator (same binary, `bindy scout`), its own `ClusterRole` (`bindy-scout`); one replica, `Recreate` strategy, drains on SIGTERM (ADR-0002 addendum)
    - Watches `Ingress`, `Service` (LoadBalancer), and Gateway API `HTTPRoute`/`GRPCRoute`/`TLSRoute`/`TCPRoute`
      resources **cluster-wide, across all namespaces**, for an opt-in annotation
    - On opt-in, writes one `ARecord` per DNS name, shared by every source of
@@ -954,7 +990,9 @@ publishes it (ADR-0026). In Phase 2 (multi-cluster) mode it also reads a kubecon
 act against a remote cluster.
 
 **Assumptions:**
-- Runs as its own Deployment/ServiceAccount, distinct from the main operator
+- Runs as its own Deployment/ServiceAccount, distinct from the main operator,
+  one replica with the `Recreate` strategy (ADR-0002 addendum): two Scout
+  versions never publish side by side during an upgrade
 - Pod-hardening posture (non-root, read-only rootfs, seccomp) matches the main operator
 - The opt-in annotation (`bindy.firestoned.io/scout-enabled: "true"`) is the only gate
   before Scout mutates a resource: any tenant who can set that annotation on their
@@ -1286,8 +1324,9 @@ exists to constrain that further)
 **Threat:** A tenant on edge cluster `foo` annotates a source with
 `bindy.firestoned.io/zone: bar.example.com`, or `foo`'s Scout is compromised,
 and records land in a zone that belongs to edge cluster `bar`: a new name, an
-existing name taken over (the records controller replaces the RRset with the
-last write, ADR-0021), an address pointed outside `foo`'s networks, or
+existing name taken over (until ADR-0027 the records controller replaced the
+RRset with the last write, ADR-0021; now only a name `bar` has not published
+can be claimed), an address pointed outside `foo`'s networks, or
 `bar`'s records rewritten or deleted.
 
 **Impact:** HIGH (authoritative DNS for another team's or cluster's names)
@@ -1326,8 +1365,12 @@ them
 - ✅ Existing: the namespace grant (H1), host-in-zone check, and per-cluster
   records (M-63; one record per name per cluster since ADR-0026, M-73, so
   sources of one cluster never take over each other's names, see T6).
-- ⚠️ Two clusters registered for the same zone can still take over each
-  other's names (roadmap 27 item 2), and unregistered accounts are not bound
+- ✅ **First publisher keeps a name (M-74, ADR-0027):** of two clusters
+  registered for one zone, the one that published a name keeps it; the other's
+  record is held back with `RRsetConflict`, and replay and re-push follow the
+  same rule. Verified on kind (guardrails suite G7).
+- ⚠️ Two clusters registered for the same zone can still each claim names
+  the other has not published, and unregistered accounts are not bound
   (accepted risk 23).
 - ❌ Addresses are not checked in admission (accepted risk 23).
 
@@ -2556,6 +2599,7 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-71 | **A DNSZone takes a Scout record only for its own zone** (2026-10-19, ADR-0025 decision 5): a record labelled `bindy.firestoned.io/managed-by: scout` that a `recordsFrom` selector matches is selected only when its `bindy.firestoned.io/zone` label equals the zone's `spec.zoneName` (case and trailing dot ignored); otherwise skipped with a warning | T5 (a selector that omits the zone label takes other clusters' records) | ✅ `crates/bindy-controller-zone/src/dnszone/discovery.rs` (`scout_record_belongs_to_zone`, `discover_records_generic`); tests `discovery_tests.rs` (5) |
 | M-72 | **Scout treats a refused delete of another cluster's record as final** (2026-10-19, ADR-0025 decision 6): on handover and on source removal, a 403 or 422 for a record left under another cluster name is logged and skipped, so a source's finalizer is not held and nothing is retried; the source's own records still fail the reconcile on any error | Availability under M-70 (a refused cleanup holding a tenant's Ingress in `Terminating`) | ✅ `crates/bindy-scout/src/pipeline.rs` (`delete_other_cluster_arecord`), `crates/bindy-controller-sdk/src/kube_errors.rs` (`is_refused`); tests `pipeline_tests.rs` (refused-delete cases), `kube_errors_tests.rs` |
 | M-73 | **One Scout record per DNS name, written atomically** (2026-10-20, ADR-0026): every source of one cluster that resolves to the same zone and DNS name contributes to one `ARecord`, named `scout-{cluster}-{dns-name}-{zone}-{hash}` with the hash over the NUL-joined (cluster, zone, name); the record's `bindy.firestoned.io/scout-contributors` annotation maps each source (`kind/namespace/name`) to the addresses and TTL it resolved, and a `contributor.scout.bindy.firestoned.io/<hash>` label per source finds its records; `spec.ipv4Addresses` is always the union (sorted, each once) and `spec.ttl` the lowest; each write reads the record, changes only its own entry, rebuilds the spec from the whole map and replaces with the read `resourceVersion` as precondition (a lost race is rebuilt, at most 5 attempts, then the reconcile fails and retries); a source leaving a name removes only its entry and the record is deleted, with a `resourceVersion` precondition, with its last; an unchanged record is not written; a malformed map stops Scout writing that record rather than dropping the other sources; withdrawals from another cluster name's record that the API server refuses are skipped like M-72; per-source records from before ADR-0026 are deleted only once the per-name record is served (as M-63) | Issue #556 (sources sharing a name overwrote each other's addresses, and the name flapped); T6 (changes a takeover into an attributed addition); R1 (each address attributed to a source) | ✅ `crates/bindy-scout/src/contributors.rs` (`plan_contribute`, `plan_withdraw`, `contribute`, `withdraw`, `render`), `crates/bindy-scout/src/pipeline.rs` (`publish`, `withdraw_from_own_records`, `withdraw_from_other_cluster_record`), `crates/bindy-scout/src/scout.rs` (`dns_name_record_cr_name`); tests `contributors_tests.rs`, `pipeline_tests.rs`, `tests/e2e/scout_test.sh` |
+| M-74 | **Scout records of two clusters that claim one name are a conflict, not a race** (2026-10-23, ADR-0027): two Scout-managed records of the same kind, zone and name (ignoring case) from different `source-cluster` names not registered to one account in `bindy-scout-sources` conflict; the holder is the record that has published the name (`status.publishedName` and `status.lastUpdated`, both written only after a successful BIND9 write), oldest first, and when none has, nobody is held back; any other record writes nothing, is `Ready=False` with reason `RRsetConflict` naming the holder and its cluster, re-pushes the holder once and logs one warning; zone replay skips held-back records and the finalizer re-pushes the holder, not the first claimant in store order; a change to a Scout record (status-only changes and deletions included) wakes the records claiming its name, so a held-back record takes over when the holder leaves; a cluster rename with both names registered is not a conflict | T5 (a second cluster taking over a published name), accepted risk 23 (a) narrowed | ✅ `crates/bindy-controller-sdk/src/rrset_conflict.rs` (`claim_facts`, `rrset_holder`, `ScoutRegistry`, `scout_conflict`, `held_back_by`), `rrset_claim.rs` (`live_claimant`), `crates/bindy-controller-records/src/records/mod.rs` (`hold_back_on_conflict`), `record_operator.rs` (`scout_rivals_to_wake`), `crates/bindy-bind9/src/record_push.rs` (replay); tests `rrset_conflict_tests.rs`, `rrset_claim_tests.rs`, `record_operator_tests.rs`, `tests/e2e/scout_guardrails_test.sh` (G7, G8) |
 | M-25 | **Scout Secret RBAC scoped** (fixed 2026-07-19, same day as this finding's discovery): removed the cluster-wide `secrets: get` `PolicyRule` from the `bindy-scout` `ClusterRole` entirely. Replaced with a namespaced, `resourceNames`-restricted Role (`bindy-scout-secrets-reader`) scoped to exactly the one Phase 2 kubeconfig Secret, applied only when `--remote-secret` is configured. Same-cluster-only deployments (the default) now get zero Secret access. See I4/E4/Scenario 6 for the full before/after. | I4, E4, T4 (Secret-read component), Scenario 6 | ✅ RBAC: **was the highest-priority open item in v1.1; closed same-day** |
 
 ---
@@ -2651,7 +2695,7 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 
 22. **Secret audit events are only as durable as the log pipeline, and can be turned off (ADR-0024)** - bindy writes its `bindy::audit` events to stdout with every other log line. They survive only if the cluster's log pipeline collects them and routes them (`fields.kind == "audit"`) to retention-controlled, tamper-evident storage; bindy does not ship or sign them itself, and a node lost before collection loses its buffered lines. An operator can also set `RUST_LOG=...,bindy::audit=off`: that is visible in the Deployment spec and in its GitOps history, but nothing forbids it today. The API server audit log still records the Secret requests themselves in either case. *Revisit when* the operator must guarantee delivery of its own audit events (then a dedicated sink, or Kubernetes Events, rather than stdout), or when disabling them must be prevented (then an admission policy rejecting `bindy::audit=off` in the operator Deployment's `RUST_LOG`).
 
-23. **Scout source binding has four gaps (ADR-0025)** - (a) Two edge clusters registered for the same zone may publish the same name, and the records controller keeps whichever record wrote last (ADR-0021), so either can take over the other's name; the registry makes that sharing an administrator's choice, and roadmap 27 item 2 tracks surfacing the conflict. (b) A Scout ServiceAccount minted before ADR-0025, or by hand, is not constrained until it has a `<sa>.clusters` key, and a namespace without a `bindy-scout-sources` ConfigMap is not constrained at all (`parameterNotFoundAction: Allow`), so existing installs keep their previous exposure until each account is registered; `bindy bootstrap mc` warns when it creates an unregistered account. (c) The registry is an ordinary ConfigMap: anyone who can write ConfigMaps in the records namespace can widen an account's clusters or zones. Scout's own Role cannot, and that namespace is normally platform-owned. (d) Addresses are checked only inside Scout (M-69), not in admission, so a stolen remote token can still point a name in its own zones at any address. Accepted: (a) and (c) are configuration the platform team controls; (b) keeps upgrades non-breaking and is closed by re-running `bootstrap mc`; (d) is bounded to the account's own zones. *Revisit when* roadmap 27 item 2 lands (a), every supported install has registered its accounts and the binding can fail closed (b), a ConfigMap-integrity style policy is wanted for the registry (c), or the supported Kubernetes floor guarantees CEL's IP and CIDR library (d).
+23. **Scout source binding has four gaps (ADR-0025)** - (a) Two edge clusters registered for the same zone may each claim names in it; since ADR-0027 (M-74) the first to publish a name keeps it and the other is held back visibly (`RRsetConflict`), so a published name can no longer be taken over, but either cluster can still claim a name the other has not published yet; the registry makes that sharing an administrator's choice. (b) A Scout ServiceAccount minted before ADR-0025, or by hand, is not constrained until it has a `<sa>.clusters` key, and a namespace without a `bindy-scout-sources` ConfigMap is not constrained at all (`parameterNotFoundAction: Allow`), so existing installs keep their previous exposure until each account is registered; `bindy bootstrap mc` warns when it creates an unregistered account. (c) The registry is an ordinary ConfigMap: anyone who can write ConfigMaps in the records namespace can widen an account's clusters or zones. Scout's own Role cannot, and that namespace is normally platform-owned. (d) Addresses are checked only inside Scout (M-69), not in admission, so a stolen remote token can still point a name in its own zones at any address. Accepted: (a) and (c) are configuration the platform team controls; (b) keeps upgrades non-breaking and is closed by re-running `bootstrap mc`; (d) is bounded to the account's own zones. *Revisit when* zones are routinely shared between clusters and first-come naming is not enough (a), every supported install has registered its accounts and the binding can fail closed (b), a ConfigMap-integrity style policy is wanted for the registry (c), or the supported Kubernetes floor guarantees CEL's IP and CIDR library (d).
 
 24. **Scout merges every source that publishes a name, and trusts the contributor annotation (ADR-0026)** - (a) Within one cluster, any source in a namespace the zone authorizes that resolves to a name another source already publishes adds its addresses to that name, without an opt-in from either side (ADR-0026 Decision 6, T6); a source cannot remove another's addresses. (b) The `bindy.firestoned.io/scout-contributors` annotation is the source of truth for the record's addresses: anyone who can update `ARecord`s in the records namespace (the operator's admins, the cluster's Scout account) can add an entry, and Scout will keep it until the entry's source withdraws, or can make the annotation unparseable, which stops Scout writing that record (it still serves what it last held). Accepted: (a) the zone grant is already the authorization for every name in the zone, the merge replaces a flapping takeover with a stable, attributed addition, and an opt-in would keep the issue #556 failure for anyone who missed it; (b) the same principals can already rewrite or delete the record directly, and admission policy 21 still binds a registered Scout account to its cluster names and zones. *Revisit when* tenants sharing a zone need per-name ownership (an ownership or opt-in annotation checked before the merge), or a ConfigMap- or record-integrity policy is introduced for Scout-managed objects.
 

@@ -47,6 +47,7 @@ pub mod request_timeout;
 pub mod resources;
 pub mod retry;
 pub mod rrset_claim;
+pub mod rrset_conflict;
 pub mod shutdown;
 pub mod status;
 pub mod watch;

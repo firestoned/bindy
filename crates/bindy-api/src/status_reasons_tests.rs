@@ -238,4 +238,10 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn rrset_conflict_reason_is_pinned() {
+        // ADR-0027: the reason operators filter on for a held-back record.
+        assert_eq!(REASON_RRSET_CONFLICT, "RRsetConflict");
+    }
 }

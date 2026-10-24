@@ -291,14 +291,14 @@ const MC_COMPONENT_LABEL: &str = "scout-remote";
 /// Name of the per-namespace ConfigMap that registers each Scout
 /// ServiceAccount's cluster names and zones. The `bindy-scout-source-binding`
 /// admission policy reads it as its parameter (ADR-0025, decision 3).
-pub const SCOUT_SOURCES_CONFIGMAP_NAME: &str = "bindy-scout-sources";
+pub const SCOUT_SOURCES_CONFIGMAP_NAME: &str = bindy_api::labels::SCOUT_SOURCES_CONFIGMAP_NAME;
 
 /// Suffix of the registry key holding a ServiceAccount's cluster names
 /// (`<sa>.clusters`).
-pub const SCOUT_SOURCES_CLUSTERS_SUFFIX: &str = ".clusters";
+pub const SCOUT_SOURCES_CLUSTERS_SUFFIX: &str = bindy_api::labels::SCOUT_SOURCES_CLUSTERS_SUFFIX;
 
 /// Suffix of the registry key holding a ServiceAccount's zones (`<sa>.zones`).
-pub const SCOUT_SOURCES_ZONES_SUFFIX: &str = ".zones";
+pub const SCOUT_SOURCES_ZONES_SUFFIX: &str = bindy_api::labels::SCOUT_SOURCES_ZONES_SUFFIX;
 
 /// What `bootstrap mc` registers for a ServiceAccount in the Scout source
 /// registry (ADR-0025, decision 3).
@@ -666,10 +666,80 @@ async fn apply_steps(
             O::ServiceAccount(o) => apply(&Api::namespaced(c, ns), &**o, fm).await?,
             O::Role(o) => apply(&Api::namespaced(c, ns), &**o, fm).await?,
             O::RoleBinding(o) => apply(&Api::namespaced(c, ns), &**o, fm).await?,
-            O::Deployment(o) => apply(&Api::namespaced(c, ns), &**o, fm).await?,
+            O::Deployment(o) => {
+                let api = Api::namespaced(c, ns);
+                prepare_deployment_strategy(&api, o).await?;
+                apply(&api, &**o, fm).await?;
+            }
         }
         println!("{}", step.applied);
     }
+    Ok(())
+}
+
+/// The `Recreate` deployment strategy (ADR-0002 addendum).
+const RECREATE_STRATEGY: &str = "Recreate";
+
+/// Whether the live Deployment `existing` must be switched to `Recreate`
+/// before `desired` can be server-side applied.
+///
+/// The API server defaults `spec.strategy.rollingUpdate` on a `RollingUpdate`
+/// Deployment, and that defaulted field belongs to no field manager, so a
+/// server-side apply that sets `type: Recreate` is refused with
+/// "spec.strategy.rollingUpdate: Forbidden" (verified on kind). Only a
+/// Deployment that wants `Recreate` and does not have it yet needs the switch.
+#[must_use]
+pub(crate) fn needs_recreate_migration(existing: &Deployment, desired: &Deployment) -> bool {
+    let strategy_type = |d: &Deployment| {
+        d.spec
+            .as_ref()
+            .and_then(|s| s.strategy.as_ref())
+            .and_then(|s| s.type_.clone())
+    };
+    strategy_type(desired).as_deref() == Some(RECREATE_STRATEGY)
+        && strategy_type(existing).as_deref() != Some(RECREATE_STRATEGY)
+}
+
+/// The JSON merge patch that switches a Deployment to `Recreate` and deletes
+/// its `rollingUpdate` block (a `null` removes the field).
+#[must_use]
+pub(crate) fn recreate_strategy_patch() -> serde_json::Value {
+    serde_json::json!({"spec": {"strategy": {"type": RECREATE_STRATEGY, "rollingUpdate": null}}})
+}
+
+/// Moves an existing Deployment to `Recreate` with a merge patch when
+/// `desired` asks for it (see [`needs_recreate_migration`]), so the
+/// server-side apply that follows is accepted. A Deployment that does not
+/// exist yet, or already uses `Recreate`, is left to the apply.
+///
+/// # Errors
+/// Returns `Failed to read Deployment/<name>` or
+/// `Failed to switch Deployment/<name> to the Recreate strategy` with the
+/// `kube::Error` in the chain when an API call fails.
+pub(crate) async fn prepare_deployment_strategy(
+    api: &Api<Deployment>,
+    desired: &Deployment,
+) -> Result<()> {
+    let Some(name) = desired.metadata.name.as_deref() else {
+        return Ok(());
+    };
+    let Some(existing) = api
+        .get_opt(name)
+        .await
+        .with_context(|| format!("Failed to read Deployment/{name}"))?
+    else {
+        return Ok(());
+    };
+    if !needs_recreate_migration(&existing, desired) {
+        return Ok(());
+    }
+    api.patch(
+        name,
+        &PatchParams::default(),
+        &Patch::Merge(recreate_strategy_patch()),
+    )
+    .await
+    .with_context(|| format!("Failed to switch Deployment/{name} to the Recreate strategy"))?;
     Ok(())
 }
 
@@ -1914,6 +1984,9 @@ pub(crate) fn build_scout_deployment(
         },
         "spec": {
             "replicas": 1,
+            // ADR-0002 addendum: the old Scout is gone before the new one
+            // starts, so two versions never reconcile side by side.
+            "strategy": {"type": "Recreate"},
             "selector": {
                 "matchLabels": {
                     "app.kubernetes.io/name": "bindy",

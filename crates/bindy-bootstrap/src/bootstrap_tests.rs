@@ -1562,6 +1562,19 @@ mod tests {
     // --- Scout deployment with registry override ---
 
     #[test]
+    fn test_build_scout_deployment_never_runs_two_scouts_at_once() {
+        // ADR-0002 addendum: an upgrade must not run the old and the new
+        // Scout side by side, so one replica and the Recreate strategy.
+        let opts = scout_opts("latest", None, DEFAULT_SCOUT_CLUSTER_NAME, &[], None, None);
+        let d = build_scout_deployment("bindy-system", &opts).unwrap();
+        let spec = d.spec.expect("deployment spec");
+        assert_eq!(spec.replicas, Some(1));
+        let strategy = spec.strategy.expect("an explicit strategy");
+        assert_eq!(strategy.type_.as_deref(), Some("Recreate"));
+        assert!(strategy.rolling_update.is_none());
+    }
+
+    #[test]
     fn test_build_scout_deployment_custom_registry() {
         let opts = scout_opts(
             "v0.5.0",
@@ -2265,6 +2278,20 @@ mod rbac_drift {
     /// the static secrets-reader Role lets the scout read; otherwise a scout
     /// set up by the documented defaults is forbidden its own kubeconfig.
     #[test]
+    fn static_scout_deployment_never_runs_two_scouts_at_once() {
+        let docs = yaml_docs(SCOUT_DEPLOYMENT_YAML);
+        let deployment = docs
+            .iter()
+            .find(|d| d["kind"] == "Deployment")
+            .expect("deploy/scout/deployment.yaml has a Deployment");
+        assert_eq!(deployment["spec"]["replicas"], 1);
+        assert_eq!(
+            deployment["spec"]["strategy"]["type"], "Recreate",
+            "deploy/scout/deployment.yaml must match build_scout_deployment (ADR-0002 addendum)"
+        );
+    }
+
+    #[test]
     fn default_mc_secret_is_the_one_the_static_rbac_allows() {
         let secret = crate::bootstrap::build_mc_kubeconfig_secret(
             MANIFEST_NAMESPACE,
@@ -2286,6 +2313,7 @@ mod rbac_drift {
     const SECRETS_READER_YAML: &str =
         include_str!("../../../deploy/scout/secrets-reader-rbac.yaml");
     const SCOUT_GUIDE_MD: &str = include_str!("../../../docs/src/guide/scout.md");
+    const SCOUT_DEPLOYMENT_YAML: &str = include_str!("../../../deploy/scout/deployment.yaml");
 
     /// Every YAML document in `text`.
     fn yaml_docs(text: &str) -> Vec<serde_json::Value> {
@@ -3180,5 +3208,165 @@ users:
             resolve_server(Some(OVERRIDE), &info).expect("server"),
             OVERRIDE
         );
+    }
+}
+
+/// ADR-0002 addendum: an existing Scout Deployment on `RollingUpdate` is moved
+/// to `Recreate` before the server-side apply, because the API server refuses
+/// an apply that sets `Recreate` while its defaulted `rollingUpdate` remains
+/// (verified on kind: "spec.strategy.rollingUpdate: Forbidden").
+mod recreate_migration_tests {
+    use crate::bootstrap::{
+        build_scout_deployment, needs_recreate_migration, prepare_deployment_strategy,
+        recreate_strategy_patch, ScoutDeploymentOptions, DEFAULT_SCOUT_CLUSTER_NAME,
+    };
+    use k8s_openapi::api::apps::v1::Deployment;
+    use kube::Api;
+    use wiremock::matchers::{body_json, header, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const NAMESPACE: &str = "bindy-system";
+    const DEPLOYMENT_PATH: &str = "/apis/apps/v1/namespaces/bindy-system/deployments/bindy-scout";
+    const MERGE_PATCH_CONTENT_TYPE: &str = "application/merge-patch+json";
+    const HTTP_OK: u16 = 200;
+    const HTTP_NOT_FOUND: u16 = 404;
+
+    fn desired() -> Deployment {
+        let opts = ScoutDeploymentOptions {
+            image_tag: "latest",
+            registry: None,
+            cluster_name: DEFAULT_SCOUT_CLUSTER_NAME,
+            default_ips: &[],
+            default_zone: None,
+            remote_secret: None,
+            allowed_zones: None,
+            allowed_ip_ranges: None,
+        };
+        build_scout_deployment(NAMESPACE, &opts).expect("scout deployment")
+    }
+
+    /// The Deployment as the API server holds it with strategy `strategy`.
+    fn live(strategy: serde_json::Value) -> serde_json::Value {
+        let mut d = serde_json::to_value(desired()).expect("deployment json");
+        d["spec"]["strategy"] = strategy;
+        d
+    }
+
+    fn rolling_update() -> serde_json::Value {
+        serde_json::json!({"type": "RollingUpdate", "rollingUpdate": {"maxSurge": "25%", "maxUnavailable": "25%"}})
+    }
+
+    fn api_for(server: &MockServer) -> Api<Deployment> {
+        let config = kube::Config::new(server.uri().parse().expect("mock server uri"));
+        let client = kube::Client::try_from(config).expect("client from mock config");
+        Api::namespaced(client, NAMESPACE)
+    }
+
+    fn not_found() -> ResponseTemplate {
+        ResponseTemplate::new(HTTP_NOT_FOUND).set_body_json(serde_json::json!({
+            "apiVersion": "v1", "kind": "Status", "status": "Failure",
+            "message": "not found", "reason": "NotFound", "code": HTTP_NOT_FOUND
+        }))
+    }
+
+    #[test]
+    fn a_rolling_update_deployment_needs_migrating_to_recreate() {
+        let existing: Deployment =
+            serde_json::from_value(live(rolling_update())).expect("deployment");
+        assert!(needs_recreate_migration(&existing, &desired()));
+    }
+
+    #[test]
+    fn a_recreate_deployment_needs_nothing() {
+        let existing: Deployment =
+            serde_json::from_value(live(serde_json::json!({"type": "Recreate"})))
+                .expect("deployment");
+        assert!(!needs_recreate_migration(&existing, &desired()));
+    }
+
+    #[test]
+    fn a_desired_rolling_update_is_never_migrated() {
+        let existing: Deployment =
+            serde_json::from_value(live(rolling_update())).expect("deployment");
+        let mut wanted = desired();
+        wanted.spec.as_mut().expect("spec").strategy = None;
+        assert!(!needs_recreate_migration(&existing, &wanted));
+    }
+
+    #[test]
+    fn the_patch_sets_recreate_and_deletes_rolling_update() {
+        assert_eq!(
+            recreate_strategy_patch(),
+            serde_json::json!({"spec": {"strategy": {"type": "Recreate", "rollingUpdate": null}}})
+        );
+    }
+
+    #[tokio::test]
+    async fn an_existing_rolling_update_deployment_is_merge_patched_first() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(DEPLOYMENT_PATH))
+            .respond_with(ResponseTemplate::new(HTTP_OK).set_body_json(live(rolling_update())))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .and(path(DEPLOYMENT_PATH))
+            .and(header("content-type", MERGE_PATCH_CONTENT_TYPE))
+            .and(body_json(recreate_strategy_patch()))
+            .respond_with(
+                ResponseTemplate::new(HTTP_OK)
+                    .set_body_json(live(serde_json::json!({"type": "Recreate"}))),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        prepare_deployment_strategy(&api_for(&server), &desired())
+            .await
+            .expect("the strategy is migrated");
+    }
+
+    #[tokio::test]
+    async fn a_missing_deployment_is_left_to_the_apply() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(DEPLOYMENT_PATH))
+            .respond_with(not_found())
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(HTTP_OK))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        prepare_deployment_strategy(&api_for(&server), &desired())
+            .await
+            .expect("nothing to migrate");
+    }
+
+    #[tokio::test]
+    async fn an_already_recreate_deployment_is_not_patched() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(DEPLOYMENT_PATH))
+            .respond_with(
+                ResponseTemplate::new(HTTP_OK)
+                    .set_body_json(live(serde_json::json!({"type": "Recreate"}))),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PATCH"))
+            .respond_with(ResponseTemplate::new(HTTP_OK))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        prepare_deployment_strategy(&api_for(&server), &desired())
+            .await
+            .expect("nothing to migrate");
     }
 }
