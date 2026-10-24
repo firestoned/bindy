@@ -15,7 +15,7 @@ mod tests {
     use crate::crd::DNSZone;
     use crate::guardrails::{parse_allowed_ip_ranges, parse_allowed_zones, Ipv4Range};
     use crate::scout::{
-        GRPCRoute, GatewayServiceTarget, HTTPRoute, NamespacedName, TCPRoute, TLSRoute,
+        GRPCRoute, Gateway, GatewayServiceTarget, HTTPRoute, NamespacedName, TCPRoute, TLSRoute,
     };
     use crate::scout::{
         ScoutContext, ScoutError, ANNOTATION_IP, ANNOTATION_RECORD_NAME, ANNOTATION_SCOUT_ENABLED,
@@ -401,6 +401,22 @@ mod tests {
         }
     }
 
+    /// A watch cache holding `objects`, synced: what Scout's Service and
+    /// Gateway watches hold once they have listed (ADR-0028 Decision 3).
+    fn ready_store<'a, K>(objects: impl Iterator<Item = &'a Value>) -> reflector::Store<K>
+    where
+        K: kube::Resource<DynamicType = ()> + Clone + serde::de::DeserializeOwned + 'static,
+    {
+        let (store, mut writer) = reflector::store::<K>();
+        writer.apply_watcher_event(&watcher::Event::Init);
+        for obj in objects {
+            let obj: K = serde_json::from_value(obj.clone()).expect("valid cached object");
+            writer.apply_watcher_event(&watcher::Event::InitApply(obj));
+        }
+        writer.apply_watcher_event(&watcher::Event::InitDone);
+        store
+    }
+
     /// A fake API server plus the context a reconcile runs with.
     struct Harness {
         _server: MockServer,
@@ -515,6 +531,13 @@ mod tests {
                 writer.apply_watcher_event(&watcher::Event::InitApply(z.clone()));
             }
             writer.apply_watcher_event(&watcher::Event::InitDone);
+            let (services, gateways) = {
+                let state = self.state.lock().expect("lock");
+                (
+                    ready_store::<Service>(state.services.values()),
+                    ready_store::<Gateway>(state.gateways.values()),
+                )
+            };
             Arc::new(ScoutContext {
                 client: self.client.clone(),
                 remote_client: self.client.clone(),
@@ -528,6 +551,8 @@ mod tests {
                 allowed_zones: self.allowed_zones.clone(),
                 allowed_ip_ranges: self.allowed_ip_ranges.clone(),
                 zone_store: store,
+                service_store: services,
+                gateway_store: Some(gateways),
             })
         }
 
@@ -1951,22 +1976,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_gateway_lookup_error_fails_the_reconcile() {
-        let mut h = Harness::new().await;
-        h.default_ips = vec![DEFAULT_IP.to_string()];
-        h.state.lock().expect("lock").gateway_status = Some(500);
-        let result = h
-            .run(&httproute(&meta("web"), &["api.example.com"], Some("gw")))
-            .await;
-        assert!(
-            result.is_err(),
-            "a 500 must fail the reconcile, got {result:?}"
-        );
-        assert!(h.applied().is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_gateway_service_lookup_error_fails_the_reconcile() {
+    async fn gateway_resolution_reads_the_caches_not_the_api() {
+        // ADR-0028 Decision 3: Gateways and gateway Services come from the
+        // watch caches, so an API server that refuses both changes nothing.
         let mut h = Harness::new().await;
         h.gateway_services.insert(
             GATEWAY_CLASS.to_string(),
@@ -1979,12 +1991,23 @@ mod tests {
             let mut s = h.state.lock().expect("lock");
             s.gateways
                 .insert(format!("{SRC_NS}/gw"), gateway_json("gw", &[]));
+            s.services.insert(
+                format!("{SRC_NS}/traefik"),
+                service_json(&meta("traefik"), "LoadBalancer", &[GATEWAY_SERVICE_IP]),
+            );
+            s.gateway_status = Some(500);
             s.service_status = Some(500);
         }
-        let result = h
-            .run(&httproute(&meta("web"), &["api.example.com"], Some("gw")))
-            .await;
-        assert!(result.is_err(), "got {result:?}");
+        h.run(&httproute(&meta("web"), &["api.example.com"], Some("gw")))
+            .await
+            .expect("reconcile");
+        assert_eq!(ips_of(&only_record(&h)), vec![GATEWAY_SERVICE_IP]);
+        let lookups: Vec<String> = h
+            .log()
+            .into_iter()
+            .filter(|l| l.starts_with("GET gateway") || l.starts_with("GET service"))
+            .collect();
+        assert!(lookups.is_empty(), "got {lookups:?}");
     }
 
     #[tokio::test]
@@ -2377,5 +2400,208 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(5), controller)
             .await
             .expect("the controller ends once the shutdown fires");
+    }
+
+    // =====================================================================
+    // ADR-0028: routes follow the addresses of their Gateway (issue #569)
+    // =====================================================================
+
+    /// An address outside the ranges the ADR-0028 tests allow.
+    const VIP_OUTSIDE: &str = "192.0.2.50";
+
+    /// A `LoadBalancer` Service in the source namespace with `labels`.
+    fn gateway_lb(name: &str, labels: &[(&str, &str)], ips: &[&str]) -> Value {
+        let mut svc = service_json(&meta(name), "LoadBalancer", ips);
+        let map: serde_json::Map<String, Value> = labels
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), json!(v)))
+            .collect();
+        svc["metadata"]["labels"] = Value::Object(map);
+        svc
+    }
+
+    /// A harness whose gateway class maps to the Services labelled
+    /// `app=traefik` in the source namespace, with `services` cached and
+    /// Gateways `gateways` (no `status.addresses`).
+    async fn labeled_gateway_harness(gateways: &[&str], services: Vec<Value>) -> Harness {
+        let mut h = Harness::new().await;
+        h.gateway_services.insert(
+            GATEWAY_CLASS.to_string(),
+            GatewayServiceTarget::Labeled {
+                namespace: SRC_NS.to_string(),
+                selector: "app=traefik".to_string(),
+            },
+        );
+        {
+            let mut s = h.state.lock().expect("lock");
+            for gw in gateways {
+                s.gateways
+                    .insert(format!("{SRC_NS}/{gw}"), gateway_json(gw, &[]));
+            }
+            for svc in services {
+                let name = svc["metadata"]["name"].as_str().expect("named").to_string();
+                s.services.insert(format!("{SRC_NS}/{name}"), svc);
+            }
+        }
+        h
+    }
+
+    #[tokio::test]
+    async fn a_labeled_gateway_target_publishes_every_matching_service() {
+        // Issue #569 (adopted from PR #570): one Service per VIP.
+        let h = labeled_gateway_harness(
+            &["gw"],
+            vec![
+                gateway_lb("vip-a", &[("app", "traefik")], &[VIP_A]),
+                gateway_lb("vip-b", &[("app", "traefik")], &[VIP_B]),
+                gateway_lb("vip-pending", &[("app", "traefik")], &[]),
+                gateway_lb("other", &[("app", "nginx")], &[VIP_C]),
+            ],
+        )
+        .await;
+        h.run(&httproute(&meta("web"), &["api.example.com"], Some("gw")))
+            .await
+            .expect("reconcile");
+        assert_eq!(ips_of(&only_record(&h)), vec![VIP_B, VIP_A]);
+    }
+
+    #[tokio::test]
+    async fn services_labelled_for_another_gateway_are_left_out() {
+        // ADR-0028 Decision 2: GEP-1762's gateway-name label scopes a class
+        // shared by several Gateways.
+        let gw_label = "gateway.networking.k8s.io/gateway-name";
+        let h = labeled_gateway_harness(
+            &["gw", "gw-2"],
+            vec![
+                gateway_lb("gw-svc", &[("app", "traefik"), (gw_label, "gw")], &[VIP_A]),
+                gateway_lb(
+                    "gw-2-svc",
+                    &[("app", "traefik"), (gw_label, "gw-2")],
+                    &[VIP_B],
+                ),
+            ],
+        )
+        .await;
+        h.run(&httproute(&meta("web"), &["api.example.com"], Some("gw")))
+            .await
+            .expect("reconcile");
+        assert_eq!(ips_of(&only_record(&h)), vec![VIP_A]);
+    }
+
+    #[tokio::test]
+    async fn a_discovered_gateway_address_outside_the_allowed_ranges_is_dropped() {
+        // ADR-0028 Decision 5: a stray labelled Service cannot take the
+        // class off the air.
+        let mut h = labeled_gateway_harness(
+            &["gw"],
+            vec![
+                gateway_lb("vip-a", &[("app", "traefik")], &[VIP_A]),
+                gateway_lb("stray", &[("app", "traefik")], &[VIP_OUTSIDE]),
+            ],
+        )
+        .await;
+        h.allowed_ip_ranges = Some(parse_allowed_ip_ranges("10.0.0.0/24").expect("ranges"));
+        h.run(&httproute(&meta("web"), &["api.example.com"], Some("gw")))
+            .await
+            .expect("reconcile");
+        assert_eq!(ips_of(&only_record(&h)), vec![VIP_A]);
+
+        // The same for a Gateway's own status.addresses.
+        let mut h = Harness::new().await;
+        h.allowed_ip_ranges = Some(parse_allowed_ip_ranges("10.3.3.0/24").expect("ranges"));
+        h.state.lock().expect("lock").gateways.insert(
+            format!("{SRC_NS}/gw"),
+            gateway_json(
+                "gw",
+                &[("IPAddress", VIP_OUTSIDE), ("IPAddress", GATEWAY_IP)],
+            ),
+        );
+        h.run(&httproute(&meta("web"), &["api.example.com"], Some("gw")))
+            .await
+            .expect("reconcile");
+        assert_eq!(ips_of(&only_record(&h)), vec![GATEWAY_IP]);
+    }
+
+    #[tokio::test]
+    async fn a_route_whose_discovered_addresses_are_all_outside_publishes_nothing() {
+        let mut h = labeled_gateway_harness(
+            &["gw"],
+            vec![gateway_lb("stray", &[("app", "traefik")], &[VIP_OUTSIDE])],
+        )
+        .await;
+        h.allowed_ip_ranges = Some(parse_allowed_ip_ranges("10.0.0.0/24").expect("ranges"));
+        let action = h
+            .run(&httproute(&meta("web"), &["api.example.com"], Some("gw")))
+            .await
+            .expect("reconcile");
+        assert!(requeued(&action));
+        assert!(h.applied().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_explicit_default_address_outside_the_allowed_ranges_still_refuses() {
+        // ADR-0028 Decision 5 drops discovered addresses only: --default-ips
+        // is the operator's own configuration.
+        let mut h = Harness::new().await;
+        h.default_ips = vec![VIP_OUTSIDE.to_string(), DEFAULT_IP.to_string()];
+        h.allowed_ip_ranges = Some(parse_allowed_ip_ranges("10.2.2.0/24").expect("ranges"));
+        let action = h
+            .run(&httproute(&meta("web"), &["api.example.com"], None))
+            .await
+            .expect("reconcile");
+        assert!(requeued(&action));
+        assert!(h.applied().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_contribution_is_sorted_and_deduplicated() {
+        // ADR-0028 Decision 6: a reordered status writes the same entry.
+        let h = Harness::new().await;
+        h.run(&service(
+            &meta("db"),
+            "LoadBalancer",
+            &["10.0.0.10", "10.0.0.9", "10.0.0.10"],
+        ))
+        .await
+        .expect("reconcile");
+        let entry = contributors(&only_record(&h))
+            .into_values()
+            .next()
+            .expect("one contributor");
+        assert_eq!(entry["ips"], json!(["10.0.0.9", "10.0.0.10"]));
+    }
+
+    #[test]
+    fn a_gateway_change_wakes_only_the_routes_attached_to_it() {
+        // ADR-0028 Decision 4.
+        let route = |name: &str, gateway: Option<&str>| match httproute(
+            &meta(name),
+            &["api.example.com"],
+            gateway,
+        ) {
+            Src::Http(r) => Arc::new(r),
+            _ => unreachable!("httproute builds an HTTPRoute"),
+        };
+        let routes = [
+            route("web", Some("gw")),
+            route("api", Some("gw-2")),
+            route("bare", None),
+        ];
+        let gw = NamespacedName {
+            namespace: SRC_NS.to_string(),
+            name: "gw".to_string(),
+        };
+        let woken = crate::pipeline::routes_to_wake(&routes, std::slice::from_ref(&gw));
+        let names: Vec<String> = woken.iter().map(|r| r.name.clone()).collect();
+        assert_eq!(names, vec!["web"]);
+        assert!(woken.iter().all(|r| r.namespace.as_deref() == Some(SRC_NS)));
+        assert!(crate::pipeline::routes_to_wake(&routes, &[]).is_empty());
+
+        // A Gateway of the same name in another namespace wakes nothing.
+        let elsewhere = NamespacedName {
+            namespace: "other".to_string(),
+            name: "gw".to_string(),
+        };
+        assert!(crate::pipeline::routes_to_wake(&routes, &[elsewhere]).is_empty());
     }
 }

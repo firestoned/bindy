@@ -23,6 +23,21 @@ mod tests {
         })
     }
 
+    #[test]
+    fn normalized_ips_sort_numerically_and_drop_repeats() {
+        // ADR-0028 Decision 6: a reordered status is the same contribution.
+        let ips = |v: &[&str]| v.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(
+            normalized_ips(ips(&["10.0.0.10", "10.0.0.9", "10.0.0.10"])),
+            ips(&["10.0.0.9", "10.0.0.10"])
+        );
+        assert_eq!(
+            normalized_ips(ips(&["10.0.0.9", "10.0.0.10"])),
+            normalized_ips(ips(&["10.0.0.10", "10.0.0.9"]))
+        );
+        assert!(normalized_ips(Vec::new()).is_empty());
+    }
+
     fn contribution(ips: &[&str], ttl: Option<i32>) -> Contribution {
         Contribution {
             ips: ips.iter().map(ToString::to_string).collect(),

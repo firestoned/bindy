@@ -242,7 +242,7 @@ whatever its tenants write in their annotations
 | Setting | Effect |
 |---|---|
 | `--allowed-zones` / `BINDY_SCOUT_ALLOWED_ZONES` | Comma-separated zones. An entry allows the zone and its subzones: `foo.example.com` allows `foo.example.com` and `api.foo.example.com`, not `bar.example.com` or `badfoo.example.com`. A source whose zone is outside the list publishes nothing; Scout logs a warning and waits for the source to change. Records it published earlier stay, so an allowlist typo never takes names off the air. |
-| `--allowed-ip-ranges` / `BINDY_SCOUT_ALLOWED_IP_RANGES` | Comma-separated IPv4 CIDR ranges (a bare address means `/32`). Every address a source would publish, from the `bindy.firestoned.io/ip` annotation, the discovered load-balancer or Gateway status, or `--default-ips`, must fall in a range; otherwise the source publishes nothing and Scout retries every 30 seconds, since a discovered address can change without the source changing. |
+| `--allowed-ip-ranges` / `BINDY_SCOUT_ALLOWED_IP_RANGES` | Comma-separated IPv4 CIDR ranges (a bare address means `/32`). Every address a source would publish, from the `bindy.firestoned.io/ip` annotation, its own load-balancer status, or `--default-ips`, must fall in a range; otherwise the source publishes nothing and Scout retries every 30 seconds, since a discovered address can change without the source changing. A route's addresses discovered from its Gateway or the gateway Services are the exception: one outside the ranges is dropped with a warning and the route publishes the rest ([ADR-0028](https://github.com/firestoned/bindy/blob/main/docs/adr/0028-scout-routes-follow-their-gateway-addresses.md), so a stray labelled Service cannot take a gateway class off the air). |
 
 Both are unset by default, which keeps the previous unrestricted behavior and
 logs a startup warning. Set them on every Scout that serves tenants:
@@ -354,7 +354,7 @@ Find the records a resource contributes to through its contributor key in the
 Scout watches `HTTPRoute`, `GRPCRoute`, `TLSRoute`, and `TCPRoute` resources from the Gateway API, **for each kind the cluster actually serves** — see [Gateway API detection](../installation/scout.md#gateway-api). The same opt-in annotation (`bindy.firestoned.io/scout-enabled: "true"`) and zone/IP/TTL annotations apply. For `HTTPRoute`, `GRPCRoute`, and `TLSRoute`, Scout creates one `ARecord` per hostname in `spec.hostnames[]`. `TCPRoute` has no `spec.hostnames[]` field — Scout creates a single `ARecord` using the name supplied by the `bindy.firestoned.io/record-name` annotation.
 
 !!! note "IP resolution follows the gateway chain"
-    Gateway API routes have no `LoadBalancer` status of their own. When no `bindy.firestoned.io/ip` annotation is set, Scout follows the route's `parentRefs` to the serving `Gateway`, and — for a Gateway whose `gatewayClassName` is in the operator-configured `--gateway-service` map — reads the external IP from the Gateway's `status.addresses`, or, when those are empty, from the mapped LoadBalancer `Service`. This lets operators avoid making every route repeat an IP that is already discoverable from the gateway (e.g. Traefik's proxy Service). The full precedence is: `bindy.firestoned.io/ip` annotation → discovered gateway IP → `--default-ips` → requeue.
+    Gateway API routes have no `LoadBalancer` status of their own. When no `bindy.firestoned.io/ip` annotation is set, Scout follows the route's `parentRefs` to the serving `Gateway` and publishes the Gateway's `status.addresses`, or, when those are empty and the Gateway's class is in the operator-configured `--gateway-service` map, the addresses of the `LoadBalancer` Service(s) that map names. Routes re-resolve whenever their Gateway or one of those Services changes. This lets operators avoid making every route repeat an IP that is already discoverable from the gateway (e.g. Traefik's proxy Service). The full precedence is: `bindy.firestoned.io/ip` annotation, then the discovered gateway addresses, then `--default-ips`, then requeue. See [Addresses from the Gateway](#addresses-from-the-gateway).
 
 See [Gateway API Routes](#gateway-api-routes-httproute-grpcroute-tlsroute-and-tcproute) for the full reference, examples, record naming, labels, and RBAC requirements.
 
@@ -568,7 +568,7 @@ kubectl patch deployment bindy-scout -n bindy-system --type=merge \
 | `--namespace <NS>` | Namespace where ARecords are created. Defaults to `bindy-system`. |
 | `--default-zone <ZONE>` | Default DNS zone applied to all Ingresses and Services when no `bindy.firestoned.io/zone` annotation is present (e.g. `example.com`). When combined with `--default-ips`, resources only need `bindy.firestoned.io/scout-enabled: "true"`. |
 | `--default-ips <IP[,IP]>` | Comma-separated default IP address(es) used when no per-resource `bindy.firestoned.io/ip` annotation or LoadBalancer status IP is available. Useful for shared-ingress topologies (e.g. Traefik). |
-| `--gateway-service <class=target>` | Repeatable. Maps a `gatewayClass` to the LoadBalancer Service whose external IP backs it, used to resolve an IP for HTTPRoute/GRPCRoute/TLSRoute/TCPRoute via their `parentRefs`. `target` is either `namespace/name` (e.g. `traefik=traefik/traefik`) or `namespace/<label-selector>` (e.g. `traefik=traefik/app.kubernetes.io/name=traefik`). Multi-label selectors (with commas) must use this flag rather than the env var. The configured classes double as the allow-list of gateways Scout will follow. |
+| `--gateway-service <class=target>` | Repeatable. Maps a `gatewayClass` to the LoadBalancer Service(s) backing it, used to resolve addresses for HTTPRoute/GRPCRoute/TLSRoute/TCPRoute via their `parentRefs` when a Gateway has no `status.addresses`. `target` is either `namespace/name` (one Service, e.g. `traefik=traefik/traefik`) or `namespace/<label-selector>` (every matching LoadBalancer Service, scoped to the route's Gateway by the GEP-1762 `gateway-name` label when present, e.g. `traefik=traefik/app.kubernetes.io/name=traefik,example.com/dns-vip=public`; equality-based selectors only). See [Addresses from the Gateway](#addresses-from-the-gateway). Multi-label selectors (with commas) must use this flag rather than the env var. The configured classes double as the allow-list of gateways Scout will follow. |
 | `--remote-endpoint <URL>` | **(Phase 3, [ADR-0008](https://github.com/firestoned/bindy/blob/main/docs/adr/0008-scout-remote-endpoint-override.md))** Bindy cluster API URL for the endpoint remote mode: a Linkerd-mirrored meshed proxy, a konnectivity endpoint, or the API server directly. Requires `--remote-token-file`. Mutually exclusive with `BINDY_SCOUT_REMOTE_SECRET` (startup error if both are set). |
 | `--remote-token-file <PATH>` | **(Phase 3)** Path to a bearer-token file **minted by the Bindy cluster** (mounted Secret, CSI or external-secrets delivery). Re-read by kube-rs on rotation — no restart needed. |
 | `--remote-ca-file <PATH>` | **(Phase 3)** Path to the remote endpoint's CA bundle (PEM). Optional: when unset, webpki public roots are used. |
@@ -597,7 +597,7 @@ CLI flags take precedence over the corresponding environment variables.
 | `BINDY_SCOUT_EXCLUDE_NAMESPACES` | — | Comma-separated list of additional namespaces to skip. Useful to exclude system namespaces (`kube-system`, `kube-public`, etc.) that will never have Scout-annotated Ingresses. |
 | `BINDY_SCOUT_DEFAULT_ZONE` | — | Default DNS zone for all Ingresses and Services when no `bindy.firestoned.io/zone` annotation is present. Overridden by `--default-zone`. When set alongside `BINDY_SCOUT_DEFAULT_IPS`, resources only need `bindy.firestoned.io/scout-enabled: "true"`. |
 | `BINDY_SCOUT_DEFAULT_IPS` | — | Comma-separated default IP address(es) used when no per-resource annotation override or LoadBalancer status IP is available. Useful for shared-ingress topologies (e.g. Traefik) where all resources resolve to the same VIP(s). Overridden by `--default-ips`. |
-| `BINDY_SCOUT_GATEWAY_SERVICES` | — | Comma-separated `gatewayClass=target` map for gateway-chain IP resolution on HTTPRoute/GRPCRoute/TLSRoute/TCPRoute, e.g. `traefik=traefik/traefik`. `target` is `namespace/name` or `namespace/<label-selector>`. Because commas separate entries here, multi-label selectors must use the repeatable `--gateway-service` flag. Overridden by `--gateway-service`. |
+| `BINDY_SCOUT_GATEWAY_SERVICES` | unset | Comma-separated `gatewayClass=target` map for gateway-chain IP resolution on HTTPRoute/GRPCRoute/TLSRoute/TCPRoute, e.g. `traefik=traefik/traefik`. `target` is `namespace/name` (one Service) or `namespace/<label-selector>` (every matching LoadBalancer Service, see [Addresses from the Gateway](#addresses-from-the-gateway)). Because commas separate entries here, multi-label selectors must use the repeatable `--gateway-service` flag. Overridden by `--gateway-service`. |
 | `BINDY_SCOUT_NAMESPACE_SELECTOR` | — (every namespace eligible) | Label selector restricting which namespaces Scout will act in. Overridden by `--namespace-selector`. **Unset means every namespace in the cluster is eligible — running without this set is not recommended for production.** See [Namespace Whitelisting](#namespace-whitelisting-namespace-selector). |
 | `BINDY_SCOUT_ALLOWED_ZONES` | unset (every zone) | Comma-separated zones Scout may publish into, each with its subzones. Overridden by `--allowed-zones`. |
 | `BINDY_SCOUT_ALLOWED_IP_RANGES` | unset (every address) | Comma-separated IPv4 CIDR ranges every published address must fall in. Overridden by `--allowed-ip-ranges`. |
@@ -954,6 +954,72 @@ spec:
 
 Scout will create one ARecord for `db.example.com`.
 
+### Addresses from the Gateway
+
+A route without a `bindy.firestoned.io/ip` annotation publishes the addresses
+of the Gateways its `parentRefs` name
+([ADR-0028](https://github.com/firestoned/bindy/blob/main/docs/adr/0028-scout-routes-follow-their-gateway-addresses.md)):
+
+1. A Gateway's own IPv4 `status.addresses`, when it has any.
+2. Otherwise, when the Gateway's `gatewayClassName` is in `--gateway-service`,
+   the external IPv4 addresses of the `LoadBalancer` Services the class's
+   target names:
+    - `namespace/name`: that one Service;
+    - `namespace/<label-selector>`: **every** `LoadBalancer` Service in the
+      namespace the selector matches, so a gateway that runs one Service per
+      VIP publishes all of its VIPs. A Service that has no address yet, or is
+      being deleted, adds nothing.
+3. Otherwise, `--default-ips`.
+
+A route with several `parentRefs` publishes the addresses of all of them.
+
+**Several Gateways of one class.** Implementations that create one
+`LoadBalancer` Service per Gateway (Envoy Gateway, Cilium, Istio) label each
+of them `gateway.networking.k8s.io/gateway-name: <gateway>`, as Gateway API
+GEP-1762 requires. When any Service a selector matches carries that label,
+a route publishes only the matched Services labelled with **its** Gateway's
+name, never another Gateway's VIPs. When none carries it (one Service shared
+by every Gateway of the class, as with Traefik), every match counts. The
+label holds a name, not a namespace: keep a selector to Services whose
+Gateways have distinct names, or two same-named Gateways in different
+namespaces share each other's addresses.
+
+**Keep the selector to the VIPs you want published.** A selector matches
+every `LoadBalancer` Service with those labels, including ones you did not
+mean to publish. The Traefik chart, for example, gives every Service it
+creates `app.kubernetes.io/name: traefik`, extra internal ones
+(`service.additionalServices`) included. Put a label of your own on exactly
+the public VIP Services and select on it:
+
+```bash
+# What the selector would publish today:
+kubectl get svc -n traefik -l 'app.kubernetes.io/name=traefik,example.com/dns-vip=public' \
+  -o custom-columns=NAME:.metadata.name,TYPE:.spec.type,IPS:.status.loadBalancer.ingress[*].ip
+```
+
+```text
+--gateway-service traefik=traefik/app.kubernetes.io/name=traefik,example.com/dns-vip=public
+```
+
+Selectors are equality-based: `key=value`, `key==value`, `key!=value`, `key`
+and `!key`, joined by commas. Set-based selectors (`key in (a,b)`) are
+refused at startup.
+
+**Re-resolution.** Scout watches Gateways and Services, and a route
+re-resolves whenever one of its Gateways changes, or a Service its Gateway's
+class target matches is created, gets or loses an address, starts deleting,
+or is deleted. A VIP added to the gateway reaches DNS without touching the
+route, and a VIP removed leaves DNS. Both are read from Scout's watch caches;
+a route reconcile makes no API call to find its Gateway's addresses.
+
+**With `--allowed-ip-ranges`.** A discovered Gateway or Service address
+outside the allowed ranges is dropped, with a warning naming the Gateway or
+Service, and the route publishes the rest (nothing, when nothing is left).
+An address the operator wrote (the `bindy.firestoned.io/ip` annotation,
+`--default-ips`) outside the ranges still stops the source publishing, as for
+every other kind. See
+[Publishing limits](#publishing-limits-for-this-cluster-allowed-zones-allowed-ip-ranges).
+
 ### Record Naming for Gateway Routes
 
 Gateway API routes use `spec.hostnames[]` instead of `spec.rules[].host`. Each hostname publishes one DNS name, and each DNS name is one `ARecord`, named as described in [Record names](#record-names). The record is named after the DNS name, not the route, so an `HTTPRoute`, a `GRPCRoute` and a `TLSRoute` that publish the same hostname share one record (see [Several resources publishing one name](#several-resources-publishing-one-name)):
@@ -1028,9 +1094,9 @@ rules:
     verbs: ["get", "list", "watch"]
 ```
 
-When gateway-chain IP resolution reads the LoadBalancer `Service` behind a Gateway, it uses the existing `services` `get`/`list` permissions (a `namespace/<label-selector>` target lists Services in the namespace).
+Scout watches Gateways cluster-wide (`list`, `watch`) when any route kind is served, and reads the `LoadBalancer` Services behind them from its existing cluster-wide Service watch, so gateway-chain IP resolution needs no permission beyond the rules above and Scout's `services` `get`/`list`/`watch`.
 
-**Note:** `Gateway` objects are read-only for Scout — it only reads their `status.addresses` to discover external IPs, and never mutates them.
+**Note:** `Gateway` objects are read-only for Scout: it only reads their `status.addresses` and `gatewayClassName`, and never mutates them.
 
 **Routes are not read-only.** Scout adds and removes its own finalizer on the `HTTPRoute` / `GRPCRoute` / `TLSRoute` / `TCPRoute` objects it manages (`add_finalizer_to_httproute` and friends in `crates/bindy-scout/src/scout.rs`), which is why the ClusterRole above grants `patch` and `update` on route kinds. The finalizer is what lets Scout delete the corresponding ARecords before the route disappears; on a Phase-2 remote that is unreachable, it is released anyway after a 300s grace period so route deletion is never blocked. Scout does not modify any other field of a route.
 

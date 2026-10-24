@@ -1,3 +1,33 @@
+## [2026-10-24 14:30] - Scout routes follow the addresses of their Gateway (ADR-0028, issue #569, takes over PR #570)
+
+**Author:** Erick Bourgeois (Decision 1 and its first tests from PR #570 by Daniel Guns)
+
+### Fixed
+- Issue #569: a `--gateway-service` target written as `namespace/<label-selector>` published only the first matching `LoadBalancer` Service with an address, so a gateway with one Service per VIP had one VIP in DNS. It now publishes every match (PR #570's union, adopted).
+- Routes re-resolve when their Gateway or a gateway Service changes. Before, a route reconciled only on its own changes and kept whatever addresses were true then (for example two of three VIPs, if one was still pending).
+
+### Added
+- `docs/adr/0028-scout-routes-follow-their-gateway-addresses.md` (Accepted); CALM multi-cluster model (Scout watches Gateways and gateway Services), `docs/src/architecture/calm-multi-cluster.md` regenerated.
+- `crates/bindy-scout/src/gateway_targets.rs` (+ tests): `parse_label_selector` (equality-based selectors over kube-core's `Selector`), `target_matches`, `gateway_lb_services` (non-terminating `LoadBalancer` matches, scoped by the GEP-1762 `gateway.networking.k8s.io/gateway-name` label when any match carries it), `gateways_for_service`, `routes_for_gateways`.
+- `crates/bindy-scout/src/contributors.rs`: `normalized_ips`; `publish` writes every contribution sorted and de-duplicated (Decision 6).
+
+### Changed
+- `crates/bindy-scout/src/pipeline.rs`: `resolve_ips_from_gateways` reads Gateways and Services from Scout's watch caches (no GET or LIST per reconcile; `resolve_ips_from_gateway_service` removed); discovered addresses outside `--allowed-ip-ranges` are dropped with a warning naming their Gateway or Service (`within_allowed_ranges`), while annotated and default addresses still refuse the source (amends ADR-0025 Decision 2); `ScoutSource` gains `FOLLOWS_GATEWAYS` and `parent_refs`; route controllers wake on Gateway and matching Service events (`routes_to_wake`).
+- `crates/bindy-scout/src/scout.rs`: `ScoutContext` gains `service_store` and `gateway_store`; `run_scout` watches Gateways when a route kind is served and starts the controllers once the Service and Gateway caches have listed; `gateway_service_target_from_str` refuses selectors Scout cannot evaluate (set-based, malformed) and names that are not Service names; `GatewayServiceTarget` rustdoc.
+- `crates/bindy/src/cli.rs`: `--gateway-service` help describes selectors, the union and GEP-1762 scoping.
+- `tests/e2e/scout_gateway_test.sh` + `make e2e-scout-gateway` (new): two kind clusters, Gateway API CRDs on the edge; passed on slate 2026-10-24 with `e2e-scout-guardrails`, `e2e-scout-multi` and `e2e-scout`.
+- Tests: `scout_tests.rs` (refused selectors), `pipeline_tests.rs` (the harness serves Services and Gateways from caches; union, GEP-1762 scoping, allowlist drop vs. refusal, normalization, wake mapping; the two lookup-error tests replaced by "reads the caches, not the API").
+- Docs: `docs/src/guide/scout.md` (new "Addresses from the Gateway": union, VIP-specific Traefik selector with a pre-check, several Gateways per class, re-resolution, allowlist; flag, env and RBAC rows), `docs/src/reference/cli.md`, `docs/src/operations/env-vars.md`, `docs/src/operations/migration-guide.md`; `docs/src/security/threat-model.md` v1.33 (T7, M-75, accepted risk 25, components, Boundary 6, attack surface 7, M-63); roadmap 32 phase 8 and `ROADMAPS.md`.
+
+### Why
+PR #570 fixed the first-match bug; review found the routes never re-resolved, a class-wide union mixed the VIPs of several Gateways, one stray Service could block a class under `--allowed-ip-ranges`, terminating Services were unioned, and every reconcile listed Services. ADR-0028 takes all of these together.
+
+### Impact
+- [x] Breaking change (behavior change: a selector matching several `LoadBalancer` Services publishes all of them; set-based selectors now fail startup; see the migration guide)
+- [x] Requires cluster rollout (Scout image)
+- [ ] Config change only
+- [ ] Documentation only
+
 ## [2026-10-24 10:35] - Scheduled security scan: Semgrep SARIF upload permission; record the #571 lockfile refresh (RUSTSEC-2026-0385)
 
 **Author:** Erick Bourgeois

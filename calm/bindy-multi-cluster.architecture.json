@@ -54,7 +54,7 @@
       "unique-id": "scout-a",
       "node-type": "service",
       "name": "Bindy Scout A",
-      "description": "Scout Deployment (image bindy, args=[scout]) on Child Cluster A: one replica, Recreate strategy, so an old and a new Scout never run side by side (ADR-0002 addendum). Watches local Ingress / LoadBalancer Service / HTTPRoute / GRPCRoute / TLSRoute / TCPRoute through the shared watch layer (one watch and cache per kind, ADR-0009) and derives DNS names. Publishes only zones in --allowed-zones and addresses in --allowed-ip-ranges when those are set (ADR-0025). Sources (of any kind or namespace) that resolve to the same zone and DNS name are merged into one record with the complete address set (ADR-0026).",
+      "description": "Scout Deployment (image bindy, args=[scout]) on Child Cluster A: one replica, Recreate strategy, so an old and a new Scout never run side by side (ADR-0002 addendum). Watches local Ingress / LoadBalancer Service / HTTPRoute / GRPCRoute / TLSRoute / TCPRoute through the shared watch layer (one watch and cache per kind, ADR-0009) and derives DNS names. Publishes only zones in --allowed-zones and addresses in --allowed-ip-ranges when those are set (ADR-0025). Sources (of any kind or namespace) that resolve to the same zone and DNS name are merged into one record with the complete address set (ADR-0026). Routes publish the addresses of their own Gateway (its status.addresses, or the --gateway-service target scoped by the gateway-name label of GEP-1762), read from its Service and Gateway watch caches, and re-resolve when that Gateway or one of its Services changes (ADR-0028).",
       "development-language": "Rust"
     },
     {
@@ -116,7 +116,7 @@
     },
     {
       "unique-id": "scout-a-watches",
-      "description": "watches Ingress / Service / HTTPRoute / GRPCRoute / TLSRoute / TCPRoute",
+      "description": "watches Ingress / Service / HTTPRoute / GRPCRoute / TLSRoute / TCPRoute, plus Gateways and the gateway Services their routes resolve through (ADR-0028)",
       "protocol": "HTTPS",
       "relationship-type": {
         "connects": {
@@ -127,7 +127,7 @@
     },
     {
       "unique-id": "scout-b-watches",
-      "description": "watches Ingress / Service / HTTPRoute / GRPCRoute / TLSRoute / TCPRoute",
+      "description": "watches Ingress / Service / HTTPRoute / GRPCRoute / TLSRoute / TCPRoute, plus Gateways and the gateway Services their routes resolve through (ADR-0028)",
       "protocol": "HTTPS",
       "relationship-type": {
         "connects": {

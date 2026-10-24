@@ -934,6 +934,12 @@ e2e-scout-multi: ## E2E: Scout one record per DNS name on two kind clusters (ADR
 		tests/e2e/scout_multi_cluster_test.sh --image "$(E2E_IMAGE)"
 	@$(if $(KEEP_CLUSTER),echo "KEEP_CLUSTER set; leaving kind clusters up",kind delete cluster --name $(E2E_QUEEN_CLUSTER) >/dev/null 2>&1; kind delete cluster --name $(E2E_EDGE_CLUSTER) >/dev/null 2>&1 || true)
 
+e2e-scout-gateway: ## E2E: Scout routes follow their Gateway's addresses on two kind clusters (ADR-0028; needs E2E_IMAGE)
+	@chmod +x tests/e2e/scout_gateway_test.sh
+	@QUEEN_CLUSTER=$(E2E_QUEEN_CLUSTER) EDGE_CLUSTER=$(E2E_EDGE_CLUSTER) \
+		tests/e2e/scout_gateway_test.sh --image "$(E2E_IMAGE)"
+	@$(if $(KEEP_CLUSTER),echo "KEEP_CLUSTER set; leaving kind clusters up",kind delete cluster --name $(E2E_QUEEN_CLUSTER) >/dev/null 2>&1; kind delete cluster --name $(E2E_EDGE_CLUSTER) >/dev/null 2>&1 || true)
+
 E2E_EDGE_B_CLUSTER ?= bindy-e2e-edge-b
 
 e2e-scout-guardrails: ## E2E: two edge clusters bound to their cluster names and zones at admission (ADR-0025; needs E2E_IMAGE)
