@@ -88,6 +88,20 @@ pub const BINDY_ZONE_LABEL: &str = "bindy.firestoned.io/zone";
 /// Label carrying the cluster name of the Scout that wrote a record
 pub const BINDY_SOURCE_CLUSTER_LABEL: &str = "bindy.firestoned.io/source-cluster";
 
+/// The Scout source registry: a ConfigMap in the records namespace mapping
+/// each registered Scout `ServiceAccount` to the cluster names and zones it
+/// may publish (ADR-0025). Written by `bindy bootstrap mc`; read by admission
+/// policy 21 and, to tell a cluster rename from two clusters, by the records
+/// controller (ADR-0027).
+pub const SCOUT_SOURCES_CONFIGMAP_NAME: &str = "bindy-scout-sources";
+
+/// Suffix of a registry key listing an account's cluster names
+/// (`<sa>.clusters`, comma-separated).
+pub const SCOUT_SOURCES_CLUSTERS_SUFFIX: &str = ".clusters";
+
+/// Suffix of a registry key listing an account's zones (`<sa>.zones`).
+pub const SCOUT_SOURCES_ZONES_SUFFIX: &str = ".zones";
+
 /// Label indicating which `Bind9Cluster` this resource belongs to
 pub const BINDY_CLUSTER_LABEL: &str = "bindy.firestoned.io/cluster";
 

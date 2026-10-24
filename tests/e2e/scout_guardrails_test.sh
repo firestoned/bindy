@@ -32,9 +32,12 @@
 #       (Decision 5);
 #   G6. a refused withdrawal from a record left under another cluster name is
 #       skipped and does not hold the source's finalizer (Decision 6);
-#   G7. a zone registered for both clusters: both may publish the same name,
-#       and the last write wins (accepted risk 23 (a), roadmap 27 item 2).
-#       Reported, not failed.
+#   G7. a zone registered for both clusters: the first cluster to publish a
+#       name keeps it, the other's record is held back (RRsetConflict), a
+#       primary wipe's replay keeps the holder, and the name passes to the
+#       other cluster when the holder leaves (ADR-0027);
+#   G8. a cluster renamed with both names registered: no conflict, the new
+#       name takes the records over (ADR-0027 Decision 1).
 #
 # Usage: tests/e2e/scout_guardrails_test.sh --image ghcr.io/firestoned/bindy:<build>
 
@@ -378,20 +381,70 @@ ZONE="${FOO_ZONE}" expect_a web
 record_phase "G6: a refused cleanup is skipped and never blocks a source's deletion" "${P}"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# G7. A zone registered for both clusters (known open case)
+# G7. A zone registered for both clusters: the first to publish keeps the name
 # ─────────────────────────────────────────────────────────────────────────────
 
-phase "G7. ${SHARED_ZONE} is registered for both clusters; both publish 'api'"
+# Ready reason of cluster $1's record for name $3 in zone $2.
+ready_reason_of() {
+    scout_records_json | jq -r --arg c "$1" --arg z "$2" --arg n "$3" \
+        '.items[] | select(.metadata.labels["bindy.firestoned.io/source-cluster"] == $c
+                           and .metadata.labels["bindy.firestoned.io/zone"] == $z
+                           and .spec.name == $n)
+         | [.status.conditions[]? | select(.type == "Ready") | .reason] | first // ""' | head -1
+}
+reason_is() { [ "$(ready_reason_of "$1" "$2" "$3")" = "$4" ]; }
+
+phase "G7. ${SHARED_ZONE} is registered for both clusters; both publish 'api' (ADR-0027)"
 P=${ERRORS}
 use_edge foo; ZONE="${SHARED_ZONE}" lb_service "${TEAM}" api api "" "${FOO_SHARED_IP}"
+ZONE="${SHARED_ZONE}" expect_a api "${FOO_SHARED_IP}"
+wait_for "foo's api record has published" reason_is foo "${SHARED_ZONE}" api ReconcileSucceeded
 use_edge bar; ZONE="${SHARED_ZONE}" lb_service "${TEAM}" api api "" "${BAR_SHARED_IP}"
-wait_for "both clusters' api records were admitted" bash -c \
-    "[ -n \"\$(${KUBECTL} get arecords -n ${NAMESPACE} -l bindy.firestoned.io/source-cluster=foo,bindy.firestoned.io/zone=${SHARED_ZONE} -o name)\" ] && [ -n \"\$(${KUBECTL} get arecords -n ${NAMESPACE} -l bindy.firestoned.io/source-cluster=bar,bindy.firestoned.io/zone=${SHARED_ZONE} -o name)\" ]"
-sleep 10
-SHARED_ANSWERS=$(for ip in $(server_ips); do echo "${ip} A api.${SHARED_ZONE}"; done | dig_all | awk -F'|' '{print $4}' | sort -u | tr '\n' ' ')
-info "   api.${SHARED_ZONE} serves [${SHARED_ANSWERS}]: two records for one name, the last write wins"
-warn "G7 is the open case of accepted risk 23 (a): two clusters registered for one zone can take over each other's names (roadmap 27 item 2)"
-summary_row "G7: zone shared by two clusters, same name (accepted risk 23 (a))" "⚠️ known open: served [${SHARED_ANSWERS% }]"
+wait_for "bar's api record is held back (RRsetConflict)" reason_is bar "${SHARED_ZONE}" api RRsetConflict
+BAR_API=$(record_of bar "${SHARED_ZONE}" api)
+FOO_API=$(record_of foo "${SHARED_ZONE}" api)
+MSG=$(${KUBECTL} get arecord "${BAR_API}" -n "${NAMESPACE}" -o jsonpath='{.status.conditions[?(@.type=="Ready")].message}')
+if grep -q "${FOO_API} of cluster 'foo' has published 'api'" <<< "${MSG}"; then
+    pass "the held-back record names the holder: ${MSG}"
+else
+    fail "the held-back record's message does not name the holder: '${MSG}'"
+fi
+sleep 15
+ZONE="${SHARED_ZONE}" expect_a api "${FOO_SHARED_IP}"
+step "Wipe a primary: the zone replay must keep serving the holder"
+delete_pod_of "$(primary_instances | head -1)"
+wait_bind_pods_ready || fail "BIND9 pods never came back"
+ZONE="${SHARED_ZONE}" expect_a api "${FOO_SHARED_IP}"
+step "The holder leaves: bar takes over without a timer"
+use_edge foo; ${KEDGE} delete service api -n "${TEAM}" --wait=true --timeout=120s >/dev/null || fail "foo's api Service stuck deleting"
+ZONE="${SHARED_ZONE}" expect_a api "${BAR_SHARED_IP}"
+wait_for "bar's api record is now Ready" reason_is bar "${SHARED_ZONE}" api ReconcileSucceeded
+record_phase "G7: the first cluster to publish keeps the name; replay and handover follow (ADR-0027)" "${P}"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# G8. A registered rename is not a conflict
+# ─────────────────────────────────────────────────────────────────────────────
+
+phase "G8. foo is renamed foo2 with both names registered"
+P=${ERRORS}
+use_edge foo
+scout_register scout-foo "foo,foo2" "${FOO_ZONE},${SHARED_ZONE}"
+ZONE="${FOO_ZONE}" lb_service "${TEAM}" rn rn "" "10.10.8.8"
+ZONE="${FOO_ZONE}" expect_a rn "10.10.8.8"
+wait_for "foo's rn record has published" reason_is foo "${FOO_ZONE}" rn ReconcileSucceeded
+EDGE_NAME="foo2"
+bootstrap_scout "${IMAGE_REF}"
+wait_for "foo2 took rn over and foo's record is gone" bash -c \
+    "[ -n \"\$(${KUBECTL} get arecords -n ${NAMESPACE} -l bindy.firestoned.io/source-cluster=foo2,bindy.firestoned.io/zone=${FOO_ZONE} -o name)\" ] && [ -z \"\$(${KUBECTL} get arecords -n ${NAMESPACE} -l bindy.firestoned.io/source-cluster=foo,bindy.firestoned.io/zone=${FOO_ZONE} -o name)\" ]"
+if scout_records_json | jq -e '[.items[].status.conditions[]? | select(.type == "Ready" and .reason == "RRsetConflict")] | length == 0' >/dev/null; then
+    pass "no record was held back during the rename"
+else
+    fail "a record went RRsetConflict during a registered rename"
+fi
+ZONE="${FOO_ZONE}" expect_a rn "10.10.8.8"
+EDGE_NAME="foo"
+bootstrap_scout "${IMAGE_REF}"
+record_phase "G8: a rename with both names registered completes without a conflict" "${P}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Cleanup
@@ -404,7 +457,7 @@ for edge in foo bar; do
     ${KEDGE} delete services,ingresses -n "${TEAM}" --all --wait=true --timeout=180s >/dev/null || fail "${edge}: sources stuck deleting"
 done
 wait_for "no foo or bar record left on the bindy cluster" bash -c \
-    "[ -z \"\$(${KUBECTL} get arecords -n ${NAMESPACE} -l 'bindy.firestoned.io/source-cluster in (foo,bar)' -o name)\" ]"
+    "[ -z \"\$(${KUBECTL} get arecords -n ${NAMESPACE} -l 'bindy.firestoned.io/source-cluster in (foo,foo2,bar)' -o name)\" ]"
 record_phase "Removing every source on both edges removes their records" "${P}"
 
 finish "${SUITE_TITLE}"

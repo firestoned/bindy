@@ -98,7 +98,16 @@ where
     // on its zone (ZoneNotFound, ZoneNotConfigured, NoPrimaryInstances) is
     // woken by the zone's next status change; there is no timer (ADR-0016).
     let record_store = ws.store::<T>(target);
+    // ADR-0027 Decision 5: a change to a Scout record, status-only changes
+    // included (a cleared zoneRef, a new publishedName), wakes the other Scout
+    // records that claim its name, so a held-back record takes over when the
+    // holder leaves. The unfiltered subscription carries what the primary
+    // stream's predicate drops.
+    let rival_store = ws.store::<T>(target);
     Controller::for_stream(primary, ws.store::<T>(target))
+        .watches_stream(ws.subscribe::<T>(target), move |changed| {
+            scout_rivals_to_wake::<T>(&changed, &rival_store.state())
+        })
         .watches_stream(ws.subscribe::<DNSZone>(target), move |zone| {
             records_to_wake_for_zone::<T>(&zone, |record_ref| {
                 record_store.get(record_ref).is_some_and(|record| {
@@ -111,6 +120,59 @@ where
         .for_each(|_| futures::future::ready(()))
         .await;
     Ok(())
+}
+
+/// The Scout records in `live` a change of the Scout record `changed` must
+/// wake (ADR-0027 Decision 5): the other Scout records of the kind that
+/// declare the same name (ignoring case) in the same zone. A `changed` record
+/// no zone binds any more (its holder role just ended) wakes the name in every
+/// zone. A record that is not Scout-managed wakes nothing. Pure: no I/O.
+///
+/// # Arguments
+///
+/// * `changed` - The record that changed
+/// * `live` - The kind's reflector store
+///
+/// # Returns
+///
+/// References to the records to reconcile.
+#[must_use]
+pub fn scout_rivals_to_wake<T: RecordKind>(changed: &T, live: &[Arc<T>]) -> Vec<ObjectRef<T>> {
+    if !is_scout_record(changed) {
+        return vec![];
+    }
+    let zone_of = |record: &T| {
+        record
+            .record_status()
+            .and_then(|s| s.zone_ref.as_ref())
+            .map(|z| (z.namespace.clone(), z.name.clone()))
+    };
+    let changed_zone = zone_of(changed);
+    let dns_name = changed.spec_name();
+    live.iter()
+        .filter(|record| {
+            record.meta().name != changed.meta().name
+                || record.meta().namespace != changed.meta().namespace
+        })
+        .filter(|record| is_scout_record(record.as_ref()))
+        .filter(|record| record.spec_name().eq_ignore_ascii_case(dns_name))
+        .filter(|record| match &changed_zone {
+            Some(zone) => zone_of(record.as_ref()).as_ref() == Some(zone),
+            None => true,
+        })
+        .map(|record| ObjectRef::from_obj(record.as_ref()))
+        .collect()
+}
+
+/// Whether `record` was written by Scout (`bindy.firestoned.io/managed-by:
+/// scout`).
+fn is_scout_record<T: RecordKind>(record: &T) -> bool {
+    record
+        .meta()
+        .labels
+        .as_ref()
+        .and_then(|l| l.get(bindy_api::labels::BINDY_MANAGED_BY_LABEL))
+        .is_some_and(|v| v == bindy_api::labels::MANAGED_BY_SCOUT)
 }
 
 /// The records of kind `T` a change of `zone` must wake.

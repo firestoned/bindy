@@ -310,21 +310,29 @@ pub(crate) async fn run_scout(args: ScoutArgs) -> Result<()> {
     // Phase 1 (same-cluster) and Phase 2 (remote cluster) are tracked in
     // `.github/community/12-scout-ingress-controller.md`.
     info!("Starting Scout controller");
-    bindy_scout::run_scout(bindy_scout::ScoutCli {
-        cluster_name,
-        namespace,
-        default_ips,
-        gateway_services: gateway_service,
-        default_zone,
-        namespace_selector,
-        allowed_zones,
-        allowed_ip_ranges,
-        remote: bindy_scout::ScoutRemoteOverrides {
-            endpoint: remote_endpoint,
-            token_file: remote_token_file,
-            ca_file: remote_ca_file,
+    // Drain on SIGTERM/SIGINT like the operator, so a Recreate rollout's gap
+    // lasts as long as the reconciles in flight, not the whole termination
+    // grace period (ADR-0002 addendum).
+    let (trigger, shutdown) = bindy_controller_sdk::shutdown::channel();
+    let _signal_listener = crate::fire_on_signal(crate::shutdown_signal(), trigger);
+    bindy_scout::run_scout(
+        bindy_scout::ScoutCli {
+            cluster_name,
+            namespace,
+            default_ips,
+            gateway_services: gateway_service,
+            default_zone,
+            namespace_selector,
+            allowed_zones,
+            allowed_ip_ranges,
+            remote: bindy_scout::ScoutRemoteOverrides {
+                endpoint: remote_endpoint,
+                token_file: remote_token_file,
+                ca_file: remote_ca_file,
+            },
         },
-    })
+        shutdown,
+    )
     .await
 }
 

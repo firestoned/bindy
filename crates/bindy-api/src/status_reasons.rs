@@ -114,6 +114,11 @@ pub const REASON_PROGRESS_DEADLINE_EXCEEDED: &str = "ProgressDeadlineExceeded";
 /// BIND9 server configuration.
 pub const REASON_ZONE_NOT_FOUND: &str = "ZoneNotFound";
 
+/// A Scout record held back because a record of another edge cluster has
+/// already published the same name in the zone (ADR-0027). The record writes
+/// nothing to BIND9 until the holder leaves; the message names the holder.
+pub const REASON_RRSET_CONFLICT: &str = "RRsetConflict";
+
 // ============================================================================
 // Condition Types
 // ============================================================================

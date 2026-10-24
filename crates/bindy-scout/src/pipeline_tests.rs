@@ -354,6 +354,12 @@ mod tests {
                         |g| ResponseTemplate::new(200).set_body_json(g.clone()),
                     )
                 }
+                ("GET", ["api", "v1", "services"]) => {
+                    // A source controller's cluster-wide Service watch: an
+                    // empty list makes its store ready.
+                    self.log.push("LIST services".to_string());
+                    ResponseTemplate::new(200).set_body_json(list_body("v1", "Service", Vec::new()))
+                }
                 ("GET", ["api", "v1", "namespaces", ns, "services"]) => {
                     // Applies the label selector as the API server would; a
                     // matching non-LoadBalancer Service is still returned, so
@@ -2458,5 +2464,28 @@ mod tests {
         let result = h.run(&apex_service("svc-a", VIP_A)).await;
         assert!(result.is_err(), "got {result:?}");
         assert!(h.applied().is_empty());
+    }
+
+    // =====================================================================
+    // ADR-0002 addendum: Scout stops promptly on SIGTERM
+    // =====================================================================
+
+    #[tokio::test]
+    async fn a_source_controller_stops_when_the_shutdown_fires() {
+        use bindy_controller_sdk::namespace_scope::NamespaceScope;
+        use bindy_controller_sdk::shutdown;
+        use bindy_controller_sdk::watch::WatchSet;
+        // With the Recreate strategy the new Scout starts only once the old
+        // pod is gone; a Scout that ignores SIGTERM holds that gap open for
+        // the whole termination grace period.
+        let h = Harness::new().await;
+        let mut ws = WatchSet::new(h.client.clone(), NamespaceScope::All);
+        let _services = ws.register::<Service>("Service");
+        let (trigger, signal) = shutdown::channel();
+        let controller = crate::pipeline::source_controller::<Service>(&ws, h.ctx(), signal);
+        trigger.fire();
+        tokio::time::timeout(std::time::Duration::from_secs(5), controller)
+            .await
+            .expect("the controller ends once the shutdown fires");
     }
 }

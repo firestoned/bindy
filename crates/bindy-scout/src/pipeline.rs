@@ -39,6 +39,7 @@ use anyhow::{anyhow, Context as _, Result};
 use bindy_controller_sdk::finalizers;
 use bindy_controller_sdk::kube_errors;
 use bindy_controller_sdk::pagination::list_all_paginated;
+use bindy_controller_sdk::shutdown::ShutdownSignal;
 use bindy_controller_sdk::status::is_ready;
 use bindy_controller_sdk::watch::WatchSet;
 use futures::StreamExt;
@@ -1128,12 +1129,19 @@ fn error_policy<K: ScoutSource>(
 
 /// Builds the controller for one source kind: `K`'s watch from `watch`
 /// (which must have registered `K`), driven through [`reconcile_source`].
+///
+/// The controller drains on `shutdown` (SIGTERM or SIGINT): it starts no new
+/// reconcile, lets the running ones finish, then ends. Scout runs with the
+/// `Recreate` strategy (ADR-0002 addendum), so a prompt exit is what keeps
+/// the gap between the old and the new pod short.
 pub(crate) fn source_controller<K: ScoutSource>(
     watch: &WatchSet,
     ctx: Arc<ScoutContext>,
+    shutdown: ShutdownSignal,
 ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
     Box::pin(
         Controller::for_stream(watch.subscribe::<K>(None), watch.store::<K>(None))
+            .graceful_shutdown_on(shutdown.wait())
             .run(reconcile_source::<K>, error_policy::<K>, ctx)
             .for_each(|res| async move {
                 match res {
