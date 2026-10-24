@@ -196,11 +196,14 @@ pub(crate) struct ScoutArgs {
     /// to the same IP(s).
     #[arg(long, value_delimiter = ',')]
     pub(crate) default_ips: Vec<String>,
-    /// Map a gatewayClass to the LoadBalancer Service whose external IP backs it,
-    /// as `class=namespace/name` (repeatable). When an HTTPRoute/TLSRoute/TCPRoute has no IP
-    /// annotation, scout follows its parentRefs to a Gateway of a configured class
-    /// and uses the mapped Service's external IP. Overrides BINDY_SCOUT_GATEWAY_SERVICES.
-    /// Example: --gateway-service traefik=traefik/traefik
+    /// Map a gatewayClass to the LoadBalancer Service(s) backing it, as
+    /// `class=namespace/name` or `class=namespace/<label-selector>` (repeatable). When a
+    /// Gateway API route has no IP annotation and its Gateway has no status.addresses, scout
+    /// publishes the external IPs of every LoadBalancer Service the target matches, limited
+    /// to the Services labelled gateway.networking.k8s.io/gateway-name for that Gateway when
+    /// any carries the label (ADR-0028). Selectors are equality-based (k=v, k!=v, k, !k).
+    /// Overrides BINDY_SCOUT_GATEWAY_SERVICES.
+    /// Example: --gateway-service traefik=traefik/app.kubernetes.io/name=traefik
     #[arg(long = "gateway-service")]
     pub(crate) gateway_service: Vec<String>,
     /// Default DNS zone applied to all Ingresses when no bindy.firestoned.io/zone annotation

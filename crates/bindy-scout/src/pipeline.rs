@@ -19,9 +19,10 @@
 
 use crate::contributors::{
     contribute, contributor_key, contributor_label, name_record_selector, new_name_record,
-    stale_name_record_selector, withdraw, Contribution, NameRecord, Withdrawal,
+    normalized_ips, stale_name_record_selector, withdraw, Contribution, NameRecord, Withdrawal,
 };
 use crate::crd::ARecord;
+use crate::gateway_targets::{gateway_lb_services, gateways_for_service, routes_for_gateways};
 use crate::guardrails::{first_ip_outside, zone_is_allowed};
 use crate::scout::{arecord_label_selector, dns_name_record_cr_name, stale_arecord_label_selector};
 use crate::scout::{
@@ -30,10 +31,10 @@ use crate::scout::{
     is_scout_opted_in, legacy_arecord_label_selector, parse_ttl_annotation, requeue_after_error,
     resolve_ips_from_annotation, resolve_ips_from_lb_status, resolve_ips_from_service_lb_status,
     resolve_record_name, resolve_usable_zone, resolve_zone, source_namespace_eligible,
-    stale_cleanup_zones, stale_selector_base, tcproute_record_name, GRPCRoute, Gateway,
-    GatewayServiceTarget, HTTPRoute, ParentReference, ScoutContext, ScoutError, StaleKind,
-    TCPRoute, TLSRoute, ZoneAuthz, ZoneResolution, EMPTY_ANNOTATIONS, FINALIZER_SCOUT,
-    LABEL_SOURCE_CLUSTER, LABEL_ZONE, REMOTE_CLEANUP_GRACE_SECS,
+    stale_cleanup_zones, stale_selector_base, tcproute_record_name, GRPCRoute, Gateway, HTTPRoute,
+    NamespacedName, ParentReference, ScoutContext, ScoutError, StaleKind, TCPRoute, TLSRoute,
+    ZoneAuthz, ZoneResolution, EMPTY_ANNOTATIONS, FINALIZER_SCOUT, LABEL_SOURCE_CLUSTER,
+    LABEL_ZONE, REMOTE_CLEANUP_GRACE_SECS,
 };
 use anyhow::{anyhow, Context as _, Result};
 use bindy_controller_sdk::finalizers;
@@ -49,6 +50,7 @@ use k8s_openapi::jiff::Timestamp;
 use k8s_openapi::NamespaceResourceScope;
 use kube::api::{DeleteParams, ListParams};
 use kube::runtime::controller::Action;
+use kube::runtime::reflector::ObjectRef;
 use kube::runtime::Controller;
 use kube::{Api, Client, Resource, ResourceExt};
 use serde::de::DeserializeOwned;
@@ -102,6 +104,16 @@ pub(crate) trait ScoutSource:
     /// source of a record name (TCPRoute has no hostnames).
     const REQUIRES_RECORD_NAME_OVERRIDE: bool = false;
 
+    /// Whether this kind resolves its addresses through the Gateways its
+    /// `parentRefs` name, and so re-resolves when one of those Gateways or
+    /// their Services changes (ADR-0028, Decision 4).
+    const FOLLOWS_GATEWAYS: bool = false;
+
+    /// The route's `spec.parentRefs`; empty for kinds that have none.
+    fn parent_refs(&self) -> &[ParentReference] {
+        &[]
+    }
+
     /// Whether this object can publish at all, beyond its opt-in annotation.
     /// A source that stops being publishable is released like an opt-out.
     fn publishable(&self) -> bool {
@@ -113,13 +125,18 @@ pub(crate) trait ScoutSource:
     /// resolved zone, for kinds that derive their host from it.
     fn hostnames(&self, zone: &str) -> Vec<(usize, String)>;
 
-    /// The IPv4 addresses this object's own status (or its serving Gateway)
-    /// advertises. Empty when none are known yet.
+    /// The IPv4 addresses this object's own status advertises, or, for a
+    /// route, the addresses its Gateways serve, read from Scout's watch
+    /// caches (ADR-0028). Empty when none are known yet.
     ///
     /// # Errors
-    /// Returns an error when a lookup fails with anything other than 404, so
-    /// the reconcile is retried rather than published with a fallback IP.
-    fn discover_ips(&self, ctx: &ScoutContext) -> impl Future<Output = Result<Vec<String>>> + Send;
+    /// Returns an error when a lookup fails, so the reconcile is retried
+    /// rather than published with a fallback IP.
+    fn discover_ips(&self, ctx: &ScoutContext) -> impl Future<Output = Result<Vec<String>>> + Send {
+        let namespace = self.meta().namespace.clone().unwrap_or_default();
+        let ips = resolve_ips_from_gateways(ctx, &namespace, self.parent_refs());
+        async move { Ok(ips) }
+    }
 }
 
 /// Numbers the non-empty entries of `hosts`, keeping each entry's position.
@@ -175,13 +192,14 @@ impl ScoutSource for HTTPRoute {
     const KIND: &'static str = "HTTPRoute";
     const IP_PRECEDENCE: IpPrecedence = IpPrecedence::DiscoveredFirst;
 
+    const FOLLOWS_GATEWAYS: bool = true;
+
     fn hostnames(&self, _zone: &str) -> Vec<(usize, String)> {
         indexed_hosts(self.spec.iter().flat_map(|s| s.hostnames.iter().flatten()))
     }
 
-    async fn discover_ips(&self, ctx: &ScoutContext) -> Result<Vec<String>> {
-        let refs = self.spec.as_ref().and_then(|s| s.parent_refs.as_deref());
-        route_gateway_ips(self, refs, ctx).await
+    fn parent_refs(&self) -> &[ParentReference] {
+        route_parent_refs(self.spec.as_ref().and_then(|s| s.parent_refs.as_deref()))
     }
 }
 
@@ -189,13 +207,14 @@ impl ScoutSource for GRPCRoute {
     const KIND: &'static str = "GRPCRoute";
     const IP_PRECEDENCE: IpPrecedence = IpPrecedence::DiscoveredFirst;
 
+    const FOLLOWS_GATEWAYS: bool = true;
+
     fn hostnames(&self, _zone: &str) -> Vec<(usize, String)> {
         indexed_hosts(self.spec.iter().flat_map(|s| s.hostnames.iter().flatten()))
     }
 
-    async fn discover_ips(&self, ctx: &ScoutContext) -> Result<Vec<String>> {
-        let refs = self.spec.as_ref().and_then(|s| s.parent_refs.as_deref());
-        route_gateway_ips(self, refs, ctx).await
+    fn parent_refs(&self) -> &[ParentReference] {
+        route_parent_refs(self.spec.as_ref().and_then(|s| s.parent_refs.as_deref()))
     }
 }
 
@@ -203,13 +222,14 @@ impl ScoutSource for TLSRoute {
     const KIND: &'static str = "TLSRoute";
     const IP_PRECEDENCE: IpPrecedence = IpPrecedence::DiscoveredFirst;
 
+    const FOLLOWS_GATEWAYS: bool = true;
+
     fn hostnames(&self, _zone: &str) -> Vec<(usize, String)> {
         indexed_hosts(self.spec.iter().flat_map(|s| s.hostnames.iter().flatten()))
     }
 
-    async fn discover_ips(&self, ctx: &ScoutContext) -> Result<Vec<String>> {
-        let refs = self.spec.as_ref().and_then(|s| s.parent_refs.as_deref());
-        route_gateway_ips(self, refs, ctx).await
+    fn parent_refs(&self) -> &[ParentReference] {
+        route_parent_refs(self.spec.as_ref().and_then(|s| s.parent_refs.as_deref()))
     }
 }
 
@@ -217,32 +237,21 @@ impl ScoutSource for TCPRoute {
     const KIND: &'static str = "TCPRoute";
     const IP_PRECEDENCE: IpPrecedence = IpPrecedence::DiscoveredFirst;
     const REQUIRES_RECORD_NAME_OVERRIDE: bool = true;
+    const FOLLOWS_GATEWAYS: bool = true;
 
     /// TCPRoute has no hostnames: its one record is named by the override.
     fn hostnames(&self, _zone: &str) -> Vec<(usize, String)> {
         Vec::new()
     }
 
-    async fn discover_ips(&self, ctx: &ScoutContext) -> Result<Vec<String>> {
-        let refs = self.spec.as_ref().and_then(|s| s.parent_refs.as_deref());
-        route_gateway_ips(self, refs, ctx).await
+    fn parent_refs(&self) -> &[ParentReference] {
+        route_parent_refs(self.spec.as_ref().and_then(|s| s.parent_refs.as_deref()))
     }
 }
 
-/// Resolves a Gateway API route's IPs through its `parentRefs`.
-async fn route_gateway_ips<K: Resource>(
-    route: &K,
-    parent_refs: Option<&[ParentReference]>,
-    ctx: &ScoutContext,
-) -> Result<Vec<String>> {
-    let namespace = route.meta().namespace.clone().unwrap_or_default();
-    resolve_ips_from_gateways(
-        &ctx.client,
-        &namespace,
-        parent_refs.unwrap_or_default(),
-        &ctx.gateway_services,
-    )
-    .await
+/// A route's `parentRefs`, empty when its spec has none.
+fn route_parent_refs(refs: Option<&[ParentReference]>) -> &[ParentReference] {
+    refs.unwrap_or_default()
 }
 
 /// The identity of one source object: its kind, namespace and name. With
@@ -521,7 +530,11 @@ async fn publish<K: ScoutSource>(
 
     let api: Api<ARecord> = Api::namespaced(ctx.remote_client.clone(), &ctx.target_namespace);
     let key = contributor_key(kind, ns, name);
-    let contribution = Contribution { ips, ttl };
+    // ADR-0028 Decision 6: a reordered status writes nothing.
+    let contribution = Contribution {
+        ips: normalized_ips(ips),
+        ttl,
+    };
     let mut written = BTreeSet::new();
     let mut all_served = true;
     for dns_name in unique_dns_names(records) {
@@ -971,116 +984,116 @@ pub(crate) async fn log_unscoped_stale_cluster_arecord_candidates(
 // Gateway API IP discovery (local client)
 // ============================================================================
 
-/// Resolves the external IPs of the LoadBalancer Service a gateway class maps to.
-///
-/// For a [`GatewayServiceTarget::Name`] the Service is fetched directly; for a
-/// [`GatewayServiceTarget::Labeled`] target the namespace is listed by label
-/// selector and the first LoadBalancer Service with an external IPv4 is used.
-/// Every IPv4 address of that Service is returned (issue #556). Returns an
-/// empty list when the Service does not exist (404) or has no external IP yet.
-///
-/// # Errors
-/// Returns an error for any other lookup failure (ADR-0022, Decision 6).
-async fn resolve_ips_from_gateway_service(
-    client: &Client,
-    target: &GatewayServiceTarget,
-) -> Result<Vec<String>> {
-    match target {
-        GatewayServiceTarget::Name(svc_ref) => {
-            let api: Api<Service> = Api::namespaced(client.clone(), &svc_ref.namespace);
-            match api.get(&svc_ref.name).await {
-                Ok(svc) => Ok(resolve_ips_from_service_lb_status(&svc)),
-                Err(e) if kube_errors::is_not_found(&e) => {
-                    debug!(service = %svc_ref.name, ns = %svc_ref.namespace, "Gateway LoadBalancer Service not found");
-                    Ok(Vec::new())
-                }
-                Err(e) => Err(anyhow!(
-                    "failed to fetch gateway LoadBalancer Service {}/{}: {e}",
-                    svc_ref.namespace,
-                    svc_ref.name
-                )),
-            }
-        }
-        GatewayServiceTarget::Labeled {
-            namespace,
-            selector,
-        } => {
-            let api: Api<Service> = Api::namespaced(client.clone(), namespace);
-            let services = list_all_paginated(&api, ListParams::default().labels(selector))
-                .await
-                .with_context(|| {
-                    format!("failed to list gateway LoadBalancer Services in {namespace} matching {selector:?}")
-                })?;
-            Ok(services
-                .iter()
-                .filter(|svc| is_loadbalancer_service(svc))
-                .map(resolve_ips_from_service_lb_status)
-                .find(|ips| !ips.is_empty())
-                .unwrap_or_default())
-        }
-    }
-}
-
 /// Follows a route's `parentRefs` back to the serving Gateway(s) and resolves
-/// their external IPv4 address(es).
+/// the addresses they serve, from Scout's Gateway and Service watch caches
+/// (ADR-0028, Decision 3).
 ///
-/// For each `parentRef` that resolves to a Gateway, Scout reads the Gateway's
-/// IPv4 `status.addresses`; when there are none, it reads the external IP of
-/// the LoadBalancer Service mapped to the Gateway's class in
-/// `--gateway-service`. A Gateway that does not exist (404) is skipped.
-/// Returns the de-duplicated IPs in discovery order (empty when none resolve).
+/// For each `parentRef` that names a cached Gateway, Scout takes the
+/// Gateway's IPv4 `status.addresses`; when there are none, the addresses of
+/// the `LoadBalancer` Services the Gateway's class maps to in
+/// `--gateway-service`, scoped to that Gateway (Decisions 1 and 2). A Gateway
+/// that is not in the cache is skipped. With `--allowed-ip-ranges` set, a
+/// discovered address outside the ranges is dropped with a warning naming
+/// its Gateway or Service (Decision 5). Returns the addresses each once
+/// (empty when none resolve).
 ///
 /// # Arguments
-/// * `client` - Local cluster client (Gateways and Services live on the workload cluster)
+/// * `ctx` - Scout's context: the caches, the class map and the ranges
 /// * `route_namespace` - Namespace of the route, the default parentRef namespace
 /// * `parent_refs` - The route's `spec.parentRefs`
-/// * `gateway_services` - `gatewayClass -> Service` map used when a Gateway has
-///   no `status.addresses`
-///
-/// # Errors
-/// Returns an error when a Gateway or Service lookup fails with anything other
-/// than 404, so the reconcile is retried (ADR-0022, Decision 6).
-pub(crate) async fn resolve_ips_from_gateways(
-    client: &Client,
+pub(crate) fn resolve_ips_from_gateways(
+    ctx: &ScoutContext,
     route_namespace: &str,
     parent_refs: &[ParentReference],
-    gateway_services: &BTreeMap<String, GatewayServiceTarget>,
-) -> Result<Vec<String>> {
+) -> Vec<String> {
+    let Some(gateway_store) = ctx.gateway_store.as_ref() else {
+        return Vec::new();
+    };
+    let services = ctx.service_store.state();
     let mut ips: Vec<String> = Vec::new();
     for gw_ref in gateway_parent_refs(parent_refs, route_namespace) {
-        let api: Api<Gateway> = Api::namespaced(client.clone(), &gw_ref.namespace);
-        let gateway = match api.get(&gw_ref.name).await {
-            Ok(gw) => gw,
-            Err(e) if kube_errors::is_not_found(&e) => {
-                debug!(gateway = %gw_ref.name, ns = %gw_ref.namespace, "Skipping a parentRef Gateway that does not exist");
-                continue;
-            }
-            Err(e) => {
-                return Err(anyhow!(
-                    "failed to fetch parentRef Gateway {}/{}: {e}",
-                    gw_ref.namespace,
-                    gw_ref.name
-                ))
-            }
+        let key = ObjectRef::<Gateway>::new(&gw_ref.name).within(&gw_ref.namespace);
+        let Some(gateway) = gateway_store.get(&key) else {
+            debug!(gateway = %gw_ref.name, ns = %gw_ref.namespace, "Skipping a parentRef Gateway that does not exist");
+            continue;
         };
 
         let gw_ips = gateway_addresses_as_ips(&gateway);
         if !gw_ips.is_empty() {
-            ips.extend(gw_ips);
+            let owner = format!("Gateway {}/{}", gw_ref.namespace, gw_ref.name);
+            ips.extend(within_allowed_ranges(ctx, gw_ips, &owner));
             continue;
         }
 
         let class = &gateway.spec.gateway_class_name;
-        let Some(target) = gateway_services.get(class) else {
+        let Some(target) = ctx.gateway_services.get(class) else {
             debug!(gateway = %gw_ref.name, class = %class, "Gateway has no status.addresses and its class is not in --gateway-service, skipping");
             continue;
         };
-        ips.extend(resolve_ips_from_gateway_service(client, target).await?);
+        for svc in gateway_lb_services(target, &gw_ref, &services) {
+            let owner = format!(
+                "Service {}/{}",
+                svc.namespace().unwrap_or_default(),
+                svc.name_any()
+            );
+            ips.extend(within_allowed_ranges(
+                ctx,
+                resolve_ips_from_service_lb_status(svc),
+                &owner,
+            ));
+        }
     }
 
     let mut seen = BTreeSet::new();
     ips.retain(|ip| seen.insert(ip.clone()));
-    Ok(ips)
+    ips
+}
+
+/// The addresses of `ips` (discovered from `owner`) inside the allowed
+/// ranges; each one outside is dropped with a warning (ADR-0028, Decision 5).
+/// All of `ips` when no ranges are set.
+fn within_allowed_ranges(ctx: &ScoutContext, ips: Vec<String>, owner: &str) -> Vec<String> {
+    let Some(ranges) = ctx.allowed_ip_ranges.as_deref() else {
+        return ips;
+    };
+    ips.into_iter()
+        .filter(|ip| {
+            let outside = first_ip_outside(ranges, std::slice::from_ref(ip)).is_some();
+            if outside {
+                warn!(ip = %ip, from = %owner, allowed_ip_ranges = ?ranges, "Dropping a discovered gateway address outside this Scout's allowed ranges (BINDY_SCOUT_ALLOWED_IP_RANGES)");
+            }
+            !outside
+        })
+        .collect()
+}
+
+/// The routes of kind `K` in `routes` whose `parentRefs` name a Gateway in
+/// `gateways` (ADR-0028, Decision 4).
+pub(crate) fn routes_to_wake<K: ScoutSource>(
+    routes: &[Arc<K>],
+    gateways: &[NamespacedName],
+) -> Vec<ObjectRef<K>> {
+    if gateways.is_empty() {
+        return Vec::new();
+    }
+    let parents: Vec<(NamespacedName, Vec<NamespacedName>)> = routes
+        .iter()
+        .map(|route| {
+            let namespace = route.namespace().unwrap_or_default();
+            let refs = gateway_parent_refs(route.parent_refs(), &namespace);
+            (
+                NamespacedName {
+                    namespace,
+                    name: route.name_any(),
+                },
+                refs,
+            )
+        })
+        .collect();
+    routes_for_gateways(&parents, gateways)
+        .into_iter()
+        .map(|r| ObjectRef::new(&r.name).within(&r.namespace))
+        .collect()
 }
 
 // ============================================================================
@@ -1142,8 +1155,30 @@ pub(crate) fn source_controller<K: ScoutSource>(
     ctx: Arc<ScoutContext>,
     shutdown: ShutdownSignal,
 ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+    let mut controller = Controller::for_stream(watch.subscribe::<K>(None), watch.store::<K>(None));
+    // ADR-0028 Decision 4: a route re-resolves when one of its Gateways, or
+    // a Service its Gateways' class maps to, changes. Both mappers read only
+    // the watch caches.
+    if K::FOLLOWS_GATEWAYS {
+        if let Some(gateway_store) = ctx.gateway_store.clone() {
+            let routes = watch.store::<K>(None);
+            controller = controller.watches_stream(watch.subscribe::<Gateway>(None), move |gw| {
+                let changed = NamespacedName {
+                    namespace: gw.namespace().unwrap_or_default(),
+                    name: gw.name_any(),
+                };
+                routes_to_wake(&routes.state(), &[changed])
+            });
+            let routes = watch.store::<K>(None);
+            let targets = ctx.gateway_services.clone();
+            controller = controller.watches_stream(watch.subscribe::<Service>(None), move |svc| {
+                let gateways = gateways_for_service(&svc, &targets, &gateway_store.state());
+                routes_to_wake(&routes.state(), &gateways)
+            });
+        }
+    }
     Box::pin(
-        Controller::for_stream(watch.subscribe::<K>(None), watch.store::<K>(None))
+        controller
             .graceful_shutdown_on(shutdown.wait())
             .run(reconcile_source::<K>, error_policy::<K>, ctx)
             .for_each(|res| async move {

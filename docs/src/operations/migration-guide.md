@@ -2,6 +2,44 @@
 
 This document collects the breaking-change migrations for Bindy, newest first.
 
+## Scout routes publish every VIP of their Gateway (ADR-0028)
+
+A `--gateway-service` target written as `namespace/<label-selector>` now
+publishes the addresses of **every** `LoadBalancer` Service the selector
+matches, not the first one with an address (issue #569). Routes also
+re-resolve when their Gateway or its Services change. No CRD, RBAC or
+admission change: Scout's ClusterRole already allows watching Gateways.
+
+- **Check what each selector matches** before upgrading Scout. Every
+  `LoadBalancer` Service listed, with an address, will be published for the
+  routes of that class:
+
+  ```bash
+  kubectl get svc -n <namespace> -l '<label-selector>' \
+    -o custom-columns=NAME:.metadata.name,TYPE:.spec.type,IPS:.status.loadBalancer.ingress[*].ip
+  ```
+
+  If it lists Services you do not want in DNS (the Traefik chart, for
+  example, labels its extra internal Services `app.kubernetes.io/name:
+  traefik` too), label the public VIP Services and add that label to the
+  selector, or switch to a `namespace/name` target.
+- **Several Gateways of one class.** When the matched Services carry
+  `gateway.networking.k8s.io/gateway-name` (Envoy Gateway, Cilium, Istio), a
+  route now publishes only its own Gateway's Services. Two Gateways of the
+  same name in different namespaces behind one selector are not told apart.
+- **Selectors are validated at startup.** Only equality-based selectors
+  (`k=v`, `k==v`, `k!=v`, `k`, `!k`) are accepted; a set-based one
+  (`k in (a,b)`) or a malformed one now fails Scout at startup instead of
+  matching nothing at runtime.
+- **With `--allowed-ip-ranges`**, a route address discovered from a Gateway
+  or gateway Service outside the ranges is now dropped with a warning instead
+  of stopping the route publishing. Annotated and default addresses outside
+  the ranges still stop it.
+- **Contributions are sorted.** Each source's entry in
+  `bindy.firestoned.io/scout-contributors` is now written with its addresses
+  sorted numerically, so the first reconcile after the upgrade may rewrite
+  entries once. The record's addresses are unchanged.
+
 ## Scout records of two clusters no longer overwrite each other (ADR-0027)
 
 When two edge clusters registered for one zone publish the same name, the

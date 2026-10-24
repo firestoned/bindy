@@ -293,22 +293,24 @@ pub(crate) struct NamespacedName {
     pub name: String,
 }
 
-/// How Scout locates the LoadBalancer Service backing a gateway class.
+/// How Scout locates the `LoadBalancer` Service(s) backing a gateway class.
 ///
-/// Configured per `gatewayClass` so operators can pin the exact Service — either
-/// by an explicit `namespace/name`, or by a label selector scoped to a namespace
-/// (useful when the Service name is generated but carries stable labels).
+/// Configured per `gatewayClass`: either one Service by `namespace/name`, or
+/// every Service a label selector matches in a namespace (ADR-0028), whose
+/// addresses are published together, scoped to the Gateway being resolved
+/// when the Services carry the GEP-1762 `gateway.networking.k8s.io/gateway-name`
+/// label.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum GatewayServiceTarget {
-    /// A specific LoadBalancer Service, addressed by namespace and name.
+    /// A specific `LoadBalancer` Service, addressed by namespace and name.
     Name(NamespacedName),
-    /// A LoadBalancer Service found by label selector within a namespace.
-    /// `selector` is a standard Kubernetes label-selector string, e.g.
-    /// `app.kubernetes.io/name=traefik`.
+    /// Every `LoadBalancer` Service in `namespace` that `selector` matches.
+    /// `selector` is an equality-based Kubernetes label selector, e.g.
+    /// `app.kubernetes.io/name=traefik`, validated at startup.
     Labeled {
-        /// Namespace to search for the Service.
+        /// Namespace the Services live in.
         namespace: String,
-        /// Kubernetes label selector identifying the Service.
+        /// Equality-based label selector identifying the Services.
         selector: String,
     },
 }
@@ -517,10 +519,12 @@ pub(crate) struct ScoutContext {
     /// Intended for shared-ingress topologies (e.g. Traefik) where all Ingresses resolve
     /// to the same IP(s). Set via `BINDY_SCOUT_DEFAULT_IPS` or `--default-ips`.
     pub default_ips: Vec<String>,
-    /// Operator-configured `gatewayClass → LoadBalancer Service` map. When an HTTPRoute
-    /// or TLSRoute has no explicit IP annotation, Scout follows its `parentRefs` to a
-    /// Gateway of one of these classes and reads the mapped Service's external IP.
-    /// Set via `BINDY_SCOUT_GATEWAY_SERVICES` or `--gateway-service`.
+    /// Operator-configured `gatewayClass -> LoadBalancer Service(s)` map. When a
+    /// Gateway API route has no explicit IP annotation, Scout follows its `parentRefs`
+    /// to a Gateway of one of these classes and, when the Gateway has no
+    /// `status.addresses`, publishes the external IPs of the Services the class's
+    /// target matches (ADR-0028). Set via `BINDY_SCOUT_GATEWAY_SERVICES` or
+    /// `--gateway-service`.
     pub gateway_services: BTreeMap<String, GatewayServiceTarget>,
     /// Default DNS zone applied to all Ingresses when no `bindy.firestoned.io/zone` annotation
     /// is present. Set via `BINDY_SCOUT_DEFAULT_ZONE` or `--default-zone`.
@@ -544,6 +548,13 @@ pub(crate) struct ScoutContext {
     /// Read-only store of DNSZone resources for zone validation.
     /// Populated from the remote client so zones are validated against the bindy cluster.
     pub zone_store: reflector::Store<DNSZone>,
+    /// Scout's cluster-wide Service watch cache (local cluster): the gateway
+    /// Services routes resolve through are read here (ADR-0028, Decision 3).
+    pub service_store: reflector::Store<Service>,
+    /// Scout's cluster-wide Gateway watch cache (local cluster), `None` when
+    /// no Gateway API route kind is served and Gateways are not watched
+    /// (ADR-0028, Decisions 3 and 4).
+    pub gateway_store: Option<reflector::Store<Gateway>>,
 }
 
 // ============================================================================
@@ -1582,7 +1593,10 @@ pub(crate) fn service_ref_from_str(s: &str) -> Option<NamespacedName> {
 ///
 /// The namespace is the segment before the first `/`; namespaces cannot contain
 /// `/`, so a label selector's own `/` (e.g. `app.kubernetes.io/name=x`) is
-/// preserved. Returns `None` for empty namespace or empty target.
+/// preserved. Returns `None` for empty namespace or empty target, and for a
+/// label selector that is not equality-based (see
+/// `gateway_targets::parse_label_selector`) or a name that is not a valid
+/// Service name.
 #[must_use]
 pub(crate) fn gateway_service_target_from_str(s: &str) -> Option<GatewayServiceTarget> {
     let (namespace, rest) = s.split_once('/')?;
@@ -1592,13 +1606,23 @@ pub(crate) fn gateway_service_target_from_str(s: &str) -> Option<GatewayServiceT
         return None;
     }
     if rest.contains('=') {
+        // Selectors are evaluated against the Service watch cache (ADR-0028),
+        // so one Scout cannot evaluate is refused here, at startup.
+        crate::gateway_targets::parse_label_selector(rest).ok()?;
         return Some(GatewayServiceTarget::Labeled {
             namespace: namespace.to_string(),
             selector: rest.to_string(),
         });
     }
     // No `=` → an explicit Service name. Reuse the strict `ns/name` parser,
-    // which rejects extra slashes.
+    // which rejects extra slashes. A Service name is a DNS-1035 label, so
+    // anything else (a set-based selector such as `app in (a,b)`) is refused.
+    let is_service_name = rest
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+    if !is_service_name {
+        return None;
+    }
     service_ref_from_str(s).map(GatewayServiceTarget::Name)
 }
 
@@ -1938,8 +1962,9 @@ pub(crate) struct ScoutConfig {
     /// Default IPs used when no per-resource annotation override or discovered IP
     /// applies. Set via `BINDY_SCOUT_DEFAULT_IPS` (comma-separated) or `--default-ips`.
     pub(crate) default_ips: Vec<String>,
-    /// `gatewayClass -> LoadBalancer Service` map for gateway-chain IP resolution.
-    /// Set via `BINDY_SCOUT_GATEWAY_SERVICES` (`class=ns/name,...`) or `--gateway-service`.
+    /// `gatewayClass -> LoadBalancer Service(s)` map for gateway-chain IP resolution.
+    /// Set via `BINDY_SCOUT_GATEWAY_SERVICES` (`class=ns/name` or
+    /// `class=ns/<label-selector>`, comma-separated) or `--gateway-service`.
     pub(crate) gateway_services: BTreeMap<String, GatewayServiceTarget>,
     /// Default DNS zone applied when no `bindy.firestoned.io/zone` annotation
     /// is present. Set via `BINDY_SCOUT_DEFAULT_ZONE` or `--default-zone`.
@@ -1982,7 +2007,8 @@ pub struct ScoutCli {
     pub namespace: Option<String>,
     /// Overrides `BINDY_SCOUT_DEFAULT_IPS`.
     pub default_ips: Vec<String>,
-    /// Overrides `BINDY_SCOUT_GATEWAY_SERVICES`, one `class=ns/name` each.
+    /// Overrides `BINDY_SCOUT_GATEWAY_SERVICES`, one `class=ns/name` or
+    /// `class=ns/<label-selector>` each.
     pub gateway_services: Vec<String>,
     /// Overrides `BINDY_SCOUT_DEFAULT_ZONE`.
     pub default_zone: Option<String>,
@@ -2296,21 +2322,6 @@ pub async fn run_scout(cli: ScoutCli, shutdown: ShutdownSignal) -> Result<()> {
     let _zones = remote_watch.register::<DNSZone>("DNSZone");
     let dnszone_reader = remote_watch.store::<DNSZone>(Some(&config.target_namespace));
 
-    let ctx = Arc::new(ScoutContext {
-        client: local_client.clone(),
-        remote_client,
-        target_namespace: config.target_namespace,
-        cluster_name: config.cluster_name,
-        excluded_namespaces: config.excluded_namespaces,
-        default_ips: config.default_ips,
-        gateway_services: config.gateway_services,
-        default_zone: config.default_zone,
-        namespace_selector: config.namespace_selector,
-        allowed_zones: config.allowed_zones,
-        allowed_ip_ranges: config.allowed_ip_ranges,
-        zone_store: dnszone_reader,
-    });
-
     // The route APIs below only probe whether each kind is served; the
     // source objects themselves are watched through the shared watch layer.
     let httproute_api: Api<HTTPRoute> = Api::all(local_client.clone());
@@ -2393,7 +2404,50 @@ pub async fn run_scout(cli: ScoutCli, shutdown: ShutdownSignal) -> Result<()> {
     if tcproute_enabled {
         let _ = local_watch.register::<TCPRoute>("TCPRoute");
     }
+    // ADR-0028: routes resolve their Gateways from a watch cache, and a
+    // Gateway change wakes its routes. Watched only when a route kind is.
+    let any_route_kind =
+        httproute_enabled || grpcroute_enabled || tlsroute_enabled || tcproute_enabled;
+    let gateway_api: Api<Gateway> = Api::all(local_client.clone());
+    let gateways_watched = any_route_kind && kind_served(&gateway_api).await;
+    if gateways_watched {
+        let _ = local_watch.register::<Gateway>("Gateway");
+    } else if any_route_kind {
+        warn!("Gateway API routes are served but Gateways are not; routes publish only annotated or default addresses");
+    }
     let local_watch = Arc::new(local_watch);
+
+    let ctx = Arc::new(ScoutContext {
+        client: local_client.clone(),
+        remote_client,
+        target_namespace: config.target_namespace,
+        cluster_name: config.cluster_name,
+        excluded_namespaces: config.excluded_namespaces,
+        default_ips: config.default_ips,
+        gateway_services: config.gateway_services,
+        default_zone: config.default_zone,
+        namespace_selector: config.namespace_selector,
+        allowed_zones: config.allowed_zones,
+        allowed_ip_ranges: config.allowed_ip_ranges,
+        zone_store: dnszone_reader,
+        service_store: local_watch.store::<Service>(None),
+        gateway_store: gateways_watched.then(|| local_watch.store::<Gateway>(None)),
+    });
+
+    // A route resolves its Gateway's addresses from the Service and
+    // Gateway caches; reconciling before they are filled would publish a
+    // fallback (or nothing) only to correct it a moment later.
+    let caches_ready = async {
+        ctx.service_store.wait_until_ready().await?;
+        if let Some(gateways) = &ctx.gateway_store {
+            gateways.wait_until_ready().await?;
+        }
+        anyhow::Ok(())
+    };
+    tokio::select! {
+        ready = caches_ready => ready.context("Service or Gateway watch cache never filled")?,
+        () = shutdown.wait() => return Ok(()),
+    }
 
     // A Gateway API controller is built only when its kind is served (and so
     // registered above): subscribing to an unregistered kind would panic.

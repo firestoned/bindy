@@ -1,18 +1,43 @@
 # Threat Model - Bindy DNS Operator
 
-**Version:** 1.32
-**Last Updated:** 2026-10-23
+**Version:** 1.33
+**Last Updated:** 2026-10-24
 **Owner:** Security Team
 **Compliance:** SOX 404, PCI-DSS 6.4.1, Basel III Cyber Risk
 
-> Last full pass 2026-10-23, against ADR-0001 ... ADR-0027 (ADR-0002 as amended
+> Last full pass 2026-10-24, against ADR-0001 ... ADR-0028 (ADR-0002 as amended
 > 2026-10-23; ADR-0006 as amended;
 > ADR-0009 as amended 2026-10-05, fully implemented; ADR-0013 stages 1 to 3,
 > ADR-0014, ADR-0015, ADR-0016, ADR-0017 as amended and corrected 2026-10-07
 > and by ADR-0019, ADR-0018 as amended 2026-10-07, ADR-0019, ADR-0020,
 > ADR-0021, ADR-0022, ADR-0023, ADR-0024 as amended, ADR-0025 decisions 1
-> to 6, ADR-0026 decisions 1 to 6 and ADR-0027 decisions 1 to 6 implemented;
-> GRPCRoute as a sixth Scout source kind, #560).
+> to 6, ADR-0026 decisions 1 to 6, ADR-0027 decisions 1 to 6 and ADR-0028
+> decisions 1 to 6 implemented; GRPCRoute as a sixth Scout source kind, #560).
+>
+> **Revision note (v1.33):** Full pass for ADR-0028 (Scout routes follow the
+> addresses of their Gateway; issue #569, PR #570). A `--gateway-service`
+> label selector now publishes the addresses of every `LoadBalancer` Service
+> it matches, not the first, scoped to the route's own Gateway by the
+> GEP-1762 `gateway.networking.k8s.io/gateway-name` label when the Services
+> carry it; terminating Services are skipped; Gateways and gateway Services
+> are read from Scout's watch caches, and a route re-resolves when its
+> Gateway or one of those Services changes; a discovered route address
+> outside `--allowed-ip-ranges` is dropped with a warning instead of stopping
+> the route (annotated and default addresses still stop it); contributions
+> are sorted (new control **M-75**). New threat **T7**: whoever can create a
+> matching `LoadBalancer` Service in a gateway namespace, or write a Gateway's
+> status, chooses addresses for every route of that class. That was already
+> true of the first match; the union makes it true of any match, and
+> `--allowed-ip-ranges` bounds it. Accepted risk **25** records the selector
+> breadth, same-named Gateways in different namespaces, and the route wake-ups
+> a busy gateway namespace causes. RBAC: no change (Scout's ClusterRole
+> already had `get`/`list`/`watch` on `gateways`; Scout now uses `list` and
+> `watch` instead of `get`, and no longer lists Services per reconcile).
+> Sections changed: components (5), Boundary 6, T7 (new), attack surface 7,
+> M-63 (gateway lookups), M-75 (new), accepted risk 25 (new), controls
+> summary. Reviewed with no change: every other section; T4 (Scout writes no
+> Gateway or Service), Scenario 6 (a compromised Scout gains nothing it could
+> not already read).
 >
 > **Revision note (v1.32):** Full pass for ADR-0027 (Scout records of two
 > clusters that claim one name are a conflict, not a race). Before, two edge
@@ -780,7 +805,11 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
 5. **Bindy Scout** *(added 2026-03-20; see [Trust Boundary 6](#boundary-6-scout-controller))*
    - Separate Deployment/`ServiceAccount` from the main operator (same binary, `bindy scout`), its own `ClusterRole` (`bindy-scout`); one replica, `Recreate` strategy, drains on SIGTERM (ADR-0002 addendum)
    - Watches `Ingress`, `Service` (LoadBalancer), and Gateway API `HTTPRoute`/`GRPCRoute`/`TLSRoute`/`TCPRoute`
-     resources **cluster-wide, across all namespaces**, for an opt-in annotation
+     resources **cluster-wide, across all namespaces**, for an opt-in annotation,
+     and `Gateway`s (read-only), from which a route without an IP annotation
+     takes its addresses: the Gateway's `status.addresses` or the
+     `LoadBalancer` Services `--gateway-service` maps its class to (M-75,
+     ADR-0028)
    - On opt-in, writes one `ARecord` per DNS name, shared by every source of
      the cluster that publishes that name, each source adding and removing only
      its own addresses (M-73, ADR-0026; a record is deleted with its last
@@ -789,7 +818,8 @@ This document provides a comprehensive threat model for the Bindy DNS Operator, 
      over per-source records from before ADR-0026 (M-63), and adds/removes its
      own finalizer. When configured it
      publishes only into `--allowed-zones` and only addresses inside
-     `--allowed-ip-ranges` (M-69), and it leaves a record of another cluster
+     `--allowed-ip-ranges` (M-69; a route's discovered gateway address outside
+     is dropped, M-75), and it leaves a record of another cluster
      alone when the bindy cluster refuses its delete (M-72),
      which requires cluster-wide `patch`/`update` on the watched resource types, not
      just `get`/`list`/`watch`
@@ -1000,6 +1030,10 @@ act against a remote cluster.
 - Every namespace a zone authorizes may publish any name in it, so sources of
   different namespaces that pick the same name share its record and all of
   their addresses are served ([T6](#t6-a-tenant-adds-addresses-to-another-tenants-name))
+- The gateway namespaces `--gateway-service` names, and the Gateways routes
+  attach to, are platform-owned: a `LoadBalancer` Service matching a class's
+  selector, or a Gateway's `status.addresses`, supplies addresses for every
+  route of that class ([T7](#t7-a-gateway-service-supplies-addresses-for-every-route-of-its-class))
 - **(Fixed 2026-07-19, M-25)** Scout's Secret access is namespaced and
   `resourceNames`-restricted to the single Phase 2 kubeconfig Secret, no longer
   cluster-wide. Same-cluster-only deployments (the default) get no Secret access at all.
@@ -1421,6 +1455,54 @@ reconcile: a takeover rather than an addition.
 
 **Residual Risk:** LOW where each zone is granted to one team; MEDIUM for a
 zone granted to several teams (accepted risk 24).
+
+---
+
+#### T7: A Gateway Service Supplies Addresses for Every Route of Its Class
+
+**Threat:** A route without an IP annotation publishes the addresses its
+Gateway serves: the Gateway's `status.addresses`, or the `LoadBalancer`
+Services the class's `--gateway-service` target matches (ADR-0028). Whoever
+can create a `LoadBalancer` Service with the selector's labels in the gateway
+namespace, or write a Gateway's status, adds an address to every route of
+that class: part of those names' traffic goes to their endpoint.
+
+**Impact:** MEDIUM (part of the traffic of every route of one gateway class)
+**Likelihood:** LOW (the gateway namespace and Gateway status are written by
+the platform team and the gateway controller, not tenants)
+
+**Attack Scenario:**
+1. `--gateway-service traefik=traefik/app.kubernetes.io/name=traefik`
+2. Someone with Service create rights in `traefik` creates a `LoadBalancer`
+   Service labelled `app.kubernetes.io/name: traefik`
+3. Its address is added to every route whose Gateway is of class `traefik`
+
+Before ADR-0028 the first matching Service with an address won, so step 2
+could also replace the real VIP, depending on list order. A selector that
+matches unintended Services (the Traefik chart labels its internal extra
+Services the same) does the same without an attacker.
+
+**Mitigations:**
+- ✅ **Address allowlist (M-69, M-75):** with `--allowed-ip-ranges` set, a
+  discovered address outside the ranges is dropped with a warning naming the
+  Service or Gateway; the route keeps publishing the rest, so a stray Service
+  can neither add an outside address nor take the class off the air.
+- ✅ **Scoped to the Gateway (M-75):** Services labelled
+  `gateway.networking.k8s.io/gateway-name` (GEP-1762) serve only their own
+  Gateway's routes, so one Gateway's Services are not published for another's.
+- ✅ **Terminating Services skipped (M-75):** an address about to be released
+  is not published.
+- ✅ **Attribution (M-73):** the record's contributor annotation names the
+  route, and the warning names the Service whose address was dropped.
+- ✅ **Selectors validated at startup (M-75):** only equality-based selectors
+  are accepted, so a typo fails Scout rather than matching something else.
+- ❌ A matching Service whose address is inside the ranges is published; the
+  selector is the operator's statement of which Services are the gateway
+  (accepted risk 25).
+
+**Residual Risk:** LOW with `--allowed-ip-ranges` set to the cluster's
+load-balancer ranges and a gateway namespace only the platform team writes;
+MEDIUM otherwise (accepted risk 25).
 
 ---
 
@@ -2297,7 +2379,8 @@ and risk profile below are unchanged.
 namespace, not just `bindy-system`
 **Authentication:** ServiceAccount token (JWT), same mechanism as the main operator
 **Authorization:** `ClusterRole` `bindy-scout`: `get`/`list`/`watch`/`patch`/`update`
-on `Ingress`/`Service`/`HTTPRoute`/`GRPCRoute`/`TLSRoute`/`TCPRoute` cluster-wide. **No Secret
+on `Ingress`/`Service`/`HTTPRoute`/`GRPCRoute`/`TLSRoute`/`TCPRoute` cluster-wide, and
+`get`/`list`/`watch` on `Gateway` (watched cluster-wide since ADR-0028). **No Secret
 access at all** on the ClusterRole; see below.
 
 **Attack Vectors:**
@@ -2309,6 +2392,10 @@ access at all** on the ClusterRole; see below.
   (T5): refused by M-69 when the allowlists are set
 - A tenant source naming a name another tenant publishes in a shared zone
   (T6): its addresses are added to that name's record (M-73, accepted risk 24)
+- A `LoadBalancer` Service matching a `--gateway-service` selector, or a
+  Gateway's status, supplying addresses for every route of a class (T7):
+  bounded by `--allowed-ip-ranges` and the GEP-1762 label (M-75, accepted
+  risk 25)
 - Any tenant setting the `bindy.firestoned.io/scout-enabled` annotation on their own
   resource can cause Scout to write an `ARecord`; this is expected/intended
   behavior, not a vulnerability, but means Scout's write path is reachable by any
@@ -2588,7 +2675,7 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-60 | **bindcar transport fails closed** (2026-10-11): the TLS CA bundle is read only from the instance's namespace (a manager without one refuses TLS instead of reading `default`), and a bindcar HTTP client that cannot be built with its timeouts fails every call instead of falling back to a client without timeouts | Spoofing of the bindcar endpoint (a CA bundle planted in `default` trusted for TLS, ADR-0004), availability (an untimed bindcar request hangs a reconcile; D5 is the API-server analogue) | ✅ `crates/bindy-bind9/src/bind9/mod.rs` (`new_for_instance`, `read_ca_bundle`, `build_http_client_with_timeouts`), `crates/bindy-bind9/src/context.rs` |
 | M-61 | **The multi-cluster kubeconfig Secret is written to a private file** (2026-10-12): `bindy bootstrap mc` writes the `bindy.firestoned.io/remote-kubeconfig` Secret, which carries the remote ServiceAccount token, to a file created with mode `0600` (`--output`, default `<service-account>-kubeconfig.yaml`); an existing file is restricted to `0600` before it is truncated; the Secret is never printed (`--output -` is refused). Status messages stay on stderr | I1 (a token left in terminal scrollback, a CI log or a shared session recording), CodeQL `rust/cleartext-logging` | ✅ `crates/bindy-bootstrap/src/bootstrap.rs` (`mc_output_path`, `write_private_file`), `crates/bindy/src/cli.rs` (`--output`); tests `bootstrap_tests.rs` (`mc_output_tests`, 5) |
 | M-62 | **An RRset is replaced in one atomic DNS UPDATE** (2026-10-13, ADR-0021): each record write is one TSIG-signed UPDATE (delete the RRset, then add every value), which BIND9 applies as a unit, so a replaced name never answers NXDOMAIN or a partial RRset; every kind's values are validated before any network call (an out-of-range MX priority is now rejected, not coerced); the current RRset is compared with the desired one by value (names normalised for case and trailing dot, order-insensitive, TTL compared), so an unchanged record sends nothing; an UPDATE larger than the EDNS payload is sent over TCP instead of an oversized UDP datagram; the compare before the write reads the RRset with an unsigned query, only the UPDATE is TSIG-signed (a spoofed answer can at most make the operator skip a write, not inject data) | T1 (DNS tampering: no window of missing or partial data during a write; no churn from text comparison) | ✅ `crates/bindy-bind9/src/bind9/records/mod.rs` (`replace_rrset_message`, `send_rrset_update`, `needs_update`, `update_transport`, `write_rrset`) and the per-kind conversions in `records/*.rs` |
-| M-63 | **Scout sources share one pipeline; records are owned by exactly one source** (2026-10-13, ADR-0022): Ingress, Service, HTTPRoute, TLSRoute and TCPRoute go through one `reconcile_source`, so a check one kind skipped (B1, B11) cannot recur; every `ARecord` carries `bindy.firestoned.io/source-kind` and every selector Scout uses includes it; names are `scout-{cluster}-{namespace}-{name}-{hash}-{index}` with the hash over the NUL-joined (cluster, kind, namespace, name) (superseded 2026-10-20 by one record per DNS name, M-73: such per-source records are now handed over the same way); a record from before ADR-0022 (no source-kind label, matched by `!bindy.firestoned.io/source-kind`) or from a previous `--cluster-name` in the same zone is deleted only once every record replacing it reports `status.zoneRef` and `Ready=True`, rechecked every 10 s until then, so the upgrade rename never takes a name off the air; status addresses that are not IPv4 are skipped; an invalid TTL annotation publishes nothing for that source; malformed startup configuration fails Scout at startup; a Gateway or Service lookup error other than 404 fails the reconcile; the opt-in check runs before the namespace LIST | T1 (a tenant's same-named source overwriting or pruning another's record; hyphen-ambiguous names across namespaces), closes accepted risk 20 | ✅ `crates/bindy-scout/src/pipeline.rs` (`ScoutSource`, `reconcile_source`, `handover_step`, `arecord_served`), `crates/bindy-scout/src/scout.rs` (`LABEL_SOURCE_KIND`, `arecord_label_selector`, `retain_ipv4`, `parse_ttl_annotation`, `ScoutConfig::from_lookup`, `legacy_arecord_label_selector`); tests `pipeline_tests.rs`, `tests/e2e/scout_test.sh` |
+| M-63 | **Scout sources share one pipeline; records are owned by exactly one source** (2026-10-13, ADR-0022): Ingress, Service, HTTPRoute, TLSRoute and TCPRoute go through one `reconcile_source`, so a check one kind skipped (B1, B11) cannot recur; every `ARecord` carries `bindy.firestoned.io/source-kind` and every selector Scout uses includes it; names are `scout-{cluster}-{namespace}-{name}-{hash}-{index}` with the hash over the NUL-joined (cluster, kind, namespace, name) (superseded 2026-10-20 by one record per DNS name, M-73: such per-source records are now handed over the same way); a record from before ADR-0022 (no source-kind label, matched by `!bindy.firestoned.io/source-kind`) or from a previous `--cluster-name` in the same zone is deleted only once every record replacing it reports `status.zoneRef` and `Ready=True`, rechecked every 10 s until then, so the upgrade rename never takes a name off the air; status addresses that are not IPv4 are skipped; an invalid TTL annotation publishes nothing for that source; malformed startup configuration fails Scout at startup; a Gateway or Service lookup error other than 404 fails the reconcile (since ADR-0028 routes read Gateways and gateway Services from watch caches and make no such lookup, M-75); the opt-in check runs before the namespace LIST | T1 (a tenant's same-named source overwriting or pruning another's record; hyphen-ambiguous names across namespaces), closes accepted risk 20 | ✅ `crates/bindy-scout/src/pipeline.rs` (`ScoutSource`, `reconcile_source`, `handover_step`, `arecord_served`), `crates/bindy-scout/src/scout.rs` (`LABEL_SOURCE_KIND`, `arecord_label_selector`, `retain_ipv4`, `parse_ttl_annotation`, `ScoutConfig::from_lookup`, `legacy_arecord_label_selector`); tests `pipeline_tests.rs`, `tests/e2e/scout_test.sh` |
 | M-64 | **A name shared by two records survives one's deletion** (2026-10-13, ADR-0022 decision 5): the record finalizer and the rename path do not delete an RRset that another live record of the same kind in the same zone still declares (bound to that zone by `status.zoneRef`, same name ignoring case, a different object, not being deleted); both re-push the survivor instead (compared by value first, so nothing is sent when BIND9 already serves it); a failed re-push keeps the finalizer, or on a rename keeps `status.publishedName`, so it is retried. One rule (`claims_rrset`) serves the finalizer and the zone's stale-record cleanup (bug-211) | T1 (a shared name taken off the air with nothing to re-push it, since ADR-0016 has no periodic resync) | ✅ `crates/bindy-controller-sdk/src/rrset_claim.rs`, `crates/bindy-controller-records/src/records/mod.rs` (`rrset_claimant`, `repush_claimant`, `delete_record`, `reconcile_record`), `crates/bindy-controller-zone/src/dnszone/discovery.rs` (`claimed_by_live_record`); tests `rrset_claim_tests.rs` (12), `records/mod_tests.rs::rrset_claimant_tests` (5) |
 | M-65 | **A `secretRef` RNDC key is mirrored, never mounted** (2026-10-14, ADR-0023): the operator builds the key from the referenced Secret (its `secretKey` entry, the algorithm from its `algorithm` entry else `secretRef.algorithm`, else its `rndc.key` file), names it `bindy-operator` (the only name the cluster-shared `controls` block accepts; `keyNameKey` is ignored), validates it (algorithm allow-list, base64 key, no key in any error message) and writes it to the instance-owned `{instance}-rndc-key`, annotated `bindy.firestoned.io/rndc-source-secret`, which every pod mounts. A source change rewrites the mirror, drops the cached key and rolls the pods (the reconcile fast path counts a mirror behind its source as drift, `secret_ref_mirror_stale`); any replacement of an existing `{instance}-rndc-key` (mode switch, generated key recreated) does the same. A mirror is never rotated and is replaced by a fresh key when the instance returns to a generated one. Fail fast without destroying: a missing or unusable source fails the reconcile and keeps the mirror, a GET of the RNDC Secret that fails with anything but 404 fails instead of regenerating the key, and a `secretRef` naming `{instance}-rndc-key` is refused | T3 (configuration injected into `rndc.key`), I1 (key in errors; a stale key held by the pods), availability of dynamic updates after a key change | ✅ `crates/bindy-bind9/src/bind9/rndc.rs` (`rndc_key_from_source_secret`, `create_rndc_mirror_secret`), `crates/bindy-controller-instance/src/bind9instance/resources.rs` (`mirror_step`, `mirror_secret_ref_key`, `validate_rndc_secret_ref`), `crates/bindy-controller-instance/src/watch.rs` (`instances_for_secret`); tests `rndc_tests.rs`, `resources_tests.rs`, `watch_tests.rs::secret_wake_tests`, `tests/e2e/rndc_secretref_test.sh` |
 | M-66 | **RNDC `secretRef` names a `bindy-` Secret** (2026-10-14, ADR-0023 decision 6): every `rndcKey.secretRef.name` and deprecated `rndcSecretRef.name`, at every level a CRD carries one, must start with `bindy-`, the H2 allow-list prefix (bug-021). Closes the confused deputy through which a CR author could have the operator place entries of any Secret of the namespace into a Secret the operand pods mount. Enforced at admission and again by the reconciler where the policy is not installed; no RBAC grant changed | E2 (operator Secret read as a confused deputy), I1 | ✅ `deploy/admission-policies/07-bindy-pod-shape-policy.yaml` (rule 5; fixtures `accept-bind9instance-rndc-bindy-secret.yaml`, `reject-bind9instance-rndc-foreign-secret.yaml`, `reject-bind9cluster-rndc-foreign-secret.yaml`), `crates/bindy-bind9/src/safe_volume.rs` (`validate_rndc_key_secret_name`), `validate_rndc_secret_ref`; tests `safe_volume_tests.rs`, `resources_tests.rs`, `tests/e2e/rndc_secretref_test.sh` |
@@ -2600,6 +2687,7 @@ tampering (T4), not cluster-wide Secret exposure.
 | M-72 | **Scout treats a refused delete of another cluster's record as final** (2026-10-19, ADR-0025 decision 6): on handover and on source removal, a 403 or 422 for a record left under another cluster name is logged and skipped, so a source's finalizer is not held and nothing is retried; the source's own records still fail the reconcile on any error | Availability under M-70 (a refused cleanup holding a tenant's Ingress in `Terminating`) | ✅ `crates/bindy-scout/src/pipeline.rs` (`delete_other_cluster_arecord`), `crates/bindy-controller-sdk/src/kube_errors.rs` (`is_refused`); tests `pipeline_tests.rs` (refused-delete cases), `kube_errors_tests.rs` |
 | M-73 | **One Scout record per DNS name, written atomically** (2026-10-20, ADR-0026): every source of one cluster that resolves to the same zone and DNS name contributes to one `ARecord`, named `scout-{cluster}-{dns-name}-{zone}-{hash}` with the hash over the NUL-joined (cluster, zone, name); the record's `bindy.firestoned.io/scout-contributors` annotation maps each source (`kind/namespace/name`) to the addresses and TTL it resolved, and a `contributor.scout.bindy.firestoned.io/<hash>` label per source finds its records; `spec.ipv4Addresses` is always the union (sorted, each once) and `spec.ttl` the lowest; each write reads the record, changes only its own entry, rebuilds the spec from the whole map and replaces with the read `resourceVersion` as precondition (a lost race is rebuilt, at most 5 attempts, then the reconcile fails and retries); a source leaving a name removes only its entry and the record is deleted, with a `resourceVersion` precondition, with its last; an unchanged record is not written; a malformed map stops Scout writing that record rather than dropping the other sources; withdrawals from another cluster name's record that the API server refuses are skipped like M-72; per-source records from before ADR-0026 are deleted only once the per-name record is served (as M-63) | Issue #556 (sources sharing a name overwrote each other's addresses, and the name flapped); T6 (changes a takeover into an attributed addition); R1 (each address attributed to a source) | ✅ `crates/bindy-scout/src/contributors.rs` (`plan_contribute`, `plan_withdraw`, `contribute`, `withdraw`, `render`), `crates/bindy-scout/src/pipeline.rs` (`publish`, `withdraw_from_own_records`, `withdraw_from_other_cluster_record`), `crates/bindy-scout/src/scout.rs` (`dns_name_record_cr_name`); tests `contributors_tests.rs`, `pipeline_tests.rs`, `tests/e2e/scout_test.sh` |
 | M-74 | **Scout records of two clusters that claim one name are a conflict, not a race** (2026-10-23, ADR-0027): two Scout-managed records of the same kind, zone and name (ignoring case) from different `source-cluster` names not registered to one account in `bindy-scout-sources` conflict; the holder is the record that has published the name (`status.publishedName` and `status.lastUpdated`, both written only after a successful BIND9 write), oldest first, and when none has, nobody is held back; any other record writes nothing, is `Ready=False` with reason `RRsetConflict` naming the holder and its cluster, re-pushes the holder once and logs one warning; zone replay skips held-back records and the finalizer re-pushes the holder, not the first claimant in store order; a change to a Scout record (status-only changes and deletions included) wakes the records claiming its name, so a held-back record takes over when the holder leaves; a cluster rename with both names registered is not a conflict | T5 (a second cluster taking over a published name), accepted risk 23 (a) narrowed | ✅ `crates/bindy-controller-sdk/src/rrset_conflict.rs` (`claim_facts`, `rrset_holder`, `ScoutRegistry`, `scout_conflict`, `held_back_by`), `rrset_claim.rs` (`live_claimant`), `crates/bindy-controller-records/src/records/mod.rs` (`hold_back_on_conflict`), `record_operator.rs` (`scout_rivals_to_wake`), `crates/bindy-bind9/src/record_push.rs` (replay); tests `rrset_conflict_tests.rs`, `rrset_claim_tests.rs`, `record_operator_tests.rs`, `tests/e2e/scout_guardrails_test.sh` (G7, G8) |
+| M-75 | **Scout routes follow the addresses of their Gateway** (2026-10-24, ADR-0028; issue #569, Decision 1 from PR #570): a route without an IP annotation publishes each parent Gateway's IPv4 `status.addresses`, or, when empty, the external IPv4 addresses of every `LoadBalancer` Service its class's `--gateway-service` target matches that is not being deleted; when any matched Service carries `gateway.networking.k8s.io/gateway-name` (GEP-1762) only those labelled with the Gateway's name count; Gateways and Services are read from Scout's watch caches (Gateways watched cluster-wide when a route kind is served; route controllers start once both caches have listed); a Gateway change wakes the routes whose `parentRefs` name it, and a Service change that a target matches wakes the routes of that target's classes; a discovered route address outside `--allowed-ip-ranges` is dropped with a warning naming its Gateway or Service while annotated and default addresses outside still stop the source (amends M-69 for discovered gateway addresses); label selectors are equality-based and validated at startup; every contribution is written sorted and de-duplicated | T7 (a stray or unintended gateway Service), issue #569 (one VIP of several published), routes kept stale addresses until they changed | ✅ `crates/bindy-scout/src/gateway_targets.rs` (`parse_label_selector`, `target_matches`, `gateway_lb_services`, `gateways_for_service`, `routes_for_gateways`), `crates/bindy-scout/src/pipeline.rs` (`resolve_ips_from_gateways`, `within_allowed_ranges`, `routes_to_wake`, `source_controller`, `publish`), `crates/bindy-scout/src/contributors.rs` (`normalized_ips`), `crates/bindy-scout/src/scout.rs` (`gateway_service_target_from_str`, `run_scout`); tests `gateway_targets_tests.rs`, `pipeline_tests.rs`, `contributors_tests.rs`, `scout_tests.rs` |
 | M-25 | **Scout Secret RBAC scoped** (fixed 2026-07-19, same day as this finding's discovery): removed the cluster-wide `secrets: get` `PolicyRule` from the `bindy-scout` `ClusterRole` entirely. Replaced with a namespaced, `resourceNames`-restricted Role (`bindy-scout-secrets-reader`) scoped to exactly the one Phase 2 kubeconfig Secret, applied only when `--remote-secret` is configured. Same-cluster-only deployments (the default) now get zero Secret access. See I4/E4/Scenario 6 for the full before/after. | I4, E4, T4 (Secret-read component), Scenario 6 | ✅ RBAC: **was the highest-priority open item in v1.1; closed same-day** |
 
 ---
@@ -2699,6 +2787,8 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 
 24. **Scout merges every source that publishes a name, and trusts the contributor annotation (ADR-0026)** - (a) Within one cluster, any source in a namespace the zone authorizes that resolves to a name another source already publishes adds its addresses to that name, without an opt-in from either side (ADR-0026 Decision 6, T6); a source cannot remove another's addresses. (b) The `bindy.firestoned.io/scout-contributors` annotation is the source of truth for the record's addresses: anyone who can update `ARecord`s in the records namespace (the operator's admins, the cluster's Scout account) can add an entry, and Scout will keep it until the entry's source withdraws, or can make the annotation unparseable, which stops Scout writing that record (it still serves what it last held). Accepted: (a) the zone grant is already the authorization for every name in the zone, the merge replaces a flapping takeover with a stable, attributed addition, and an opt-in would keep the issue #556 failure for anyone who missed it; (b) the same principals can already rewrite or delete the record directly, and admission policy 21 still binds a registered Scout account to its cluster names and zones. *Revisit when* tenants sharing a zone need per-name ownership (an ownership or opt-in annotation checked before the merge), or a ConfigMap- or record-integrity policy is introduced for Scout-managed objects.
 
+25. **A gateway selector is trusted to name the gateway's Services, and is scoped by name only (ADR-0028)** - (a) Every `LoadBalancer` Service a `--gateway-service` selector matches in its namespace, with an address inside `--allowed-ip-ranges` (or any address when unset), is published for every route of the class (T7); a selector broader than the public VIPs publishes internal ones too. (b) GEP-1762's `gateway.networking.k8s.io/gateway-name` label holds a Gateway's name, not its namespace, so two Gateways of one name in different namespaces whose Services one selector matches share each other's addresses. (c) Every Service event a target matches wakes every route of that target's classes, from the caches: churn in a busy gateway namespace reconciles those routes once per event. Accepted: (a) the gateway namespace is platform-owned, the selector is the operator's own configuration, the allowlist bounds the addresses and the docs give a pre-check; (b) the docs say to keep a selector to Gateways of distinct names, and the common layouts (one Gateway per class, or one per namespace with its own selector) are unaffected; (c) a reconcile that resolves the same addresses writes nothing. *Revisit when* gateway implementations label Services with the Gateway's namespace (then match both), or route wake-ups show up in Scout's reconcile metrics (then coalesce them per Gateway).
+
 ---
 
 ## Security Architecture
@@ -2768,7 +2858,7 @@ other CRITICAL-impact threat in this document currently lacks a strong mitigatio
 | **Data Protection** | Secrets encrypted, AXFR restricted, DNSSEC zone signing (opt-in, M-14/ADR-0006), RNDC key read from the mounted Secret only (M-58), which is always the operator-owned `{instance}-rndc-key`, a `secretRef` key mirrored into it from a `bindy-` Secret (M-65, M-66), bindcar TLS CA bundle read only from the instance's namespace (M-60) | TSIG for AXFR; DNSSEC-by-default | MEDIUM |
 | **Supply Chain** | Signed commits/images, SLSA Build L3 provenance for all release artifacts (M-33), NTIA-gated SBOM attestations (M-34), anchored signer identity (M-35), gated per-release crypto inventory (M-39), `--locked` release builds, vuln scanning | Required approving reviews (M-36); operand image digest pinning (M-15); reproducibility check (M-37); hybrid PQ key exchange (M-40); revisit Dependabot auto-merge human-review gap (M-29) | LOW-MEDIUM (no required review on `main`, see S3; automated auto-merge removed a manual checkpoint, see E3; classical key exchange is HNDL-exposed, see accepted risk 8) |
 | **Monitoring** | Kubernetes audit logs, vuln scanning, Secret audit trail with `secret_operations_total` (M-67), least-data Secret access (M-68) | Audit retention policy (M-11) | MEDIUM (event durability depends on the log pipeline, accepted risk 22) |
-| **Resilience** | Rate limiting, fail-fast on API errors and partial lists with a startup cache gate (M-56), validated, atomic RRset replacement in one UPDATE (M-57, M-62), one Scout record per DNS name written by conditional replace (M-73), per-request API deadline (M-45), event-driven reconciliation with no periodic resync (M-48), zones-loaded readiness gate so a rollout never admits an empty BIND9 pod (M-49), handover at the start of termination (M-50), staggered rollouts across instances sharing a zone or cluster (M-51), resource limits | Edge DDoS protection, HPA | MEDIUM |
+| **Resilience** | Rate limiting, fail-fast on API errors and partial lists with a startup cache gate (M-56), validated, atomic RRset replacement in one UPDATE (M-57, M-62), one Scout record per DNS name written by conditional replace (M-73), Scout routes re-resolved from watch caches when their Gateway or its Services change (M-75), per-request API deadline (M-45), event-driven reconciliation with no periodic resync (M-48), zones-loaded readiness gate so a rollout never admits an empty BIND9 pod (M-49), handover at the start of termination (M-50), staggered rollouts across instances sharing a zone or cluster (M-51), resource limits | Edge DDoS protection, HPA | MEDIUM |
 | **Container Security** | Non-root, read-only FS, Pod Security Standards, unprivileged DNS port + zero added capabilities (M-23) | Network policies (reference manifest exists, not auto-applied, M-17) | LOW |
 
 ---

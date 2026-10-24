@@ -1313,6 +1313,24 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_gateway_service_entry_refuses_selectors_scout_cannot_evaluate() {
+        // ADR-0028 Decision 3: selectors are evaluated against the Service
+        // watch cache, so a set-based or malformed one fails startup instead
+        // of silently matching nothing.
+        for entry in [
+            "traefik=traefik/app in (a,b)",
+            "traefik=traefik/app=",
+            "traefik=traefik/app=a=b",
+            "traefik=traefik/app=traefik,",
+        ] {
+            assert!(
+                crate::scout::parse_gateway_service_entry(entry).is_none(),
+                "{entry:?} must be refused"
+            );
+        }
+    }
+
+    #[test]
     fn test_parse_gateway_services_empty() {
         assert!(parse_gateway_services("")
             .expect("empty is valid")

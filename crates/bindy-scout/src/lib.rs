@@ -14,6 +14,7 @@
 pub(crate) use bindy_api::{constants, crd};
 
 mod contributors;
+mod gateway_targets;
 mod guardrails;
 mod pipeline;
 mod scout;

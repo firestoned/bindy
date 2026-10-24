@@ -171,10 +171,19 @@ pub(crate) fn contributors_of(record: &ARecord) -> Result<Contributors> {
 /// numerically (ADR-0026, Decision 2).
 #[must_use]
 pub(crate) fn derived_ips(contributors: &Contributors) -> Vec<String> {
-    let mut ips: Vec<String> = contributors
-        .values()
-        .flat_map(|c| c.ips.iter().cloned())
-        .collect();
+    normalized_ips(
+        contributors
+            .values()
+            .flat_map(|c| c.ips.iter().cloned())
+            .collect(),
+    )
+}
+
+/// `ips` sorted numerically, each once: the form a contribution is written
+/// in, so a source whose addresses only changed order writes nothing
+/// (ADR-0028, Decision 6).
+#[must_use]
+pub(crate) fn normalized_ips(mut ips: Vec<String>) -> Vec<String> {
     ips.sort_by_key(|ip| (ip.parse::<Ipv4Addr>().ok(), ip.clone()));
     ips.dedup();
     ips

@@ -9,7 +9,7 @@
 > with a reason. Decided in
 > [ADR-0026](../../docs/adr/0026-scout-one-record-per-dns-name.md).
 
-**Status:** ✅ Done (2026-10-20): every phase passed, including the two-cluster kind proof on slate.
+**Status:** ✅ Done (2026-10-24): phases 1 to 7 on 2026-10-20 and phase 8 (ADR-0028) on 2026-10-24, each with its two-cluster kind proof on slate.
 **Created:** 2026-10-20
 **Owner:** Erick Bourgeois
 
@@ -32,6 +32,7 @@ replace each other's RRset, so BIND9 serves whichever reconciled last.
 | 5 | Handover from per-source records to per-name records, deleting the old record once the new one is served (Decision 5) | ✅ `pipeline.rs` (`publish`: per-source, legacy and previous-cluster records wait on `handover_step`; previous-cluster per-name records lose only this source's entry, `withdraw_from_other_cluster_record`, refusals skipped) |
 | 6 | Docs (`docs/src/guide/scout.md` record names, labels, troubleshooting; migration guide incl. rollback), CHANGELOG, kind proof with three Services at `@` and source churn | ✅ Docs, examples, CHANGELOG, `tests/e2e/scout_test.sh` updated; new two-cluster suite `tests/e2e/scout_multi_cluster_test.sh` (`make e2e-scout-multi`) passed on slate 2026-10-20: #556 reproduced on the old Scout, upgrade with 0 empty answers in 160 probe samples per name, churn, mixed kinds/namespaces/TTLs, a 10-way race, Scout/operator/BIND9 kills, quiet operator and Scout. `e2e-scout` and `e2e-chaos` also pass |
 | 7 | Full threat-model pass; header stamp bumped | ✅ `docs/src/security/threat-model.md` v1.29: T6, M-73, accepted risk 24 |
+| 8 | Routes follow the addresses of their Gateway (issue #569, takeover of PR #570, [ADR-0028](../../docs/adr/0028-scout-routes-follow-their-gateway-addresses.md)): a label-selected `--gateway-service` target publishes every matching `LoadBalancer` Service, scoped by the GEP-1762 `gateway-name` label, terminating Services skipped; Gateways and Services read from watch caches; routes re-resolve on Gateway and Service changes; discovered addresses outside `--allowed-ip-ranges` dropped; contributions sorted | ✅ ADR, CALM, code and tests (`gateway_targets.rs`, `pipeline.rs`, `contributors.rs`), docs, migration guide, threat model v1.33 (T7, M-75, accepted risk 25). New suite `tests/e2e/scout_gateway_test.sh` (`make e2e-scout-gateway`) passed on slate 2026-10-24: late, deleted, readdressed and terminating VIPs, GEP-1762 scoping, Gateway `status.addresses` precedence, a stray out-of-range Service dropped, no rewrite across a Scout restart; `e2e-scout-guardrails`, `e2e-scout-multi` and `e2e-scout` also pass |
 
 ## Follow-ups
 
