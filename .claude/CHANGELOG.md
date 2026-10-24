@@ -1,3 +1,22 @@
+## [2026-10-24 10:35] - Scheduled security scan: Semgrep SARIF upload permission; record the #571 lockfile refresh (RUSTSEC-2026-0385)
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `.github/workflows/security-scan.yaml`: the `semgrep` job gets `permissions: {contents: read, security-events: write}`. It had no job-level block, so it inherited the workflow's read-only floor (audit finding P3-8, #490) and its SARIF upload failed with "Resource not accessible by integration" on every scheduled run since 2026-09-10, turning the whole Scheduled Security Scan red. Semgrep itself reported 0 errors; every other scan job passed.
+
+### Changed (recorded after the fact)
+- `Cargo.lock` was refreshed in #571 (about twenty patch/minor bumps, no `Cargo.toml` change). Among them `ctutils` 0.4.3 -> 0.4.5, which fixes RUSTSEC-2026-0385 (non-constant-time mask generation and `u128` comparisons; `ctutils` reaches the RNDC HMAC through `digest`/`hmac` in `rndc`). The 2026-10-24 scheduled scan ran on the commit before #571 and still saw 0.4.3; `cargo audit` on current `main` is clean.
+
+### Notes
+- Issues #567 (Chainguard, CVE-2026-111943 in `ca-certificates-bundle`) and #515 (distroless, CVE-2026-84782 in `libssl3t64`) were not updated by the 2026-10-24 scan, which comments on every scan that still finds a vulnerability: both images are clean after the base-image bumps (#566, #568).
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (CI permission fix)
+
 ## [2026-10-23 20:20] - Scout records of two clusters that claim one name are a conflict, not a race (ADR-0027, roadmap 27 item 2)
 
 **Author:** Erick Bourgeois
