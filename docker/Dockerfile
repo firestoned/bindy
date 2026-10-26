@@ -22,7 +22,7 @@
 
 # Build stage to install BIND9 and create user
 # Pinned to the multi-arch manifest-list digest (Scorecard PinnedDependencies).
-FROM debian:13-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS builder
+FROM debian:13-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad AS builder
 
 RUN apt-get update && \
     # Upgrade base packages first so the libs copied into the runtime stage
@@ -36,7 +36,7 @@ RUN apt-get update && \
 
 # Runtime stage - Distroless with glibc
 # Pinned to the multi-arch manifest-list digest (Scorecard PinnedDependencies).
-FROM gcr.io/distroless/cc-debian13:nonroot@sha256:83b9b50586253821cf63ffcec87d3d94265a093ad30da232039af962dd8f4edf
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:3ee00291cf386ec52a552e6a858d555debd74776eb4bfa53fa3df2cd6677515e
 
 ARG TARGETARCH
 ARG VERSION=0.1.0
