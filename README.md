@@ -22,7 +22,7 @@
 
 ## Technology & Compatibility
 
-[![Rust](https://img.shields.io/badge/rust-1.85+-orange.svg?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.94+-orange.svg?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Kubernetes](https://img.shields.io/badge/kubernetes-1.27+-326CE5.svg?logo=kubernetes&logoColor=white)](https://kubernetes.io)
 [![BIND9](https://img.shields.io/badge/BIND9-DNS%20Server-blue)](https://www.isc.org/bind/)
 [![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black)](https://www.linux.org/)
@@ -489,7 +489,7 @@ architecture update (`calm/`), *then* test-driven implementation
 and the [Developer Guide](https://firestoned.github.io/bindy/development/).
 
 **Prerequisites:**
-- Rust 1.85+
+- Rust 1.94+ (pinned in `rust-toolchain.toml`)
 - Kubernetes 1.27+
 
 **Build & Test:**
