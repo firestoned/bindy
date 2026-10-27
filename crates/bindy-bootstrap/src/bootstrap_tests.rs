@@ -2552,16 +2552,21 @@ mod rbac_drift {
 #[cfg(test)]
 mod mc_output_tests {
     use crate::bootstrap::{mc_output_path, write_private_file};
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
     /// Owner read/write only.
+    #[cfg(unix)]
     const PRIVATE_MODE: u32 = 0o600;
     /// Group and world readable, as a default umask creates files.
+    #[cfg(unix)]
     const WORLD_READABLE_MODE: u32 = 0o644;
     /// The permission bits of a file mode.
+    #[cfg(unix)]
     const PERMISSION_BITS: u32 = 0o777;
 
+    #[cfg(unix)]
     fn mode(path: &std::path::Path) -> u32 {
         std::fs::metadata(path)
             .expect("file exists")
@@ -2593,6 +2598,21 @@ mod mc_output_tests {
     }
 
     #[test]
+    fn an_existing_longer_file_is_fully_replaced() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("secret.yaml");
+        std::fs::write(&path, "old token that is longer than the new one\n").expect("seeded");
+
+        write_private_file(&path, "token: new\n").expect("written");
+
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("readable"),
+            "token: new\n"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn a_new_file_is_private() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("secret.yaml");
@@ -2607,6 +2627,7 @@ mod mc_output_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn an_existing_readable_file_is_made_private_and_replaced() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("secret.yaml");

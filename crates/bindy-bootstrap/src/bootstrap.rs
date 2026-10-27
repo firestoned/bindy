@@ -1483,6 +1483,7 @@ pub async fn run_bootstrap_multi_cluster(
 const MC_OUTPUT_STDOUT: &str = "-";
 
 /// Owner read/write only: the kubeconfig Secret file carries a token.
+#[cfg(unix)]
 const PRIVATE_FILE_MODE: u32 = 0o600;
 
 /// Resolve `--output` for `bindy bootstrap mc` to the file to write.
@@ -1518,13 +1519,28 @@ pub fn mc_output_path(output: Option<&str>, service_account: &str) -> Result<std
 /// and then truncated, so a token is never written into a file that others
 /// can read.
 ///
+/// On non-Unix platforms (Windows) there are no mode bits: the file takes the
+/// ACL it inherits from its directory, which for a user's own directories is
+/// owner-only by default.
+///
 /// # Errors
 /// Returns an error if the file cannot be opened, restricted or written.
 pub(crate) fn write_private_file(path: &std::path::Path, contents: &str) -> Result<()> {
     use std::io::Write as _;
+
+    let mut file = open_private_file(path)?;
+    file.set_len(0)
+        .with_context(|| format!("Failed to truncate {}", path.display()))?;
+    file.write_all(contents.as_bytes())
+        .with_context(|| format!("Failed to write {}", path.display()))
+}
+
+/// Open `path` for writing without truncating it, restricted to mode 0600.
+#[cfg(unix)]
+fn open_private_file(path: &std::path::Path) -> Result<std::fs::File> {
     use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 
-    let mut file = std::fs::OpenOptions::new()
+    let file = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(false)
@@ -1533,10 +1549,18 @@ pub(crate) fn write_private_file(path: &std::path::Path, contents: &str) -> Resu
         .with_context(|| format!("Failed to open {}", path.display()))?;
     file.set_permissions(std::fs::Permissions::from_mode(PRIVATE_FILE_MODE))
         .with_context(|| format!("Failed to restrict {} to mode 0600", path.display()))?;
-    file.set_len(0)
-        .with_context(|| format!("Failed to truncate {}", path.display()))?;
-    file.write_all(contents.as_bytes())
-        .with_context(|| format!("Failed to write {}", path.display()))
+    Ok(file)
+}
+
+/// Open `path` for writing without truncating it; it keeps its inherited ACL.
+#[cfg(not(unix))]
+fn open_private_file(path: &std::path::Path) -> Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .with_context(|| format!("Failed to open {}", path.display()))
 }
 
 /// Build a kubeconfig YAML string for the given service account token.

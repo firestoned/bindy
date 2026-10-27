@@ -1,8 +1,13 @@
+<<<<<<< Updated upstream
 ## [2026-10-26 10:00] - Housekeeping: docs builds per ref, README MSRV, roadmap 16 marked done
+=======
+## [2026-10-27 10:00] - Release assets missing from v0.8.1 and v0.8.2: Windows build fixed, PRs now build macOS and Windows
+>>>>>>> Stashed changes
 
 **Author:** Erick Bourgeois
 
 ### Fixed
+<<<<<<< Updated upstream
 - `.github/workflows/docs.yaml` (#487): the workflow's concurrency group was the constant `pages`, so any docs build cancelled every other branch's in-progress build, which then reported as a failure. Builds now share a group per ref (`docs-${{ github.ref }}`, a newer push still cancels its own branch's build); the Pages deployment job keeps its own `pages` group and is never cancelled mid-deploy.
 - `README.md` (#417): the Rust badge and prerequisites said 1.85+; the toolchain and `rust-version` pin 1.94.
 
@@ -12,12 +17,27 @@
 ### Notes
 - #418 (`calculate_requeue_duration` dead code) was already resolved: ADR-0016 (#536) wired it into the `Bind9Instance` reconcile as the rotation wake-up. Closed without a code change.
 - #330 and #332 (distroless vulnerabilities from May, under the old per-day issue naming) are superseded: the scheduled scans of 2026-10-25 and 2026-10-26 pass.
+=======
+- `crates/bindy-bootstrap/src/bootstrap.rs`: `write_private_file` used `std::os::unix::fs` unconditionally (added in #545, first released in v0.8.1, for `bindy bootstrap mc`), so `bindy` no longer compiled for `x86_64-pc-windows-msvc`. The Unix path (create 0600, restrict, truncate) moves to a `#[cfg(unix)]` `open_private_file`; the non-Unix one opens the file with its inherited ACL. `PRIVATE_FILE_MODE` is `#[cfg(unix)]`.
+- `crates/bindy-bootstrap/src/bootstrap_tests.rs`: the mode-bit tests and helpers are `#[cfg(unix)]`; new `an_existing_longer_file_is_fully_replaced` runs on every platform.
+
+### Changed
+- `.github/workflows/build.yaml`: `build-extras` (macOS x86_64, macOS ARM64, Windows x86_64) now also runs on pull requests as a debug `cargo build --locked --workspace --all-targets`; the version rewrite, release build and artifact upload stay release-only. `ci-gate` now needs `build-extras`.
+
+### Why
+The v0.8.1 and v0.8.2 release runs failed at "Build - Windows x86_64". `upload-release-assets`, `sign-artifacts` and the SLSA provenance jobs depend on it, so neither release got binaries, `install.yaml`, `scout.yaml`, `admission-policies.yaml`, SBOMs, CBOM, OpenVEX, checksums or provenance (the images were pushed). The macOS and Windows legs only ran on `release`, so no PR could catch it. (v0.7.0 was an earlier, unrelated failure: "Release Docker Image - Distroless".)
+>>>>>>> Stashed changes
 
 ### Impact
 - [ ] Breaking change
 - [ ] Requires cluster rollout
 - [ ] Config change only
+<<<<<<< Updated upstream
 - [x] Documentation only (CI concurrency and docs)
+=======
+- [ ] Documentation only
+- CI: PRs gain three platform build jobs.
+>>>>>>> Stashed changes
 
 ## [2026-10-24 14:30] - Scout routes follow the addresses of their Gateway (ADR-0028, issue #569, takes over PR #570)
 

@@ -375,11 +375,15 @@ jobs:
           retention-days: ${{ github.event_name == 'release' && 90 || 1 }}
           if-no-files-found: error
 
-  # ── Release-only extra platforms (release binaries/assets) ────────────────
+  # ── Extra platforms: release binaries; compile check on PRs ───────────────
+  # Releases build and upload the macOS and Windows binaries. PRs build the
+  # workspace (debug, all targets) on each platform: upload-release-assets needs
+  # every leg, so a platform-specific compile error (v0.8.1 and v0.8.2 shipped
+  # no assets because of a Unix-only API) must fail the PR, not the release.
   build-extras:
     name: Build - ${{ matrix.platform.name }}
     runs-on: ${{ matrix.platform.os }}
-    if: github.event_name == 'release'
+    if: github.event_name == 'release' || github.event_name == 'pull_request'
     needs: [extract-version]
     strategy:
       fail-fast: false
@@ -405,6 +409,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Update Cargo.toml version
+        if: github.event_name == 'release'
         shell: bash
         run: |
           perl -i -pe 's/^version = ".*"/version = "${{ needs.extract-version.outputs.version }}"/' Cargo.toml
@@ -424,13 +429,23 @@ jobs:
       - name: Cache cargo dependencies
         uses: firestoned/github-actions/rust/cache-cargo@f52366c4f57f0110012035ac1bcd0bee4075b3e9 # v1.4.0
 
+      # Debug profile: compiles and links every crate and test binary for the
+      # platform without paying the release profile's fat LTO. cargo directly,
+      # like the release build below: windows-latest has no GNU make on PATH.
+      - name: Build (PR only)
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: cargo build --locked --workspace --all-targets --target ${{ matrix.platform.target }}
+
       # No --locked: the version rewrite above changes the workspace crates'
       # entries in Cargo.lock (see the Linux build).
       - name: Build binary
+        if: github.event_name == 'release'
         shell: bash
         run: cargo build --release --target ${{ matrix.platform.target }}
 
       - name: Upload binary artifacts
+        if: github.event_name == 'release'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: ${{ matrix.platform.artifact_name }}
@@ -687,7 +702,7 @@ jobs:
   ci-gate:
     name: PR Checks Passed
     runs-on: ubuntu-latest
-    needs: [changes, calm-validate, license-check, verify-commits, format, clippy, build, sbom, cbom, docker, security, vex-validate, trivy]
+    needs: [changes, calm-validate, license-check, verify-commits, format, clippy, build, build-extras, sbom, cbom, docker, security, vex-validate, trivy]
     if: always()
     steps:
       - name: Fail if any required PR check failed or was cancelled
