@@ -375,15 +375,15 @@ jobs:
           retention-days: ${{ github.event_name == 'release' && 90 || 1 }}
           if-no-files-found: error
 
-  # ── Extra platforms: release binaries; compile check on PRs ───────────────
-  # Releases build and upload the macOS and Windows binaries. PRs build the
-  # workspace (debug, all targets) on each platform: upload-release-assets needs
-  # every leg, so a platform-specific compile error (v0.8.1 and v0.8.2 shipped
-  # no assets because of a Unix-only API) must fail the PR, not the release.
+  # ── Extra platforms (macOS, Windows): every build ─────────────────────────
+  # Releases build and upload the macOS and Windows binaries. Every other
+  # build (PR, main, dispatch) builds the workspace (debug, all targets) on
+  # each platform: upload-release-assets needs every leg, so a
+  # platform-specific compile error (v0.8.1 and v0.8.2 shipped no assets
+  # because of a Unix-only API) must fail before a release, not during it.
   build-extras:
     name: Build - ${{ matrix.platform.name }}
     runs-on: ${{ matrix.platform.os }}
-    if: github.event_name == 'release' || github.event_name == 'pull_request'
     needs: [extract-version]
     strategy:
       fail-fast: false
@@ -432,8 +432,8 @@ jobs:
       # Debug profile: compiles and links every crate and test binary for the
       # platform without paying the release profile's fat LTO. cargo directly,
       # like the release build below: windows-latest has no GNU make on PATH.
-      - name: Build (PR only)
-        if: github.event_name == 'pull_request'
+      - name: Build (non-release)
+        if: github.event_name != 'release'
         shell: bash
         run: cargo build --locked --workspace --all-targets --target ${{ matrix.platform.target }}
 
