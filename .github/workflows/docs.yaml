@@ -23,9 +23,10 @@ permissions:
   pages: write
   id-token: write
 
-# Allow one concurrent deployment
+# One build per ref: a newer push supersedes the build of the same branch or
+# PR, never another branch's (#487). The Pages deployment has its own group.
 concurrency:
-  group: "pages"
+  group: docs-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -104,6 +105,10 @@ jobs:
     if: github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
+    # One Pages deployment at a time; a running deployment is never cancelled.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

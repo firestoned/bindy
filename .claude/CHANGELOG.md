@@ -1,3 +1,24 @@
+## [2026-10-26 10:00] - Housekeeping: docs builds per ref, README MSRV, roadmap 16 marked done
+
+**Author:** Erick Bourgeois
+
+### Fixed
+- `.github/workflows/docs.yaml` (#487): the workflow's concurrency group was the constant `pages`, so any docs build cancelled every other branch's in-progress build, which then reported as a failure. Builds now share a group per ref (`docs-${{ github.ref }}`, a newer push still cancels its own branch's build); the Pages deployment job keeps its own `pages` group and is never cancelled mid-deploy.
+- `README.md` (#417): the Rust badge and prerequisites said 1.85+; the toolchain and `rust-version` pin 1.94.
+
+### Changed
+- Roadmap 16 (`.github/community/16-audit-logging-secret-operations.md`) and its `ROADMAPS.md` row: ✅ Done. ADR-0024 merged in #554 on 2026-10-15; the board still said "In review". Every "What landed" item audited against the tree.
+
+### Notes
+- #418 (`calculate_requeue_duration` dead code) was already resolved: ADR-0016 (#536) wired it into the `Bind9Instance` reconcile as the rotation wake-up. Closed without a code change.
+- #330 and #332 (distroless vulnerabilities from May, under the old per-day issue naming) are superseded: the scheduled scans of 2026-10-25 and 2026-10-26 pass.
+
+### Impact
+- [ ] Breaking change
+- [ ] Requires cluster rollout
+- [ ] Config change only
+- [x] Documentation only (CI concurrency and docs)
+
 ## [2026-10-24 14:30] - Scout routes follow the addresses of their Gateway (ADR-0028, issue #569, takes over PR #570)
 
 **Author:** Erick Bourgeois (Decision 1 and its first tests from PR #570 by Daniel Guns)

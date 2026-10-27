@@ -1,6 +1,6 @@
 # Audit Logging for Secret Operations
 
-> **Status:** 🔶 In review (2026-10-14): implemented by [ADR-0024](../../docs/adr/0024-secret-operations-audit-log.md) on branch `feat/secret-audit-log`. The plan below is the March 2026 original, kept as written; it predates the crate split (ADR-0009) and the `secretRef` mirror (ADR-0023), so its file paths and line numbers no longer exist.
+> **Status:** ✅ Done (2026-10-15): implemented by [ADR-0024](../../docs/adr/0024-secret-operations-audit-log.md), merged in #554 (`17c9236`); audited against the tree 2026-10-26. The plan below is the March 2026 original, kept as written; it predates the crate split (ADR-0009) and the `secretRef` mirror (ADR-0023), so its file paths and line numbers no longer exist.
 >
 > *Migrated 2026-09-10 from the external roadmap set. Status verified against `fix-idempotency` @ `648ff7a`.*
 
