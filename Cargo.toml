@@ -45,7 +45,7 @@ bindy-controller-records = { path = "crates/bindy-controller-records" }
 bindy-scout = { path = "crates/bindy-scout" }
 bindy-bootstrap = { path = "crates/bindy-bootstrap" }
 
-kube = { version = "4.0", features = ["runtime", "derive", "client", "jsonpatch"] }
+kube = { version = "5.0", features = ["runtime", "derive", "client", "jsonpatch"] }
 # Direct dependency on the kube-runtime that `kube` re-exports, only to enable
 # `unstable-runtime-stream-control`: controllers consume the shared WatchSet
 # streams through `Controller::for_stream` / `watches_stream` / `owns_stream`
@@ -53,8 +53,8 @@ kube = { version = "4.0", features = ["runtime", "derive", "client", "jsonpatch"
 # `unstable-runtime`, which would also enable `-subscribe` and `-reconcile-on`;
 # this is the only unstable kube feature bindy enables. Keep the version in
 # lockstep with `kube`.
-kube-runtime = { version = "4.2", features = ["unstable-runtime-stream-control"] }
-kube-lease-manager = "0.12"
+kube-runtime = { version = "5.0", features = ["unstable-runtime-stream-control"] }
+kube-lease-manager = "0.13"
 # Client-side API rate limiting + request-metrics middleware (ADR-0005).
 # Already in the tree via kube; direct dep for RateLimitLayer and Layer/Service.
 tower = { version = "0.5", features = ["limit", "util"] }
